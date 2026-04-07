@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,6 +34,12 @@ type Trigger struct {
 
 type Store struct {
 	db *sql.DB
+
+	cacheMu      sync.RWMutex
+	cached       []Trigger
+	cacheUntil   time.Time
+	cacheTTL     time.Duration
+	compiledRegs sync.Map // map[string]*regexp.Regexp
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -79,7 +86,10 @@ CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
 	_ = ensureColumn(db, "triggers", "trigger_mode", "TEXT NOT NULL DEFAULT 'all'")
 	_ = ensureColumn(db, "triggers", "admin_mode", "TEXT NOT NULL DEFAULT 'anybody'")
 	_ = ensureColumn(db, "triggers", "action_type", "TEXT NOT NULL DEFAULT 'send'")
-	return &Store{db: db}, nil
+	return &Store{
+		db:       db,
+		cacheTTL: 2 * time.Second,
+	}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -252,21 +262,66 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	if t.ID <= 0 {
 		_, err := s.db.Exec(`INSERT INTO triggers(title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now)
+		if err == nil {
+			s.invalidateCache()
+		}
 		return err
 	}
 	_, err := s.db.Exec(`UPDATE triggers SET title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=? WHERE id=?`,
 		t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.ID)
+	if err == nil {
+		s.invalidateCache()
+	}
 	return err
 }
 
 func (s *Store) ToggleTrigger(id int64) error {
 	_, err := s.db.Exec(`UPDATE triggers SET enabled=CASE WHEN enabled=1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?`, time.Now().Unix(), id)
+	if err == nil {
+		s.invalidateCache()
+	}
 	return err
 }
 
 func (s *Store) DeleteTrigger(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM triggers WHERE id=?`, id)
+	if err == nil {
+		s.invalidateCache()
+	}
 	return err
+}
+
+func (s *Store) invalidateCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cached = nil
+	s.cacheUntil = time.Time{}
+}
+
+func (s *Store) ListTriggersCached() ([]Trigger, error) {
+	now := time.Now()
+	s.cacheMu.RLock()
+	if s.cached != nil && now.Before(s.cacheUntil) {
+		out := make([]Trigger, len(s.cached))
+		copy(out, s.cached)
+		s.cacheMu.RUnlock()
+		return out, nil
+	}
+	s.cacheMu.RUnlock()
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		return nil, err
+	}
+
+	s.cacheMu.Lock()
+	s.cached = make([]Trigger, len(items))
+	copy(s.cached, items)
+	s.cacheUntil = now.Add(s.cacheTTL)
+	out := make([]Trigger, len(items))
+	copy(out, items)
+	s.cacheMu.Unlock()
+	return out, nil
 }
 
 func TriggerMatches(t Trigger, incoming string) bool {
@@ -303,8 +358,8 @@ func TriggerMatches(t Trigger, incoming string) bool {
 		if !t.CaseSensitive && !strings.HasPrefix(needle, "(?i)") {
 			needle = "(?i)" + needle
 		}
-		re, err := regexp.Compile(needle)
-		if err != nil {
+		re := sCompileRegex(needle)
+		if re == nil {
 			return false
 		}
 		return re.MatchString(hay)
@@ -315,6 +370,22 @@ func TriggerMatches(t Trigger, incoming string) bool {
 		}
 		return hay == needle
 	}
+}
+
+var regexGlobalCache sync.Map // map[string]*regexp.Regexp
+
+func sCompileRegex(pattern string) *regexp.Regexp {
+	if v, ok := regexGlobalCache.Load(pattern); ok {
+		if re, ok2 := v.(*regexp.Regexp); ok2 {
+			return re
+		}
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+	regexGlobalCache.Store(pattern, re)
+	return re
 }
 
 func (s *Store) Match(text string) (*Trigger, bool, error) {
@@ -442,6 +513,9 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			return added, err
 		}
 		added++
+	}
+	if added > 0 {
+		s.invalidateCache()
 	}
 	return added, nil
 }
