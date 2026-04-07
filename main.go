@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -169,6 +170,21 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("send gpt/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
+		case "gpt_image":
+			img, err := generateChatGPTImage(bot, tr.ResponseText, msg)
+			if err != nil {
+				log.Printf("gpt image failed: %v", err)
+				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
+				continue
+			}
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			sendPhoto(bot, msg.Chat.ID, replyTo, img)
+			if debugTriggerLogEnabled {
+				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
+			}
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -249,6 +265,43 @@ func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, prev
 	}
 	if debugTriggerLogEnabled {
 		log.Printf("send html ok chat=%d msg=%d replyTo=%d text=%q", chatID, sent.MessageID, replyTo, clipText(m.Text, 120))
+	}
+}
+
+type generatedImage struct {
+	URL   string
+	Bytes []byte
+}
+
+func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage) {
+	var file tgbotapi.RequestFileData
+	switch {
+	case strings.TrimSpace(img.URL) != "":
+		file = tgbotapi.FileURL(strings.TrimSpace(img.URL))
+	case len(img.Bytes) > 0:
+		file = tgbotapi.FileBytes{Name: "generated.png", Bytes: img.Bytes}
+	default:
+		reportChatFailure(bot, chatID, "ошибка отправки картинки", errors.New("empty image payload"))
+		return
+	}
+
+	m := tgbotapi.NewPhoto(chatID, file)
+	if replyTo > 0 {
+		m.ReplyToMessageID = replyTo
+		m.AllowSendingWithoutReply = true
+	}
+	sent, err := bot.Send(m)
+	if err != nil {
+		log.Printf("send photo failed: %v", err)
+		reportChatFailure(bot, chatID, "ошибка отправки картинки", err)
+		return
+	}
+	if debugTriggerLogEnabled {
+		if strings.TrimSpace(img.URL) != "" {
+			log.Printf("send photo ok chat=%d msg=%d replyTo=%d source=url", chatID, sent.MessageID, replyTo)
+		} else {
+			log.Printf("send photo ok chat=%d msg=%d replyTo=%d source=bytes size=%d", chatID, sent.MessageID, replyTo, len(img.Bytes))
+		}
 	}
 }
 
@@ -454,6 +507,86 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 		return "", errors.New("empty answer")
 	}
 	return out, nil
+}
+
+func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message) (generatedImage, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return generatedImage{}, errors.New("OPENAI_API_KEY is empty")
+	}
+	model := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL"))
+	if model == "" {
+		model = "gpt-image-1"
+	}
+	size := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_SIZE"))
+	if size == "" {
+		size = "1024x1024"
+	}
+
+	prompt := buildPromptFromMessage(bot, promptTemplate, msg)
+	if debugGPTLogEnabled {
+		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, clipText(prompt, 1400))
+	}
+
+	payload := map[string]interface{}{
+		"model":  model,
+		"prompt": prompt,
+		"size":   size,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/images/generations", bytes.NewReader(body))
+	if err != nil {
+		return generatedImage{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return generatedImage{}, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return generatedImage{}, err
+	}
+	if debugGPTLogEnabled {
+		log.Printf("gpt image response status=%d body=%q", resp.StatusCode, clipText(string(bodyBytes), 1800))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return generatedImage{}, fmt.Errorf("openai images status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+	}
+
+	var result struct {
+		Data []struct {
+			URL     string `json:"url"`
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return generatedImage{}, err
+	}
+	if len(result.Data) == 0 {
+		return generatedImage{}, errors.New("empty images data")
+	}
+
+	if u := strings.TrimSpace(result.Data[0].URL); u != "" {
+		return generatedImage{URL: u}, nil
+	}
+	if b64 := strings.TrimSpace(result.Data[0].B64JSON); b64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return generatedImage{}, fmt.Errorf("decode b64 image failed: %w", err)
+		}
+		if len(decoded) == 0 {
+			return generatedImage{}, errors.New("decoded image is empty")
+		}
+		return generatedImage{Bytes: decoded}, nil
+	}
+
+	return generatedImage{}, errors.New("image payload has neither url nor b64_json")
 }
 
 func getChatMemberTagRaw(token string, chatID, userID int64) string {
