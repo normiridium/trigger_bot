@@ -293,6 +293,7 @@ func renderListHTML(items []Trigger) string {
                 <option value="send">Отправить сообщение</option>
                 <option value="delete">Удалить сообщение</option>
                 <option value="gpt_prompt">Промпт в ChatGPT</option>
+                <option value="gpt_image">Сгенерировать картинку (ChatGPT)</option>
               </select>
             </div>
             <div class="col-md-6">
