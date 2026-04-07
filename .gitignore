@@ -1,0 +1,18 @@
+# build output
+trigger_admin_bot
+
+# secrets
+.env
+
+# local databases
+*.db
+*.db-shm
+*.db-wal
+
+# debug logs
+*.log
+
+# editor/system
+.DS_Store
+.idea/
+.vscode/
