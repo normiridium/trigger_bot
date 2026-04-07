@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/base64"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -23,6 +24,91 @@ import (
 var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
+
+type chatAllowList struct {
+	enabled bool
+	ids     map[int64]struct{}
+}
+
+func parseAllowedChatIDs(raw string) (chatAllowList, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return chatAllowList{enabled: false}, nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+	})
+	ids := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		v := strings.TrimSpace(part)
+		if v == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return chatAllowList{}, fmt.Errorf("invalid ALLOWED_CHAT_IDS value %q: %w", v, err)
+		}
+		ids[id] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return chatAllowList{enabled: false}, nil
+	}
+	return chatAllowList{enabled: true, ids: ids}, nil
+}
+
+func (a chatAllowList) Allows(chatID int64) bool {
+	if !a.enabled {
+		return true
+	}
+	_, ok := a.ids[chatID]
+	return ok
+}
+
+type adminCacheEntry struct {
+	isAdmin   bool
+	expiresAt time.Time
+}
+
+type adminStatusCache struct {
+	mu     sync.RWMutex
+	ttl    time.Duration
+	values map[string]adminCacheEntry
+}
+
+func newAdminStatusCache(ttl time.Duration) *adminStatusCache {
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	return &adminStatusCache{
+		ttl:    ttl,
+		values: make(map[string]adminCacheEntry),
+	}
+}
+
+func (c *adminStatusCache) IsChatAdmin(bot *tgbotapi.BotAPI, chatID, userID int64) bool {
+	if c == nil {
+		return fetchChatAdminStatus(bot, chatID, userID)
+	}
+	key := strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(userID, 10)
+	now := time.Now()
+
+	c.mu.RLock()
+	if cached, ok := c.values[key]; ok && now.Before(cached.expiresAt) {
+		c.mu.RUnlock()
+		return cached.isAdmin
+	}
+	c.mu.RUnlock()
+
+	isAdmin := fetchChatAdminStatus(bot, chatID, userID)
+
+	c.mu.Lock()
+	c.values[key] = adminCacheEntry{
+		isAdmin:   isAdmin,
+		expiresAt: now.Add(c.ttl),
+	}
+	c.mu.Unlock()
+	return isAdmin
+}
 
 func envOr(key, fallback string) string {
 	v := strings.TrimSpace(os.Getenv(key))
@@ -38,6 +124,18 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return v == "1" || v == "true" || v == "yes"
+}
+
+func envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func main() {
@@ -60,9 +158,25 @@ func main() {
 		log.Fatalf("create bot failed: %v", err)
 	}
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
-	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", true)
-	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", true)
+	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
+	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
 	log.Printf("Bot started as @%s", bot.Self.UserName)
+
+	allowedChats, err := parseAllowedChatIDs(os.Getenv("ALLOWED_CHAT_IDS"))
+	if err != nil {
+		log.Fatalf("ALLOWED_CHAT_IDS parse failed: %v", err)
+	}
+	if allowedChats.enabled {
+		ids := make([]string, 0, len(allowedChats.ids))
+		for id := range allowedChats.ids {
+			ids = append(ids, strconv.FormatInt(id, 10))
+		}
+		log.Printf("chat allow-list enabled, allowed chat IDs: %s", strings.Join(ids, ","))
+	} else {
+		log.Printf("chat allow-list is disabled (ALLOWED_CHAT_IDS is empty)")
+	}
+	adminCacheTTL := time.Duration(envInt("ADMIN_CACHE_TTL_SEC", 120)) * time.Second
+	adminCache := newAdminStatusCache(adminCacheTTL)
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
@@ -87,6 +201,12 @@ func main() {
 		}
 		msg := update.Message
 		if msg.Chat == nil || msg.From == nil || msg.From.IsBot {
+			continue
+		}
+		if !allowedChats.Allows(msg.Chat.ID) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip message from disallowed chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+			}
 			continue
 		}
 
@@ -131,7 +251,7 @@ func main() {
 			log.Printf("triggers loaded (cached): %d", len(items))
 		}
 		tr := engine.Select(bot, msg, text, items, func() bool {
-			return isChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+			return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 		})
 		if tr == nil {
 			if debugTriggerLogEnabled {
@@ -312,7 +432,7 @@ func normalizeEscapedHTMLBreaks(s string) string {
 	return s
 }
 
-func isChatAdmin(bot *tgbotapi.BotAPI, chatID int64, userID int64) bool {
+func fetchChatAdminStatus(bot *tgbotapi.BotAPI, chatID int64, userID int64) bool {
 	cfg := tgbotapi.GetChatMemberConfig{
 		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
 			ChatID: chatID,
