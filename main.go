@@ -78,6 +78,7 @@ func main() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
+	engine := NewTriggerEngine()
 
 	for update := range updates {
 		if update.Message == nil {
@@ -119,76 +120,26 @@ func main() {
 				msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, clipText(text, 220))
 		}
 
-		items, err := store.ListTriggers()
+		items, err := store.ListTriggersCached()
 		if err != nil {
 			log.Printf("list triggers failed: %v", err)
 			reportChatFailure(bot, msg.Chat.ID, "ошибка загрузки триггеров", err)
 			continue
 		}
 		if debugTriggerLogEnabled {
-			log.Printf("triggers loaded: %d", len(items))
+			log.Printf("triggers loaded (cached): %d", len(items))
 		}
-		var tr *Trigger
-		adminChecked := false
-		isAdmin := false
-		for i := range items {
-			cand := items[i]
-			if !cand.Enabled {
-				if debugTriggerLogEnabled {
-					log.Printf("skip id=%d title=%q reason=disabled", cand.ID, cand.Title)
-				}
-				continue
-			}
-			if !TriggerMatches(cand, text) {
-				if debugTriggerLogEnabled {
-					log.Printf("skip id=%d title=%q reason=text_miss", cand.ID, cand.Title)
-				}
-				continue
-			}
-			if !triggerModeMatches(bot, &cand, msg) {
-				if debugTriggerLogEnabled {
-					log.Printf("skip id=%d title=%q reason=mode_miss mode=%s", cand.ID, cand.Title, cand.TriggerMode)
-				}
-				continue
-			}
-			if cand.AdminMode != "anybody" {
-				if !adminChecked {
-					isAdmin = isChatAdmin(bot, msg.Chat.ID, msg.From.ID)
-					adminChecked = true
-					if debugTriggerLogEnabled {
-						log.Printf("admin check from=%d -> %v", msg.From.ID, isAdmin)
-					}
-				}
-				if cand.AdminMode == "admins" && !isAdmin {
-					if debugTriggerLogEnabled {
-						log.Printf("skip id=%d title=%q reason=admin_required", cand.ID, cand.Title)
-					}
-					continue
-				}
-				if cand.AdminMode == "not_admins" && isAdmin {
-					if debugTriggerLogEnabled {
-						log.Printf("skip id=%d title=%q reason=non_admin_required", cand.ID, cand.Title)
-					}
-					continue
-				}
-			}
-			if cand.Chance < 100 && rand.Intn(100) >= cand.Chance {
-				if debugTriggerLogEnabled {
-					log.Printf("skip id=%d title=%q reason=chance", cand.ID, cand.Title)
-				}
-				continue
-			}
-			tr = &cand
-			if debugTriggerLogEnabled {
-				log.Printf("pick id=%d title=%q mode=%s action=%s", cand.ID, cand.Title, cand.TriggerMode, cand.ActionType)
-			}
-			break
-		}
+		tr := engine.Select(bot, msg, text, items, func() bool {
+			return isChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+		})
 		if tr == nil {
 			if debugTriggerLogEnabled {
 				log.Printf("no trigger matched for msg=%d", msg.MessageID)
 			}
 			continue
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 		}
 
 		switch tr.ActionType {
