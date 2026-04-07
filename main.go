@@ -76,6 +76,179 @@ type adminStatusCache struct {
 	values map[string]adminCacheEntry
 }
 
+type recentChatMessage struct {
+	MessageID int
+	UserName  string
+	Text      string
+	At        time.Time
+}
+
+type chatRecentStore struct {
+	mu       sync.RWMutex
+	maxPer   int
+	maxAge   time.Duration
+	messages map[int64][]recentChatMessage
+}
+
+func newChatRecentStore(maxPer int, maxAge time.Duration) *chatRecentStore {
+	if maxPer <= 0 {
+		maxPer = 8
+	}
+	if maxAge <= 0 {
+		maxAge = 30 * time.Minute
+	}
+	return &chatRecentStore{
+		maxPer:   maxPer,
+		maxAge:   maxAge,
+		messages: make(map[int64][]recentChatMessage),
+	}
+}
+
+func (s *chatRecentStore) Add(chatID int64, msg recentChatMessage) {
+	if s == nil || chatID == 0 || strings.TrimSpace(msg.Text) == "" {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.messages[chatID]
+	filtered := make([]recentChatMessage, 0, len(items)+1)
+	for _, it := range items {
+		if now.Sub(it.At) <= s.maxAge {
+			filtered = append(filtered, it)
+		}
+	}
+	filtered = append(filtered, msg)
+	if len(filtered) > s.maxPer {
+		filtered = filtered[len(filtered)-s.maxPer:]
+	}
+	s.messages[chatID] = filtered
+}
+
+func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
+	if s == nil || chatID == 0 {
+		return ""
+	}
+	if limit <= 0 {
+		limit = 4
+	}
+	now := time.Now()
+	s.mu.RLock()
+	items := s.messages[chatID]
+	s.mu.RUnlock()
+	if len(items) == 0 {
+		return ""
+	}
+
+	start := len(items) - limit
+	if start < 0 {
+		start = 0
+	}
+	lines := make([]string, 0, len(items)-start)
+	for _, it := range items[start:] {
+		if now.Sub(it.At) > s.maxAge {
+			continue
+		}
+		txt := strings.TrimSpace(it.Text)
+		if txt == "" {
+			continue
+		}
+		txt = clipText(txt, 220)
+		user := strings.TrimSpace(it.UserName)
+		if user == "" {
+			user = "участник"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", user, txt))
+	}
+	return strings.Join(lines, "\n")
+}
+
+type gptPromptTask struct {
+	Bot           *tgbotapi.BotAPI
+	Trigger       Trigger
+	Msg           *tgbotapi.Message
+	RecentContext string
+}
+
+type gptPromptDebouncer struct {
+	mu      sync.Mutex
+	delay   time.Duration
+	pending map[int64]*gptPromptDebounceEntry
+}
+
+type gptPromptDebounceEntry struct {
+	timer *time.Timer
+	task  gptPromptTask
+}
+
+func newGPTPromptDebouncer(delay time.Duration) *gptPromptDebouncer {
+	if delay <= 0 {
+		return nil
+	}
+	return &gptPromptDebouncer{
+		delay:   delay,
+		pending: make(map[int64]*gptPromptDebounceEntry),
+	}
+}
+
+func (d *gptPromptDebouncer) Schedule(chatID int64, task gptPromptTask) {
+	if d == nil || chatID == 0 {
+		executeGPTPromptTask(task)
+		return
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if ent, ok := d.pending[chatID]; ok {
+		if ent.timer != nil {
+			ent.timer.Stop()
+		}
+		ent.task = task
+		ent.timer = time.AfterFunc(d.delay, func() {
+			d.fire(chatID)
+		})
+		return
+	}
+
+	ent := &gptPromptDebounceEntry{task: task}
+	ent.timer = time.AfterFunc(d.delay, func() {
+		d.fire(chatID)
+	})
+	d.pending[chatID] = ent
+}
+
+func (d *gptPromptDebouncer) fire(chatID int64) {
+	d.mu.Lock()
+	ent := d.pending[chatID]
+	delete(d.pending, chatID)
+	d.mu.Unlock()
+	if ent == nil {
+		return
+	}
+	executeGPTPromptTask(ent.task)
+}
+
+func executeGPTPromptTask(task gptPromptTask) {
+	if task.Bot == nil || task.Msg == nil {
+		return
+	}
+	out, err := generateChatGPTReply(task.Bot, task.Trigger.ResponseText, task.Msg, task.RecentContext)
+	if err != nil {
+		log.Printf("gpt prompt failed: %v", err)
+		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
+		return
+	}
+	replyTo := 0
+	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
+		replyTo = task.Msg.MessageID
+	}
+	sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, out, task.Trigger.Preview)
+	if debugTriggerLogEnabled {
+		log.Printf("send gpt/markdown attempted trigger=%d replyTo=%d", task.Trigger.ID, replyTo)
+	}
+}
+
 func newAdminStatusCache(ttl time.Duration) *adminStatusCache {
 	if ttl <= 0 {
 		ttl = 2 * time.Minute
@@ -178,6 +351,12 @@ func main() {
 	}
 	adminCacheTTL := time.Duration(envInt("ADMIN_CACHE_TTL_SEC", 120)) * time.Second
 	adminCache := newAdminStatusCache(adminCacheTTL)
+	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
+	gptDebouncer := newGPTPromptDebouncer(time.Duration(gptDebounceSec) * time.Second)
+	if gptDebounceSec > 0 {
+		log.Printf("gpt prompt debounce enabled: %ds (trailing per chat)", gptDebounceSec)
+	}
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
@@ -237,6 +416,19 @@ func main() {
 		if text == "" {
 			continue
 		}
+
+		recentBefore := chatRecent.RecentText(msg.Chat.ID, envInt("OLENYAM_CONTEXT_MESSAGES", 4))
+		displayName := strings.TrimSpace(msg.From.FirstName)
+		if displayName == "" {
+			displayName = strings.TrimSpace(msg.From.UserName)
+		}
+		chatRecent.Add(msg.Chat.ID, recentChatMessage{
+			MessageID: msg.MessageID,
+			UserName:  displayName,
+			Text:      text,
+			At:        time.Now(),
+		})
+
 		if debugTriggerLogEnabled {
 			log.Printf("update chat=%d msg=%d from=%d user=%s text=%q",
 				msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, clipText(text, 220))
@@ -277,20 +469,28 @@ func main() {
 				log.Printf("delete ok msg=%d by trigger=%d", msg.MessageID, tr.ID)
 			}
 		case "gpt_prompt":
-			out, err := generateChatGPTReply(bot, tr.ResponseText, msg)
-			if err != nil {
-				log.Printf("gpt prompt failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка запроса к ChatGPT", err)
+			ctx := ""
+			if isOlenyamTrigger(tr) {
+				ctx = recentBefore
+			}
+			if gptDebouncer != nil {
+				gptDebouncer.Schedule(msg.Chat.ID, gptPromptTask{
+					Bot:           bot,
+					Trigger:       *tr,
+					Msg:           msg,
+					RecentContext: ctx,
+				})
+				if debugTriggerLogEnabled {
+					log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
+				}
 				continue
 			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			sendMarkdownV2(bot, msg.Chat.ID, replyTo, out, tr.Preview)
-			if debugTriggerLogEnabled {
-				log.Printf("send gpt/markdown attempted trigger=%d replyTo=%d", tr.ID, replyTo)
-			}
+			executeGPTPromptTask(gptPromptTask{
+				Bot:           bot,
+				Trigger:       *tr,
+				Msg:           msg,
+				RecentContext: ctx,
+			})
 		case "gpt_image":
 			img, err := generateChatGPTImage(bot, tr.ResponseText, msg)
 			if err != nil {
@@ -651,6 +851,14 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 	return prompt + "\n\nСообщение пользователя:\n" + replacements["{{message}}"]
 }
 
+func isOlenyamTrigger(tr *Trigger) bool {
+	if tr == nil {
+		return false
+	}
+	title := strings.ToLower(strings.TrimSpace(tr.Title))
+	return strings.Contains(title, "оле-ням") || strings.Contains(title, "оленям") || strings.Contains(title, "оле ням")
+}
+
 func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message) string {
 	query := strings.TrimSpace(queryTemplate)
 	if msg == nil {
@@ -883,7 +1091,7 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 	return bodyBytes, nil
 }
 
-func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message) (string, error) {
+func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, recentContext string) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return "", errors.New("OPENAI_API_KEY is empty")
@@ -894,6 +1102,9 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 	}
 
 	prompt := buildPromptFromMessage(bot, promptTemplate, msg)
+	if strings.TrimSpace(recentContext) != "" {
+		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
+	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt request model=%s prompt=%q", model, clipText(prompt, 1800))
 	}
