@@ -53,6 +53,7 @@ set -a; source .env; set +a
 - `WEB_TEMPLATE_DIR` — каталог HTML-шаблонов админки (по умолчанию `./templates`)
 - `SERPAPI_KEY` — обязательный ключ для `search_image`
 - `SERPAPI_ENGINE` — движок SerpAPI (по умолчанию `google_images`)
+- `GPT_PROMPT_DEBOUNCE_SEC` — debounce для `gpt_prompt` (если `>0`, бот отвечает только на последнее сообщение в окне времени, per chat)
 
 ## UI-правки без ребилда
 
