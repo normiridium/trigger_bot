@@ -286,9 +286,9 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview)
+			sendMarkdownV2(bot, msg.Chat.ID, replyTo, out, tr.Preview)
 			if debugTriggerLogEnabled {
-				log.Printf("send gpt/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)
+				log.Printf("send gpt/markdown attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "gpt_image":
 			img, err := generateChatGPTImage(bot, tr.ResponseText, msg)
@@ -304,6 +304,22 @@ func main() {
 			sendPhoto(bot, msg.Chat.ID, replyTo, img)
 			if debugTriggerLogEnabled {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
+			}
+		case "search_image":
+			query := buildImageSearchQueryFromMessage(bot, tr.ResponseText, msg)
+			img, err := searchImageInSerpAPI(query)
+			if err != nil {
+				log.Printf("search image failed: %v", err)
+				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска картинки", err)
+				continue
+			}
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			sendPhoto(bot, msg.Chat.ID, replyTo, img)
+			if debugTriggerLogEnabled {
+				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
 		default:
 			replyTo := 0
@@ -388,6 +404,30 @@ func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, prev
 	}
 }
 
+func sendMarkdownV2(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview bool) {
+	text = normalizeEscapedHTMLBreaks(text)
+	text = escapeMarkdownV2PreservingFences(text)
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = "MarkdownV2"
+	m.DisableWebPagePreview = !preview
+	if replyTo > 0 {
+		m.ReplyToMessageID = replyTo
+		m.AllowSendingWithoutReply = true
+	}
+	if len(m.Text) > 4096 {
+		m.Text = m.Text[:4096]
+	}
+	sent, err := bot.Send(m)
+	if err != nil {
+		log.Printf("send markdown failed: %v", err)
+		reportChatFailure(bot, chatID, "ошибка отправки Markdown-сообщения", err)
+		return
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send markdown ok chat=%d msg=%d replyTo=%d text=%q", chatID, sent.MessageID, replyTo, clipText(m.Text, 120))
+	}
+}
+
 type generatedImage struct {
 	URL   string
 	Bytes []byte
@@ -432,6 +472,67 @@ func normalizeEscapedHTMLBreaks(s string) string {
 	return s
 }
 
+func escapeMarkdownV2Text(s string) string {
+	replacer := strings.NewReplacer(
+		`\\`, `\\\\`,
+		"_", `\_`,
+		"*", `\*`,
+		"[", `\[`,
+		"]", `\]`,
+		"(", `\(`,
+		")", `\)`,
+		"~", `\~`,
+		"`", "\\`",
+		">", `\>`,
+		"#", `\#`,
+		"+", `\+`,
+		"-", `\-`,
+		"=", `\=`,
+		"|", `\|`,
+		"{", `\{`,
+		"}", `\}`,
+		".", `\.`,
+		"!", `\!`,
+	)
+	return replacer.Replace(s)
+}
+
+func escapeMarkdownV2Code(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "`", "\\`")
+	return s
+}
+
+func escapeMarkdownV2PreservingFences(s string) string {
+	var out strings.Builder
+	for {
+		start := strings.Index(s, "```")
+		if start < 0 {
+			out.WriteString(escapeMarkdownV2Text(s))
+			break
+		}
+		out.WriteString(escapeMarkdownV2Text(s[:start]))
+		rest := s[start+3:]
+		end := strings.Index(rest, "```")
+		if end < 0 {
+			// broken fence: treat all as plain text
+			out.WriteString(escapeMarkdownV2Text("```" + rest))
+			break
+		}
+		block := rest[:end]
+		nl := strings.Index(block, "\n")
+		code := block
+		if nl >= 0 {
+			code = block[nl+1:]
+		}
+		out.WriteString("```\n")
+		out.WriteString(escapeMarkdownV2Code(code))
+		out.WriteString("\n```")
+		s = rest[end+3:]
+	}
+	return out.String()
+}
+
 func fetchChatAdminStatus(bot *tgbotapi.BotAPI, chatID int64, userID int64) bool {
 	cfg := tgbotapi.GetChatMemberConfig{
 		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
@@ -456,6 +557,40 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 		return prompt
 	}
 
+	replacements := buildMessageTemplateReplacements(bot, msg)
+	for tag, value := range replacements {
+		prompt = strings.ReplaceAll(prompt, tag, value)
+	}
+
+	if strings.Contains(promptTemplate, "{{") {
+		return prompt
+	}
+
+	return prompt + "\n\nСообщение пользователя:\n" + replacements["{{message}}"]
+}
+
+func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message) string {
+	query := strings.TrimSpace(queryTemplate)
+	if msg == nil {
+		return query
+	}
+	replacements := buildMessageTemplateReplacements(bot, msg)
+	if query == "" {
+		return strings.TrimSpace(replacements["{{message}}"])
+	}
+	for tag, value := range replacements {
+		query = strings.ReplaceAll(query, tag, value)
+	}
+	return strings.TrimSpace(query)
+}
+
+func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) map[string]string {
+	if msg == nil || msg.From == nil || msg.Chat == nil {
+		return map[string]string{
+			"{{message}}":   "",
+			"{{user_text}}": "",
+		}
+	}
 	extractLabel := func(s string) string {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -489,7 +624,7 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 	userDisplayName := buildDisplayName(msg.From)
 	userLabel := extractLabel(userDisplayName)
 	senderTag := ""
-	if bot != nil && msg.Chat != nil && msg.From != nil {
+	if bot != nil && msg.From != nil {
 		senderTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID)
 	}
 	senderTagDisplay := senderTag
@@ -515,7 +650,7 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 			replyUsername = strings.TrimSpace(msg.ReplyToMessage.From.UserName)
 			replyDisplayName = buildDisplayName(msg.ReplyToMessage.From)
 			replyLabel = extractLabel(replyDisplayName)
-			if bot != nil && msg.Chat != nil {
+			if bot != nil {
 				replySenderTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.ReplyToMessage.From.ID)
 			}
 		}
@@ -525,12 +660,9 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 		replySenderTagDisplay = "не указан"
 	}
 
-	chatTitle := ""
-	if msg.Chat != nil {
-		chatTitle = strings.TrimSpace(msg.Chat.Title)
-	}
+	chatTitle := strings.TrimSpace(msg.Chat.Title)
 
-	replacements := map[string]string{
+	return map[string]string{
 		"{{message}}":            userText,
 		"{{user_text}}":          userText,
 		"{{user_id}}":            strconv.FormatInt(msg.From.ID, 10),
@@ -549,16 +681,124 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 		"{{reply_label}}":        replyLabel,
 		"{{reply_sender_tag}}":   replySenderTagDisplay,
 	}
+}
 
-	for tag, value := range replacements {
-		prompt = strings.ReplaceAll(prompt, tag, value)
+func searchImageInSerpAPI(query string) (generatedImage, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return generatedImage{}, errors.New("empty search query")
 	}
 
-	if strings.Contains(promptTemplate, "{{") {
-		return prompt
+	apiKey := strings.TrimSpace(os.Getenv("SERPAPI_KEY"))
+	if apiKey == "" {
+		return generatedImage{}, errors.New("SERPAPI_KEY is required for search_image")
+	}
+	engine := strings.TrimSpace(os.Getenv("SERPAPI_ENGINE"))
+	if engine == "" {
+		engine = "google_images"
 	}
 
-	return prompt + "\n\nСообщение пользователя:\n" + userText
+	params := url.Values{}
+	params.Set("api_key", apiKey)
+	params.Set("engine", engine)
+	params.Set("q", query)
+	params.Set("hl", "ru")
+	params.Set("gl", "ru")
+	params.Set("num", "10")
+	params.Set("safe", "active")
+
+	endpoint := "https://serpapi.com/search.json?" + params.Encode()
+	client := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return generatedImage{}, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return generatedImage{}, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return generatedImage{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return generatedImage{}, fmt.Errorf("serpapi status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+	}
+
+	var payload struct {
+		Error        string `json:"error"`
+		ImagesResult []struct {
+			Original  string `json:"original"`
+			Link      string `json:"link"`
+			Thumbnail string `json:"thumbnail"`
+		} `json:"images_results"`
+	}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return generatedImage{}, err
+	}
+	if strings.TrimSpace(payload.Error) != "" {
+		return generatedImage{}, errors.New(payload.Error)
+	}
+	if len(payload.ImagesResult) == 0 {
+		return generatedImage{}, errors.New("nothing found")
+	}
+
+	var lastErr error
+	for _, it := range payload.ImagesResult {
+		u := strings.TrimSpace(it.Original)
+		if u == "" {
+			u = strings.TrimSpace(it.Link)
+		}
+		if u == "" {
+			u = strings.TrimSpace(it.Thumbnail)
+		}
+		if u == "" {
+			continue
+		}
+		imgBytes, err := fetchImageBytes(u)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return generatedImage{Bytes: imgBytes}, nil
+	}
+	if lastErr != nil {
+		return generatedImage{}, fmt.Errorf("all image links failed: %w", lastErr)
+	}
+	return generatedImage{}, errors.New("image URL is empty")
+}
+
+func fetchImageBytes(imageURL string) ([]byte, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", imageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "image/*,*/*;q=0.8")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download status=%d url=%s", resp.StatusCode, clipText(imageURL, 140))
+	}
+	if len(bodyBytes) == 0 {
+		return nil, fmt.Errorf("downloaded empty body url=%s", clipText(imageURL, 140))
+	}
+	ctype := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if ctype != "" && !strings.Contains(ctype, "image/") {
+		return nil, fmt.Errorf("not an image content-type=%s url=%s", ctype, clipText(imageURL, 140))
+	}
+	return bodyBytes, nil
 }
 
 func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message) (string, error) {

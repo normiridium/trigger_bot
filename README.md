@@ -12,8 +12,10 @@
   - включить/выключить
   - удалить
   - импорт/экспорт JSON
+- Тип действия `search_image`: найти картинку через SerpAPI (Google Images) и отправить в чат
 - Ограничение по чатам через whitelist (`ALLOWED_CHAT_IDS`)
 - Кэш проверки админ-статуса (меньше запросов к Telegram API)
+- HTML админки вынесен в шаблон `templates/trigger_list.html`
 
 ## Формат импорта/экспорта
 
@@ -48,3 +50,12 @@ set -a; source .env; set +a
 - `ADMIN_CACHE_TTL_SEC` — TTL кэша проверки админов (по умолчанию `120` сек)
 - `DEBUG_TRIGGER_LOG` и `DEBUG_GPT_LOG` — подробные debug-логи (по умолчанию `false`)
 - `CHAT_ERROR_LOG` — отправка ошибок в чат (`true/false`)
+- `WEB_TEMPLATE_DIR` — каталог HTML-шаблонов админки (по умолчанию `./templates`)
+- `SERPAPI_KEY` — обязательный ключ для `search_image`
+- `SERPAPI_ENGINE` — движок SerpAPI (по умолчанию `google_images`)
+
+## UI-правки без ребилда
+
+Страница админки рендерится из файла `templates/trigger_list.html`.
+Изменения шаблона применяются сразу на следующий HTTP-запрос к `/trigger_bot`
+(достаточно обновить страницу в браузере, без `go build`).
