@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -301,7 +302,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendPhoto(bot, msg.Chat.ID, replyTo, img)
+			sendPhoto(bot, msg.Chat.ID, replyTo, img, "CW: сгенерено нейросетью", true)
 			if debugTriggerLogEnabled {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
@@ -317,7 +318,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendPhoto(bot, msg.Chat.ID, replyTo, img)
+			sendPhoto(bot, msg.Chat.ID, replyTo, img, "", false)
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
@@ -433,7 +434,19 @@ type generatedImage struct {
 	Bytes []byte
 }
 
-func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage) {
+func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string, spoiler bool) {
+	if spoiler {
+		if err := sendPhotoWithSpoilerAPI(bot, chatID, replyTo, img, caption); err != nil {
+			log.Printf("send photo (spoiler) failed: %v", err)
+			reportChatFailure(bot, chatID, "ошибка отправки картинки", err)
+			return
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send photo (spoiler) ok chat=%d replyTo=%d", chatID, replyTo)
+		}
+		return
+	}
+
 	var file tgbotapi.RequestFileData
 	switch {
 	case strings.TrimSpace(img.URL) != "":
@@ -450,6 +463,7 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 		m.ReplyToMessageID = replyTo
 		m.AllowSendingWithoutReply = true
 	}
+	m.Caption = strings.TrimSpace(caption)
 	sent, err := bot.Send(m)
 	if err != nil {
 		log.Printf("send photo failed: %v", err)
@@ -463,6 +477,74 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 			log.Printf("send photo ok chat=%d msg=%d replyTo=%d source=bytes size=%d", chatID, sent.MessageID, replyTo, len(img.Bytes))
 		}
 	}
+}
+
+func sendPhotoWithSpoilerAPI(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string) error {
+	if bot == nil || strings.TrimSpace(bot.Token) == "" {
+		return errors.New("bot token is empty")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if replyTo > 0 {
+		_ = writer.WriteField("reply_to_message_id", strconv.Itoa(replyTo))
+		_ = writer.WriteField("allow_sending_without_reply", "true")
+	}
+	if strings.TrimSpace(caption) != "" {
+		_ = writer.WriteField("caption", strings.TrimSpace(caption))
+	}
+	_ = writer.WriteField("has_spoiler", "true")
+
+	switch {
+	case strings.TrimSpace(img.URL) != "":
+		_ = writer.WriteField("photo", strings.TrimSpace(img.URL))
+	case len(img.Bytes) > 0:
+		part, err := writer.CreateFormFile("photo", "generated.png")
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if _, err := part.Write(img.Bytes); err != nil {
+			_ = writer.Close()
+			return err
+		}
+	default:
+		_ = writer.Close()
+		return errors.New("empty image payload")
+	}
+
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", strings.TrimSpace(bot.Token))
+	req, err := http.NewRequest("POST", endpoint, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 35 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram status=%d body=%s", resp.StatusCode, clipText(string(respBody), 600))
+	}
+	var tg struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(respBody, &tg); err != nil {
+		return nil
+	}
+	if !tg.OK {
+		return fmt.Errorf("telegram response not ok: %s", clipText(string(respBody), 600))
+	}
+	return nil
 }
 
 func normalizeEscapedHTMLBreaks(s string) string {
