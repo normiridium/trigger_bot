@@ -10,6 +10,15 @@
     body { background: #111827; }
     .app { max-width: 1280px; }
     .table code { font-size: .9rem; }
+    .mini-toolbar .btn,
+    .mini-toolbar .form-select {
+      font-size: .75rem;
+      padding: .15rem .35rem;
+      line-height: 1.2;
+    }
+    .mini-toolbar .btn i {
+      font-size: .8rem;
+    }
   </style>
 </head>
 <body class="text-light">
@@ -37,9 +46,13 @@
           <td>{{.Title}}</td>
           <td><code>{{.MatchText}}</code> <small>({{.MatchType}})</small></td>
           <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>
-          <td><span class="badge {{statusClass .Enabled}}">{{statusText .Enabled}}</span></td>
+          <td>
+            <span class="badge {{statusClass .Enabled}}">{{statusText .Enabled}}</span>
+            {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger ms-1" title="{{.RegexError}}"></i>{{end}}
+          </td>
           <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-primary" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать"><i class="bi bi-pencil"></i></button>
+            <button class="btn btn-sm btn-outline-info ms-1" type="button" onclick="openClone({{.ID}})" title="Клонировать" aria-label="Клонировать"><i class="bi bi-copy"></i></button>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/toggle"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-warning" type="submit" title="Вкл/Выкл" aria-label="Вкл/Выкл"><i class="bi bi-power"></i></button></form>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить"><i class="bi bi-x-lg"></i></button></form>
           </td>
@@ -88,12 +101,13 @@
             </div>
 
             <div class="col-md-6">
-              <label class="form-label">Текст триггера</label>
-              <input class="form-control bg-black text-light border-secondary" type="text" name="match_text" id="f_match_text">
+              <label class="form-label" id="f_match_text_label">Текст триггера</label>
+              <input class="form-control bg-black text-light border-secondary" type="text" name="match_text" id="f_match_text" placeholder="Текст триггера">
             </div>
             <div class="col-md-6">
               <label class="form-label">Тип условия</label>
               <select class="form-select bg-black text-light border-secondary" name="match_type" id="f_match_type">
+                <option value="idle">Простой вызова бота</option>
                 <option value="full">Полное совпадение</option>
                 <option value="partial">Частичное совпадение</option>
                 <option value="regex">Регулярное выражение</option>
@@ -152,6 +166,37 @@
 
             <div class="col-12">
               <label class="form-label">Текст ответа / промпт (для ChatGPT можно использовать {{"{{message}}"}})</label>
+              <div class="d-flex flex-wrap align-items-center gap-1 mb-1 mini-toolbar">
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<b>','</b>')" title="Жирный"><i class="bi bi-type-bold"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<i>','</i>')" title="Курсив"><i class="bi bi-type-italic"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<u>','</u>')" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<s>','</s>')" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<code>','</code>')" title="Код"><i class="bi bi-code-square"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<pre>','</pre>')" title="Блок кода"><i class="bi bi-braces"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="insertResponseLink()" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<tg-spoiler>','</tg-spoiler>')" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
+                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto" id="f_template_tag_picker" style="max-width: 320px;" onchange="insertTemplateTagFromPicker(this)">
+                  <option value="">Вставить тег сообщения…</option>
+                  <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
+                  <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}}</option>
+                  <option value='{{"{{capturing_text}}"}}'>{{"{{capturing_text}}"}} — захват regex</option>
+                  <option value='{{"{{user_id}}"}}'>{{"{{user_id}}"}}</option>
+                  <option value='{{"{{user_first_name}}"}}'>{{"{{user_first_name}}"}}</option>
+                  <option value='{{"{{user_username}}"}}'>{{"{{user_username}}"}}</option>
+                  <option value='{{"{{user_display_name}}"}}'>{{"{{user_display_name}}"}}</option>
+                  <option value='{{"{{user_label}}"}}'>{{"{{user_label}}"}}</option>
+                  <option value='{{"{{sender_tag}}"}}'>{{"{{sender_tag}}"}}</option>
+                  <option value='{{"{{chat_id}}"}}'>{{"{{chat_id}}"}}</option>
+                  <option value='{{"{{chat_title}}"}}'>{{"{{chat_title}}"}}</option>
+                  <option value='{{"{{reply_text}}"}}'>{{"{{reply_text}}"}}</option>
+                  <option value='{{"{{reply_user_id}}"}}'>{{"{{reply_user_id}}"}}</option>
+                  <option value='{{"{{reply_first_name}}"}}'>{{"{{reply_first_name}}"}}</option>
+                  <option value='{{"{{reply_username}}"}}'>{{"{{reply_username}}"}}</option>
+                  <option value='{{"{{reply_display_name}}"}}'>{{"{{reply_display_name}}"}}</option>
+                  <option value='{{"{{reply_label}}"}}'>{{"{{reply_label}}"}}</option>
+                  <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}}</option>
+                </select>
+              </div>
               <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text"></textarea>
             </div>
           </div>
@@ -168,6 +213,78 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 function setSel(id,val){const el=document.getElementById(id); if(el && val!=null){el.value=String(val)}}
+function getResponseTextArea(){
+  return document.getElementById('f_response_text');
+}
+function replaceTextAreaSelection(el, before, after){
+  if(!el){ return; }
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const val = el.value ?? '';
+  const selected = val.slice(start, end) || 'текст';
+  const next = val.slice(0, start) + before + selected + after + val.slice(end);
+  el.value = next;
+  const caret = start + before.length + selected.length + after.length;
+  el.focus();
+  el.setSelectionRange(caret, caret);
+}
+function insertTextAtCursor(el, text){
+  if(!el){ return; }
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const val = el.value ?? '';
+  el.value = val.slice(0, start) + text + val.slice(end);
+  const caret = start + text.length;
+  el.focus();
+  el.setSelectionRange(caret, caret);
+}
+function wrapResponseSelection(before, after){
+  replaceTextAreaSelection(getResponseTextArea(), before, after);
+}
+function insertResponseLink(){
+  const url = prompt('URL ссылки', 'https://');
+  if(!url){ return; }
+  const el = getResponseTextArea();
+  if(!el){ return; }
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const val = el.value ?? '';
+  const selected = val.slice(start, end) || 'ссылка';
+  const linked = `<a href="${url}">${selected}</a>`;
+  el.value = val.slice(0, start) + linked + val.slice(end);
+  const caret = start + linked.length;
+  el.focus();
+  el.setSelectionRange(caret, caret);
+}
+function insertTemplateTagFromPicker(sel){
+  if(!sel || !sel.value){ return; }
+  insertTextAtCursor(getResponseTextArea(), sel.value);
+  sel.value = '';
+}
+function applyMatchTypeUI(){
+  const mt = document.getElementById('f_match_type');
+  const lbl = document.getElementById('f_match_text_label');
+  const inp = document.getElementById('f_match_text');
+  const cs = document.getElementById('f_case_sensitive_switch');
+  const csHidden = document.getElementById('f_case_sensitive');
+  if(!mt || !lbl || !inp){ return; }
+  if(mt.value === 'idle'){
+    lbl.textContent = 'Время простоя (мин)';
+    inp.type = 'number';
+    inp.min = '1';
+    inp.step = '1';
+    inp.placeholder = 'например, 120';
+    if(cs){ cs.disabled = true; cs.checked = false; }
+    if(csHidden){ csHidden.value = '0'; }
+  } else {
+    lbl.textContent = 'Текст триггера';
+    inp.type = 'text';
+    inp.removeAttribute('min');
+    inp.removeAttribute('step');
+    inp.placeholder = 'Текст триггера';
+    if(cs){ cs.disabled = false; }
+  }
+}
 function syncSwitch(id){
   const hidden = document.getElementById(id);
   const sw = document.getElementById(id + '_switch');
@@ -220,6 +337,7 @@ function fillForm(t){
   setBool('f_case_sensitive', !!pick(t,'case_sensitive','CaseSensitive',false));
   setBool('f_reply', !!pick(t,'reply','Reply',true));
   setBool('f_preview', !!pick(t,'preview','Preview',false));
+  applyMatchTypeUI();
 }
 async function openNew(){
   const r=await fetch(withToken('/trigger_bot/get'));
@@ -233,8 +351,22 @@ async function openEdit(id){
   const t=await r.json();
   fillForm(t); openModal();
 }
+async function openClone(id){
+  const r=await fetch(withToken('/trigger_bot/get?id='+encodeURIComponent(id)));
+  if(!r.ok){ alert('Не удалось загрузить триггер для клонирования: ' + r.status); return; }
+  const t=await r.json();
+  t.id = '';
+  t.ID = '';
+  const title = (t.title ?? t.Title ?? '').toString().trim();
+  const cloneTitle = title ? `${title} (копия)` : 'Новый триггер (копия)';
+  t.title = cloneTitle;
+  t.Title = cloneTitle;
+  fillForm(t); openModal();
+}
 window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
+document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
 applyTokenToForms();
+applyMatchTypeUI();
 </script>
 </body>
 </html>

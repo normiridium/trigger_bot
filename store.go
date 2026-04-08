@@ -21,7 +21,7 @@ type Trigger struct {
 	TriggerMode   string // all
 	AdminMode     string // anybody|admins
 	MatchText     string
-	MatchType     string // full|partial|regex|starts|ends
+	MatchType     string // full|partial|regex|starts|ends|idle
 	CaseSensitive bool
 	ActionType    string // send|delete|gpt_prompt|gpt_image|search_image
 	ResponseText  string
@@ -30,6 +30,8 @@ type Trigger struct {
 	Chance        int
 	CreatedAt     int64
 	UpdatedAt     int64
+	RegexError    string
+	CapturingText string `json:"-"`
 }
 
 type Store struct {
@@ -75,7 +77,8 @@ CREATE TABLE IF NOT EXISTS triggers (
   preview_first_link INTEGER NOT NULL DEFAULT 0,
   chance INTEGER NOT NULL DEFAULT 100,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  regex_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
 `); err != nil {
@@ -86,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
 	_ = ensureColumn(db, "triggers", "trigger_mode", "TEXT NOT NULL DEFAULT 'all'")
 	_ = ensureColumn(db, "triggers", "admin_mode", "TEXT NOT NULL DEFAULT 'anybody'")
 	_ = ensureColumn(db, "triggers", "action_type", "TEXT NOT NULL DEFAULT 'send'")
+	_ = ensureColumn(db, "triggers", "regex_error", "TEXT NOT NULL DEFAULT ''")
 	return &Store{
 		db:       db,
 		cacheTTL: 2 * time.Second,
@@ -130,6 +134,8 @@ func normalizeMatchType(v string) string {
 		return "starts"
 	case "ends":
 		return "ends"
+	case "idle":
+		return "idle"
 	default:
 		return "full"
 	}
@@ -198,7 +204,7 @@ func normalizeActionType(v string) string {
 }
 
 func (s *Store) ListTriggers() ([]Trigger, error) {
-	rows, err := s.db.Query(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at FROM triggers ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +213,7 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	for rows.Next() {
 		var t Trigger
 		var enabled, cs, reply, preview int
-		if err := rows.Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
 			return nil, err
 		}
 		t.Enabled = i2b(enabled)
@@ -227,8 +233,8 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 	var t Trigger
 	var enabled, cs, reply, preview int
-	err := s.db.QueryRow(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at FROM triggers WHERE id=?`, id).
-		Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
+		Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -263,16 +269,27 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	t.MatchType = normalizeMatchType(t.MatchType)
 	t.ActionType = normalizeActionType(t.ActionType)
 	t.Chance = sanitizeChance(t.Chance)
+	t.RegexError = ""
+	if t.MatchType == "regex" {
+		pattern := t.MatchText
+		if !t.CaseSensitive && !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			t.Enabled = false
+			t.RegexError = "Ошибка regex: " + strings.TrimSpace(err.Error())
+		}
+	}
 	if t.ID <= 0 {
-		_, err := s.db.Exec(`INSERT INTO triggers(title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now)
+		_, err := s.db.Exec(`INSERT INTO triggers(title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE triggers SET title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=? WHERE id=?`,
-		t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.ID)
+	_, err := s.db.Exec(`UPDATE triggers SET title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
+		t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
 	if err == nil {
 		s.invalidateCache()
 	}
@@ -329,51 +346,84 @@ func (s *Store) ListTriggersCached() ([]Trigger, error) {
 }
 
 func TriggerMatches(t Trigger, incoming string) bool {
+	ok, _ := TriggerMatchCapture(t, incoming)
+	return ok
+}
+
+func TriggerMatchCapture(t Trigger, incoming string) (bool, string) {
 	needle := strings.TrimSpace(t.MatchText)
 	hay := strings.TrimSpace(incoming)
 	if hay == "" {
-		return false
+		return false, ""
 	}
 	// Empty match_text means "match any non-empty message".
 	// This is useful for reply-driven GPT triggers.
 	if needle == "" {
-		return true
+		return true, ""
 	}
 	switch normalizeMatchType(t.MatchType) {
+	case "idle":
+		// Idle mode is not a text matcher: it is evaluated separately in runtime loop.
+		return false, ""
 	case "partial":
 		if !t.CaseSensitive {
 			needle = strings.ToLower(needle)
 			hay = strings.ToLower(hay)
 		}
-		return strings.Contains(hay, needle)
+		return strings.Contains(hay, needle), ""
 	case "starts":
 		if !t.CaseSensitive {
 			needle = strings.ToLower(needle)
 			hay = strings.ToLower(hay)
 		}
-		return strings.HasPrefix(hay, needle)
+		return strings.HasPrefix(hay, needle), ""
 	case "ends":
 		if !t.CaseSensitive {
 			needle = strings.ToLower(needle)
 			hay = strings.ToLower(hay)
 		}
-		return strings.HasSuffix(hay, needle)
+		return strings.HasSuffix(hay, needle), ""
 	case "regex":
 		if !t.CaseSensitive && !strings.HasPrefix(needle, "(?i)") {
 			needle = "(?i)" + needle
 		}
 		re := sCompileRegex(needle)
 		if re == nil {
-			return false
+			return false, ""
 		}
-		return re.MatchString(hay)
+		sub := re.FindStringSubmatch(hay)
+		if len(sub) == 0 {
+			return false, ""
+		}
+		capture := pickBestCapture(sub)
+		return true, capture
 	default:
 		if !t.CaseSensitive {
 			needle = strings.ToLower(needle)
 			hay = strings.ToLower(hay)
 		}
-		return hay == needle
+		return hay == needle, ""
 	}
+}
+
+func pickBestCapture(sub []string) string {
+	if len(sub) <= 1 {
+		return strings.TrimSpace(sub[0])
+	}
+	best := ""
+	for i := 1; i < len(sub); i++ {
+		v := strings.TrimSpace(sub[i])
+		if v == "" {
+			continue
+		}
+		if len(v) > len(best) {
+			best = v
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return strings.TrimSpace(sub[0])
 }
 
 var regexGlobalCache sync.Map // map[string]*regexp.Regexp
