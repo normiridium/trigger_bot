@@ -89,7 +89,6 @@ CREATE TABLE IF NOT EXISTS triggers (
   regex_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
-CREATE INDEX IF NOT EXISTS idx_triggers_priority ON triggers(priority DESC, id ASC);
 `); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -113,6 +112,10 @@ CREATE INDEX IF NOT EXISTS idx_triggers_priority ON triggers(priority DESC, id A
 	s := &Store{
 		db:       db,
 		cacheTTL: 2 * time.Second,
+	}
+	if err := s.normalizeStoredRegexCaseFlags(); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	if err := s.backfillMissingPriorities(); err != nil {
 		_ = db.Close()
@@ -303,8 +306,9 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	t.RegexError = ""
 	t.RegexBenchUS = 0
 	if t.MatchType == "regex" {
+		t.MatchText = stripLeadingCaseInsensitiveFlag(t.MatchText)
 		pattern := t.MatchText
-		if !t.CaseSensitive && !strings.HasPrefix(pattern, "(?i)") {
+		if !t.CaseSensitive {
 			pattern = "(?i)" + pattern
 		}
 		re, err := regexp.Compile(pattern)
@@ -440,6 +444,7 @@ func TriggerMatchCapture(t Trigger, incoming string) (bool, string) {
 		}
 		return strings.HasSuffix(hay, needle), ""
 	case "regex":
+		needle = stripLeadingCaseInsensitiveFlag(needle)
 		if !t.CaseSensitive && !strings.HasPrefix(needle, "(?i)") {
 			needle = "(?i)" + needle
 		}
@@ -460,6 +465,15 @@ func TriggerMatchCapture(t Trigger, incoming string) (bool, string) {
 		}
 		return hay == needle, ""
 	}
+}
+
+func stripLeadingCaseInsensitiveFlag(pattern string) string {
+	p := strings.TrimSpace(pattern)
+	for strings.HasPrefix(p, "(?i)") {
+		p = strings.TrimPrefix(p, "(?i)")
+		p = strings.TrimSpace(p)
+	}
+	return p
 }
 
 func pickBestCapture(sub []string) string {
@@ -791,6 +805,48 @@ func (s *Store) backfillMissingPriorities() error {
 	for i, id := range ids {
 		pri := len(ids) - i
 		if _, err := tx.Exec(`UPDATE triggers SET priority=? WHERE id=?`, pri, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) normalizeStoredRegexCaseFlags() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT id, match_text FROM triggers WHERE match_type='regex'`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type rec struct {
+		id int64
+		mt string
+	}
+	var updates []rec
+	for rows.Next() {
+		var id int64
+		var mt string
+		if err := rows.Scan(&id, &mt); err != nil {
+			return err
+		}
+		clean := stripLeadingCaseInsensitiveFlag(mt)
+		if clean != strings.TrimSpace(mt) {
+			updates = append(updates, rec{id: id, mt: clean})
+		}
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for _, u := range updates {
+		if _, err := tx.Exec(`UPDATE triggers SET match_text=?, updated_at=? WHERE id=?`, u.mt, now, u.id); err != nil {
 			_ = tx.Rollback()
 			return err
 		}

@@ -75,6 +75,9 @@
     tr.dragging-row {
       opacity: .55;
     }
+    .regex-bench {
+      color: #9ca3af;
+    }
   </style>
 </head>
 <body class="text-light">
@@ -107,7 +110,7 @@
             <code>{{.MatchText}}</code>
             {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger mx-1" title="{{.RegexError}}"></i>{{end}}
             <small>
-              {{if eq .MatchType "regex"}}{{regexBenchText .}} {{end}}({{.MatchType}})
+              {{if eq .MatchType "regex"}}<span class="regex-bench">{{regexBenchText .}}</span> {{end}}({{.MatchType}})
             </small>
           </td>
           <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>

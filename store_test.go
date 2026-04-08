@@ -1,8 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestTriggerMatchesBasic(t *testing.T) {
@@ -179,6 +182,9 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 	}
 	if items[0].RegexBenchUS <= 0 {
 		t.Fatalf("valid regex trigger must record benchmark, got %d", items[0].RegexBenchUS)
+	}
+	if items[0].MatchText != "кац" {
+		t.Fatalf("stored regex should not keep leading (?i), got %q", items[0].MatchText)
 	}
 }
 
@@ -473,5 +479,142 @@ func TestReorderTriggersByIDsChangesPriorityOrder(t *testing.T) {
 	}
 	if got.ID != id3 {
 		t.Fatalf("expected highest-priority trigger id=%d, got id=%d", id3, got.ID)
+	}
+}
+
+func TestTriggerMatchCaptureRegexHonorsCaseFlagWithoutInlinePrefix(t *testing.T) {
+	tr := Trigger{
+		MatchType:     "regex",
+		CaseSensitive: false,
+		MatchText:     "(?i)кац",
+	}
+	ok, capture := TriggerMatchCapture(tr, "МАКСИМ КАЦ в чате")
+	if !ok {
+		t.Fatalf("expected regex match with case-insensitive flag off")
+	}
+	if capture == "" {
+		t.Fatalf("expected non-empty capture")
+	}
+}
+
+func TestSaveTriggerRegexCaseSensitiveStripsInlineFlagAndStaysCaseSensitive(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "regex_case_sensitive.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SaveTrigger(Trigger{
+		Title:         "case strict",
+		Enabled:       true,
+		TriggerMode:   "all",
+		AdminMode:     "anybody",
+		MatchText:     "(?i)кац",
+		MatchType:     "regex",
+		CaseSensitive: true,
+		ActionType:    "send",
+		ResponseText:  "ok",
+		Reply:         true,
+		Chance:        100,
+	}); err != nil {
+		t.Fatalf("save trigger: %v", err)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(items))
+	}
+	if items[0].MatchText != "кац" {
+		t.Fatalf("inline case flag should be stripped, got %q", items[0].MatchText)
+	}
+	if ok, _ := TriggerMatchCapture(items[0], "КАЦ"); ok {
+		t.Fatalf("case-sensitive regex should not match upper-case text")
+	}
+}
+
+func TestOpenStoreMigratesColumnsAndStripsStoredRegexFlag(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy_schema.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE triggers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  trigger_mode TEXT NOT NULL DEFAULT 'all',
+  admin_mode TEXT NOT NULL DEFAULT 'anybody',
+  match_text TEXT NOT NULL,
+  match_type TEXT NOT NULL DEFAULT 'full',
+  case_sensitive INTEGER NOT NULL DEFAULT 0,
+  action_type TEXT NOT NULL DEFAULT 'send',
+  response_text TEXT NOT NULL,
+  send_as_reply INTEGER NOT NULL DEFAULT 1,
+  preview_first_link INTEGER NOT NULL DEFAULT 0,
+  chance INTEGER NOT NULL DEFAULT 100,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  regex_error TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO triggers(uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error)
+VALUES('u-1','legacy regex',1,'all','anybody','(?i)abc','regex',0,'send','ok',1,0,100,1,1,'');
+`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("prepare legacy schema: %v", err)
+	}
+	_ = db.Close()
+
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store with migration: %v", err)
+	}
+	defer s.Close()
+
+	rows, err := s.db.Query(`PRAGMA table_info(triggers)`)
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	defer rows.Close()
+	hasPriority := false
+	hasBench := false
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		if name == "priority" {
+			hasPriority = true
+		}
+		if name == "regex_bench_us" {
+			hasBench = true
+		}
+	}
+	if !hasPriority || !hasBench {
+		t.Fatalf("missing migrated columns: priority=%v regex_bench_us=%v", hasPriority, hasBench)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(items))
+	}
+	if items[0].MatchText != "abc" {
+		t.Fatalf("stored regex should be normalized on open, got %q", items[0].MatchText)
 	}
 }
