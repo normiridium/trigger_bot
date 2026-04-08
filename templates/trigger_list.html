@@ -52,8 +52,8 @@
           </td>
           <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-primary" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать"><i class="bi bi-pencil"></i></button>
-            <button class="btn btn-sm btn-outline-info ms-1" type="button" onclick="openClone({{.ID}})" title="Клонировать" aria-label="Клонировать"><i class="bi bi-copy"></i></button>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/toggle"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-warning" type="submit" title="Вкл/Выкл" aria-label="Вкл/Выкл"><i class="bi bi-power"></i></button></form>
+            <button class="btn btn-sm btn-outline-info ms-1" type="button" onclick="openClone({{.ID}})" title="Клонировать" aria-label="Клонировать"><i class="bi bi-copy"></i></button>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить"><i class="bi bi-x-lg"></i></button></form>
           </td>
         </tr>
@@ -178,23 +178,23 @@
                 <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto" id="f_template_tag_picker" style="max-width: 320px;" onchange="insertTemplateTagFromPicker(this)">
                   <option value="">Вставить тег сообщения…</option>
                   <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
-                  <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}}</option>
+                  <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}} — текст/подпись сообщения</option>
                   <option value='{{"{{capturing_text}}"}}'>{{"{{capturing_text}}"}} — захват regex</option>
-                  <option value='{{"{{user_id}}"}}'>{{"{{user_id}}"}}</option>
-                  <option value='{{"{{user_first_name}}"}}'>{{"{{user_first_name}}"}}</option>
-                  <option value='{{"{{user_username}}"}}'>{{"{{user_username}}"}}</option>
-                  <option value='{{"{{user_display_name}}"}}'>{{"{{user_display_name}}"}}</option>
-                  <option value='{{"{{user_label}}"}}'>{{"{{user_label}}"}}</option>
-                  <option value='{{"{{sender_tag}}"}}'>{{"{{sender_tag}}"}}</option>
-                  <option value='{{"{{chat_id}}"}}'>{{"{{chat_id}}"}}</option>
-                  <option value='{{"{{chat_title}}"}}'>{{"{{chat_title}}"}}</option>
-                  <option value='{{"{{reply_text}}"}}'>{{"{{reply_text}}"}}</option>
-                  <option value='{{"{{reply_user_id}}"}}'>{{"{{reply_user_id}}"}}</option>
-                  <option value='{{"{{reply_first_name}}"}}'>{{"{{reply_first_name}}"}}</option>
-                  <option value='{{"{{reply_username}}"}}'>{{"{{reply_username}}"}}</option>
-                  <option value='{{"{{reply_display_name}}"}}'>{{"{{reply_display_name}}"}}</option>
-                  <option value='{{"{{reply_label}}"}}'>{{"{{reply_label}}"}}</option>
-                  <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}}</option>
+                  <option value='{{"{{user_id}}"}}'>{{"{{user_id}}"}} — ID автора</option>
+                  <option value='{{"{{user_first_name}}"}}'>{{"{{user_first_name}}"}} — имя автора</option>
+                  <option value='{{"{{user_username}}"}}'>{{"{{user_username}}"}} — username автора</option>
+                  <option value='{{"{{user_display_name}}"}}'>{{"{{user_display_name}}"}} — отображаемое имя автора</option>
+                  <option value='{{"{{user_label}}"}}'>{{"{{user_label}}"}} — метка из скобок в имени автора</option>
+                  <option value='{{"{{sender_tag}}"}}'>{{"{{sender_tag}}"}} — тег автора в чате</option>
+                  <option value='{{"{{chat_id}}"}}'>{{"{{chat_id}}"}} — ID чата</option>
+                  <option value='{{"{{chat_title}}"}}'>{{"{{chat_title}}"}} — название чата</option>
+                  <option value='{{"{{reply_text}}"}}'>{{"{{reply_text}}"}} — текст сообщения, на которое ответили</option>
+                  <option value='{{"{{reply_user_id}}"}}'>{{"{{reply_user_id}}"}} — ID адресата реплая</option>
+                  <option value='{{"{{reply_first_name}}"}}'>{{"{{reply_first_name}}"}} — имя адресата реплая</option>
+                  <option value='{{"{{reply_username}}"}}'>{{"{{reply_username}}"}} — username адресата реплая</option>
+                  <option value='{{"{{reply_display_name}}"}}'>{{"{{reply_display_name}}"}} — отображаемое имя адресата реплая</option>
+                  <option value='{{"{{reply_label}}"}}'>{{"{{reply_label}}"}} — метка из скобок в имени адресата</option>
+                  <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}} — тег адресата в чате</option>
                 </select>
               </div>
               <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text"></textarea>
