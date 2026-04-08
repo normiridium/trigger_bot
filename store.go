@@ -19,6 +19,8 @@ import (
 type Trigger struct {
 	ID            int64
 	UID           string `json:"uid,omitempty"`
+	Priority      int    `json:"priority"`
+	RegexBenchUS  int64  `json:"regex_bench_us"`
 	Title         string
 	Enabled       bool
 	TriggerMode   string // all
@@ -68,6 +70,8 @@ func OpenStore(path string) (*Store, error) {
 CREATE TABLE IF NOT EXISTS triggers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   uid TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 0,
+  regex_bench_us INTEGER NOT NULL DEFAULT 0,
   title TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   trigger_mode TEXT NOT NULL DEFAULT 'all',
@@ -85,6 +89,7 @@ CREATE TABLE IF NOT EXISTS triggers (
   regex_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
+CREATE INDEX IF NOT EXISTS idx_triggers_priority ON triggers(priority DESC, id ASC);
 `); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -94,11 +99,24 @@ CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
 	_ = ensureColumn(db, "triggers", "admin_mode", "TEXT NOT NULL DEFAULT 'anybody'")
 	_ = ensureColumn(db, "triggers", "action_type", "TEXT NOT NULL DEFAULT 'send'")
 	_ = ensureColumn(db, "triggers", "uid", "TEXT NOT NULL DEFAULT ''")
+	if err := ensureColumn(db, "triggers", "priority", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "triggers", "regex_bench_us", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	_ = ensureColumn(db, "triggers", "regex_error", "TEXT NOT NULL DEFAULT ''")
 	_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_triggers_uid ON triggers(uid) WHERE uid <> ''`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_triggers_priority ON triggers(priority DESC, id ASC)`)
 	s := &Store{
 		db:       db,
 		cacheTTL: 2 * time.Second,
+	}
+	if err := s.backfillMissingPriorities(); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	if err := s.backfillMissingUIDs(); err != nil {
 		_ = db.Close()
@@ -217,7 +235,7 @@ func normalizeActionType(v string) string {
 }
 
 func (s *Store) ListTriggers() ([]Trigger, error) {
-	rows, err := s.db.Query(`SELECT id,uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +244,7 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	for rows.Next() {
 		var t Trigger
 		var enabled, cs, reply, preview int
-		if err := rows.Scan(&t.ID, &t.UID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
+		if err := rows.Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
 			return nil, err
 		}
 		t.Enabled = i2b(enabled)
@@ -246,8 +264,8 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 	var t Trigger
 	var enabled, cs, reply, preview int
-	err := s.db.QueryRow(`SELECT id,uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
-		Scan(&t.ID, &t.UID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
+	err := s.db.QueryRow(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
+		Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -283,14 +301,18 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	t.ActionType = normalizeActionType(t.ActionType)
 	t.Chance = sanitizeChance(t.Chance)
 	t.RegexError = ""
+	t.RegexBenchUS = 0
 	if t.MatchType == "regex" {
 		pattern := t.MatchText
 		if !t.CaseSensitive && !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
-		if _, err := regexp.Compile(pattern); err != nil {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
 			t.Enabled = false
 			t.RegexError = "Ошибка regex: " + strings.TrimSpace(err.Error())
+		} else {
+			t.RegexBenchUS = benchmarkRegex100US(re)
 		}
 	}
 	if t.ID > 0 && t.UID == "" {
@@ -308,15 +330,22 @@ func (s *Store) SaveTrigger(t Trigger) error {
 		t.UID = uid
 	}
 	if t.ID <= 0 {
-		_, err := s.db.Exec(`INSERT INTO triggers(uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.UID, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
+		if t.Priority == 0 {
+			p, err := s.nextInsertPriority()
+			if err != nil {
+				return err
+			}
+			t.Priority = p
+		}
+		_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE triggers SET uid=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
-		t.UID, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
+	_, err := s.db.Exec(`UPDATE triggers SET uid=?,regex_bench_us=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
+		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
 	if err == nil {
 		s.invalidateCache()
 	}
@@ -469,6 +498,31 @@ func sCompileRegex(pattern string) *regexp.Regexp {
 	return re
 }
 
+func benchmarkRegex100US(re *regexp.Regexp) int64 {
+	if re == nil {
+		return 0
+	}
+	const iterations = 100
+	sample := randomBenchmarkText(512)
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		_ = re.MatchString(sample)
+	}
+	return time.Since(start).Microseconds()
+}
+
+func randomBenchmarkText(n int) string {
+	if n <= 0 {
+		n = 64
+	}
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_- .,;:!?/\\|[](){}+=*&^%$#@~"
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = alphabet[rand.Intn(len(alphabet))]
+	}
+	return string(b)
+}
+
 func (s *Store) Match(text string) (*Trigger, bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -496,6 +550,8 @@ func (s *Store) Match(text string) (*Trigger, bool, error) {
 
 type exportTriggerRow struct {
 	UID              string `json:"uid,omitempty"`
+	Priority         int    `json:"priority"`
+	RegexBenchUS     int64  `json:"regex_bench_us,omitempty"`
 	Title            string `json:"title"`
 	Enabled          bool   `json:"enabled"`
 	TriggerMode      string `json:"trigger_mode"`
@@ -512,6 +568,8 @@ type exportTriggerRow struct {
 
 type importTriggerRow struct {
 	UID              string `json:"uid"`
+	Priority         *int   `json:"priority"`
+	RegexBenchUS     *int64 `json:"regex_bench_us"`
 	Title            string `json:"title"`
 	Enabled          *bool  `json:"enabled"`
 	TriggerMode      string `json:"trigger_mode"`
@@ -535,6 +593,8 @@ func (s *Store) ExportJSON() ([]byte, error) {
 	for _, t := range items {
 		out = append(out, exportTriggerRow{
 			UID:              t.UID,
+			Priority:         t.Priority,
+			RegexBenchUS:     t.RegexBenchUS,
 			Title:            t.Title,
 			Enabled:          t.Enabled,
 			TriggerMode:      t.TriggerMode,
@@ -642,6 +702,12 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			Preview:       preview,
 			Chance:        chance,
 		}
+		if it.Priority != nil {
+			tr.Priority = *it.Priority
+		}
+		if it.RegexBenchUS != nil {
+			tr.RegexBenchUS = *it.RegexBenchUS
+		}
 		if tr.UID != "" {
 			id, err := s.getIDByUID(tr.UID)
 			if err != nil {
@@ -667,6 +733,8 @@ func hasNewImportKeys(m map[string]json.RawMessage) bool {
 	}
 	keys := []string{
 		"uid",
+		"priority",
+		"regex_bench_us",
 		"title",
 		"enabled",
 		"trigger_mode",
@@ -686,6 +754,99 @@ func hasNewImportKeys(m map[string]json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+func (s *Store) nextInsertPriority() (int, error) {
+	var minPri sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MIN(priority) FROM triggers`).Scan(&minPri); err != nil {
+		return 0, err
+	}
+	if !minPri.Valid {
+		return 1, nil
+	}
+	return int(minPri.Int64) - 1, nil
+}
+
+func (s *Store) backfillMissingPriorities() error {
+	rows, err := s.db.Query(`SELECT id FROM triggers WHERE priority=0 ORDER BY id ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 64)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range ids {
+		pri := len(ids) - i
+		if _, err := tx.Exec(`UPDATE triggers SET priority=? WHERE id=?`, pri, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ReorderTriggersByIDs(orderedTopToBottom []int64) error {
+	if len(orderedTopToBottom) == 0 {
+		return nil
+	}
+	existing, err := s.ListTriggers()
+	if err != nil {
+		return err
+	}
+	if len(existing) == 0 {
+		return nil
+	}
+	exists := make(map[int64]struct{}, len(existing))
+	for _, t := range existing {
+		exists[t.ID] = struct{}{}
+	}
+	finalOrder := make([]int64, 0, len(existing))
+	seen := make(map[int64]struct{}, len(existing))
+	for _, id := range orderedTopToBottom {
+		if _, ok := exists[id]; !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		finalOrder = append(finalOrder, id)
+	}
+	for _, t := range existing {
+		if _, ok := seen[t.ID]; ok {
+			continue
+		}
+		finalOrder = append(finalOrder, t.ID)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range finalOrder {
+		priority := len(finalOrder) - i
+		if _, err := tx.Exec(`UPDATE triggers SET priority=?, updated_at=? WHERE id=?`, priority, time.Now().Unix(), id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateCache()
+	return nil
 }
 
 func (s *Store) getUIDByID(id int64) (string, error) {

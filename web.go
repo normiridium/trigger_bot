@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -54,6 +55,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot", w.withAuth(w.listPage))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
+	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
 	mux.HandleFunc("/trigger_bot/toggle", w.withAuth(w.togglePost))
 	mux.HandleFunc("/trigger_bot/delete", w.withAuth(w.deletePost))
 	mux.HandleFunc("/trigger_bot/export", w.withAuth(w.exportGet))
@@ -155,6 +157,26 @@ func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
 	redirectToListWithToken(rw, r)
 }
 
+func (w *WebAdmin) reorderPost(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
+		return
+	}
+	if err := w.store.ReorderTriggersByIDs(payload.IDs); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = rw.Write([]byte(`{"ok":true}`))
+}
+
 func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
@@ -239,6 +261,12 @@ func (w *WebAdmin) renderTemplate(rw http.ResponseWriter, name string, data inte
 				return "bi-eye-fill"
 			}
 			return "bi-eye-slash-fill"
+		},
+		"regexBenchText": func(t Trigger) string {
+			if normalizeMatchType(t.MatchType) != "regex" || t.RegexBenchUS <= 0 {
+				return "—"
+			}
+			return fmt.Sprintf("%.2f ms", float64(t.RegexBenchUS)/1000.0)
 		},
 	}).ParseFiles(tplPath)
 	if err != nil {
