@@ -56,6 +56,14 @@
       text-overflow: ellipsis;
       background: #0b1220;
     }
+    .action-mini {
+      padding: .18rem .42rem;
+      line-height: 1;
+      font-size: .78rem;
+    }
+    .action-mini i {
+      font-size: .88rem;
+    }
   </style>
 </head>
 <body class="text-light">
@@ -77,23 +85,35 @@
   <div class="table-responsive rounded border border-secondary-subtle">
     <table class="table table-dark table-striped table-hover align-middle mb-0">
       <thead>
-        <tr><th>ID</th><th>Название</th><th>Условие</th><th>Режим</th><th>Статус</th><th class="text-nowrap">Управление</th></tr>
+        <tr><th>ID</th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
       </thead>
       <tbody>
         {{range .Items}}
         <tr>
           <td>{{.ID}}</td>
           <td>{{.Title}}</td>
-          <td><code>{{.MatchText}}</code> <small>({{.MatchType}})</small></td>
-          <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>
           <td>
-            <span class="badge {{statusClass .Enabled}}">{{statusText .Enabled}}</span>
-            {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger ms-1" title="{{.RegexError}}"></i>{{end}}
+            <code>{{.MatchText}}</code>
+            {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger mx-1" title="{{.RegexError}}"></i>{{end}}
+            <small>({{.MatchType}})</small>
           </td>
+          <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>
           <td class="text-nowrap">
-            <button class="btn btn-sm btn-outline-primary" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать"><i class="bi bi-pencil"></i></button>
-            <form class="d-inline ms-1" method="post" action="/trigger_bot/toggle"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-warning" type="submit" title="Вкл/Выкл" aria-label="Вкл/Выкл"><i class="bi bi-power"></i></button></form>
-            <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить"><i class="bi bi-x-lg"></i></button></form>
+            <form class="d-inline" method="post" action="/trigger_bot/toggle">
+              <input type="hidden" name="id" value="{{.ID}}">
+              <button class="btn btn-sm action-mini {{if .Enabled}}btn-outline-success{{else}}btn-outline-secondary{{end}}" type="submit" title="Переключить статус" aria-label="Переключить статус">
+                <i class="bi {{statusIcon .Enabled}}"></i>
+              </button>
+            </form>
+            <button class="btn btn-sm action-mini btn-outline-primary ms-1" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')">
+              <input type="hidden" name="id" value="{{.ID}}">
+              <button class="btn btn-sm action-mini btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </form>
           </td>
         </tr>
         {{end}}
@@ -109,7 +129,7 @@
         <h5 class="modal-title">Триггер</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
-      <form method="post" action="/trigger_bot/save">
+      <form method="post" action="/trigger_bot/save" id="trigger_form" onsubmit="return submitTriggerForm(event)">
         <div class="modal-body">
           <input type="hidden" name="id" id="f_id">
           <input type="hidden" name="uid" id="f_uid">
@@ -205,7 +225,6 @@
             </div>
 
             <div class="col-12">
-              <label class="form-label">Текст ответа / промпт (для ChatGPT можно использовать {{"{{message}}"}})</label>
               <div class="d-flex flex-wrap align-items-center gap-1 mb-1 mini-toolbar">
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<b>','</b>')" title="Жирный"><i class="bi bi-type-bold"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<i>','</i>')" title="Курсив"><i class="bi bi-type-italic"></i></button>
@@ -213,8 +232,11 @@
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<s>','</s>')" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<code>','</code>')" title="Код"><i class="bi bi-code-square"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<pre>','</pre>')" title="Блок кода"><i class="bi bi-braces"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<blockquote>','</blockquote>')" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="insertResponseLink()" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<tg-spoiler>','</tg-spoiler>')" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="insertTgEmojiSnippet()" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="showTelegramHtmlHelp()" title="Подсказка по HTML"><i class="bi bi-question-lg"></i></button>
                 <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto" id="f_template_tag_picker" style="max-width: 320px;" onchange="insertTemplateTagFromPicker(this)">
                   <option value="">Вставить тег сообщения…</option>
                   <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
@@ -237,13 +259,13 @@
                   <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}} — тег адресата в чате</option>
                 </select>
               </div>
-              <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text"></textarea>
+              <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text" placeholder="Текст ответа / промпт"></textarea>
             </div>
           </div>
         </div>
         <div class="modal-footer border-secondary">
-          <button class="btn btn-success" type="submit"><i class="bi bi-floppy"></i> Сохранить</button>
-          <button class="btn btn-outline-info" type="button" onclick="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
+          <button class="btn btn-success" type="submit" id="f_save_btn"><i class="bi bi-floppy"></i> Сохранить</button>
+          <button class="btn btn-outline-info" type="button" id="f_clone_btn" onclick="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
           <button class="btn btn-outline-light" type="button" data-bs-dismiss="modal">Закрыть</button>
         </div>
       </form>
@@ -259,6 +281,54 @@ function updateImportFileName(input){
   if(!out){ return; }
   const f = input && input.files && input.files[0];
   out.textContent = f ? f.name : 'Файл не выбран';
+}
+function setSaveBusy(busy){
+  const saveBtn = document.getElementById('f_save_btn');
+  const cloneBtn = document.getElementById('f_clone_btn');
+  if(saveBtn){
+    saveBtn.disabled = !!busy;
+    saveBtn.innerHTML = busy ? '<span class="spinner-border spinner-border-sm me-1"></span>Сохраняю...' : '<i class="bi bi-floppy"></i> Сохранить';
+  }
+  if(cloneBtn){ cloneBtn.disabled = !!busy; }
+}
+async function submitTriggerForm(event){
+  if(event){ event.preventDefault(); }
+  const form = document.getElementById('trigger_form');
+  if(!form){ return false; }
+  // Defensive sync in case switch onChange was skipped.
+  syncSwitch('f_enabled');
+  syncSwitch('f_case_sensitive');
+  syncSwitch('f_reply');
+  syncSwitch('f_preview');
+  const idEl = document.getElementById('f_id');
+  const isNew = !idEl || !String(idEl.value || '').trim();
+  const enabledEl = document.getElementById('f_enabled');
+  const replyEl = document.getElementById('f_reply');
+  if(isNew && enabledEl && !String(enabledEl.value || '').trim()){ enabledEl.value = '1'; }
+  if(isNew && replyEl && !String(replyEl.value || '').trim()){ replyEl.value = '1'; }
+  setSaveBusy(true);
+  try{
+    const controller = new AbortController();
+    const timeout = setTimeout(()=>controller.abort(), 15000);
+    const res = await fetch(form.getAttribute('action') || withToken('/trigger_bot/save'), {
+      method: 'POST',
+      body: new FormData(form),
+      signal: controller.signal,
+      credentials: 'same-origin'
+    });
+    clearTimeout(timeout);
+    if(!res.ok){
+      const txt = await res.text();
+      alert('Ошибка сохранения: ' + (txt || res.status));
+      setSaveBusy(false);
+      return false;
+    }
+    window.location.href = withToken('/trigger_bot');
+  }catch(err){
+    alert('Сохранение не удалось: ' + (err && err.message ? err.message : err));
+    setSaveBusy(false);
+  }
+  return false;
 }
 function getResponseTextArea(){
   return document.getElementById('f_response_text');
@@ -302,6 +372,22 @@ function insertResponseLink(){
   const caret = start + linked.length;
   el.focus();
   el.setSelectionRange(caret, caret);
+}
+function insertTgEmojiSnippet(){
+  const id = prompt('ID кастомного emoji (из Telegram)', '12345');
+  if(!id){ return; }
+  const safeId = String(id).trim();
+  if(!safeId){ return; }
+  insertTextAtCursor(getResponseTextArea(), `<tg-emoji emoji-id="${safeId}">🙂</tg-emoji>`);
+}
+function showTelegramHtmlHelp(){
+  alert(
+    'Поддерживаемые HTML-теги Telegram:\n' +
+    '<b> <strong>, <i> <em>, <u> <ins>, <s> <strike> <del>,\n' +
+    '<code>, <pre>, <blockquote>, <a href=\"...\">, <tg-spoiler>,\n' +
+    '<tg-emoji emoji-id=\"...\">🙂</tg-emoji>\n\n' +
+    'Важно: не все обычные HTML-теги поддерживаются Telegram.'
+  );
 }
 function insertTemplateTagFromPicker(sel){
   if(!sel || !sel.value){ return; }
@@ -388,10 +474,23 @@ function fillForm(t){
   setBool('f_preview', !!pick(t,'preview','Preview',false));
 }
 async function openNew(){
-  const r=await fetch(withToken('/trigger_bot/get'));
-  if(!r.ok){ alert('Не удалось открыть форму: ' + r.status); return; }
-  const t=await r.json();
-  fillForm(t); openModal();
+  fillForm({
+    id: '',
+    uid: '',
+    title: '',
+    enabled: true,
+    trigger_mode: 'all',
+    admin_mode: 'anybody',
+    match_text: '',
+    match_type: 'full',
+    case_sensitive: false,
+    action_type: 'send',
+    response_text: '',
+    reply: true,
+    preview: false,
+    chance: 100
+  });
+  openModal();
 }
 async function openEdit(id){
   const r=await fetch(withToken('/trigger_bot/get?id='+encodeURIComponent(id)));
