@@ -94,3 +94,33 @@ func TestSelectIdleAutoReplyTrigger(t *testing.T) {
 		t.Fatalf("expected 45m idle duration, got %s", after)
 	}
 }
+
+func TestExtractCustomEmojiFromRaw(t *testing.T) {
+	raw := &rawMessageWithEmoji{
+		Text: "x🙂y",
+		Entities: []rawMessageEntity{
+			{Type: "custom_emoji", CustomEmojiID: "111", Offset: 1, Length: 2},
+			{Type: "custom_emoji", CustomEmojiID: "111"},
+			{Type: "bold"},
+		},
+		Caption: "z🦌w",
+		CaptionEntities: []rawMessageEntity{
+			{Type: "custom_emoji", CustomEmojiID: "222", Offset: 1, Length: 2},
+			{Type: "custom_emoji"},
+		},
+	}
+
+	hits, count := extractCustomEmojiFromRaw(raw)
+	if count != 4 {
+		t.Fatalf("expected count=4, got %d", count)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 unique IDs, got %d", len(hits))
+	}
+	if hits[0].ID != "111" || hits[1].ID != "222" {
+		t.Fatalf("unexpected ids order/content: %#v", hits)
+	}
+	if hits[0].Fallback != "🙂" || hits[1].Fallback != "🦌" {
+		t.Fatalf("unexpected fallbacks: %#v", hits)
+	}
+}

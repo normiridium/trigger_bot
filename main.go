@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -88,6 +90,35 @@ type chatRecentStore struct {
 	maxPer   int
 	maxAge   time.Duration
 	messages map[int64][]recentChatMessage
+}
+
+type rawMessageEntity struct {
+	Type          string `json:"type"`
+	CustomEmojiID string `json:"custom_emoji_id"`
+	Offset        int    `json:"offset"`
+	Length        int    `json:"length"`
+}
+
+type rawMessageWithEmoji struct {
+	Entities        []rawMessageEntity   `json:"entities"`
+	CaptionEntities []rawMessageEntity   `json:"caption_entities"`
+	Text            string               `json:"text"`
+	Caption         string               `json:"caption"`
+	ReplyToMessage  *rawMessageWithEmoji `json:"reply_to_message"`
+}
+
+type rawUpdateWithEmoji struct {
+	Message *rawMessageWithEmoji `json:"message"`
+}
+
+type updateWithEmojiMeta struct {
+	Update     tgbotapi.Update
+	RawMessage *rawMessageWithEmoji
+}
+
+type customEmojiHit struct {
+	ID       string
+	Fallback string
 }
 
 func newChatRecentStore(maxPer int, maxAge time.Duration) *chatRecentStore {
@@ -499,18 +530,20 @@ func main() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
+	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	engine := NewTriggerEngine()
 
 	for update := range updates {
-		if update.Message == nil {
+		if update.Update.Message == nil {
 			continue
 		}
-		msg := update.Message
+		msg := update.Update.Message
+		rawMsg := update.RawMessage
 		if msg.Chat == nil || msg.From == nil || msg.From.IsBot {
 			continue
 		}
-		if !allowedChats.Allows(msg.Chat.ID) {
+		isPrivateChat := msg.Chat.IsPrivate()
+		if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
 			if debugTriggerLogEnabled {
 				log.Printf("skip message from disallowed chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
 			}
@@ -523,7 +556,7 @@ func main() {
 			case "start", "help":
 				s := "Триггер-бот активен.\n\n" +
 					"Админка: /trigger_bot\n" +
-					"Команды: /start /help\n\n" +
+					"Команды: /start /help /emojiid\n\n" +
 					"Теги для ChatGPT-промпта:\n" +
 					"{{message}} / {{user_text}} — текст сообщения\n" +
 					"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
@@ -534,10 +567,57 @@ func main() {
 					"{{capturing_text}}\n" +
 					"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
 					"{{reply_display_name}}, {{reply_label}}\n" +
-					"{{reply_sender_tag}}"
+					"{{reply_sender_tag}}\n\n" +
+					"Кастомный emoji ID:\n" +
+					"— команда /emojiid\n" +
+					"— или просто отправьте кастомный emoji в личку боту."
 				reply(bot, msg.Chat.ID, msg.MessageID, s, false)
 				continue
+			case "emojiid", "emoji_id":
+				hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
+				if len(hits) == 0 && rawMsg != nil && rawMsg.ReplyToMessage != nil {
+					hits, entityCount = extractCustomEmojiFromRaw(rawMsg.ReplyToMessage)
+				}
+				if len(hits) == 0 {
+					if entityCount > 0 {
+						reply(bot, msg.Chat.ID, msg.MessageID, "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+						continue
+					}
+					reply(bot, msg.Chat.ID, msg.MessageID, "Кастомный emoji не найден. Отправьте сообщение с premium-эмодзи.", false)
+					continue
+				}
+				lines := make([]string, 0, len(hits)+2)
+				lines = append(lines, "Готовый код для вставки:")
+				for _, hit := range hits {
+					snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
+					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+				}
+				sendHTML(bot, msg.Chat.ID, msg.MessageID, strings.Join(lines, "\n"), false)
+				continue
 			}
+		}
+		if isPrivateChat {
+			hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
+			if len(hits) > 0 {
+				lines := make([]string, 0, len(hits)+2)
+				lines = append(lines, "Готовый код для вставки:")
+				for _, hit := range hits {
+					snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
+					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+				}
+				sendHTML(bot, msg.Chat.ID, msg.MessageID, strings.Join(lines, "\n"), false)
+				continue
+			}
+			if entityCount > 0 {
+				reply(bot, msg.Chat.ID, msg.MessageID, "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+				continue
+			}
+		}
+		if isPrivateChat {
+			if debugTriggerLogEnabled {
+				log.Printf("skip non-command message in private chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+			}
+			continue
 		}
 
 		text := strings.TrimSpace(msg.Text)
@@ -1156,6 +1236,134 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{reply_label}}":        replyLabel,
 		"{{reply_sender_tag}}":   replySenderTagDisplay,
 	}
+}
+
+func getUpdatesChanWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) <-chan updateWithEmojiMeta {
+	ch := make(chan updateWithEmojiMeta, 100)
+	go func() {
+		for {
+			items, err := getUpdatesWithEmojiMeta(bot, config)
+			if err != nil {
+				log.Println(err)
+				log.Println("Failed to get updates, retrying in 3 seconds...")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			for _, item := range items {
+				if item.Update.UpdateID >= config.Offset {
+					config.Offset = item.Update.UpdateID + 1
+					ch <- item
+				}
+			}
+		}
+	}()
+	return ch
+}
+
+func getUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) ([]updateWithEmojiMeta, error) {
+	resp, err := bot.Request(config)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Ok {
+		return nil, errors.New(resp.Description)
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(resp.Result, &rawItems); err != nil {
+		return nil, err
+	}
+	out := make([]updateWithEmojiMeta, 0, len(rawItems))
+	for _, rawItem := range rawItems {
+		var upd tgbotapi.Update
+		if err := json.Unmarshal(rawItem, &upd); err != nil {
+			return nil, err
+		}
+		var rawUpd rawUpdateWithEmoji
+		if err := json.Unmarshal(rawItem, &rawUpd); err != nil {
+			return nil, err
+		}
+		out = append(out, updateWithEmojiMeta{
+			Update:     upd,
+			RawMessage: rawUpd.Message,
+		})
+	}
+	return out, nil
+}
+
+func extractCustomEmojiFromRaw(rawMsg *rawMessageWithEmoji) ([]customEmojiHit, int) {
+	if rawMsg == nil {
+		return nil, 0
+	}
+	out := make([]customEmojiHit, 0, 4)
+	seen := make(map[string]int)
+	count := 0
+	push := func(e rawMessageEntity, srcText string) {
+		if e.Type != "custom_emoji" {
+			return
+		}
+		count++
+		id := strings.TrimSpace(e.CustomEmojiID)
+		if id == "" {
+			return
+		}
+		fallback := strings.TrimSpace(sliceUTF16ByEntity(srcText, e.Offset, e.Length))
+		if idx, ok := seen[id]; ok {
+			if out[idx].Fallback == "" && fallback != "" {
+				out[idx].Fallback = fallback
+			}
+			return
+		}
+		seen[id] = len(out)
+		out = append(out, customEmojiHit{
+			ID:       id,
+			Fallback: fallback,
+		})
+	}
+	for _, e := range rawMsg.Entities {
+		push(e, rawMsg.Text)
+	}
+	for _, e := range rawMsg.CaptionEntities {
+		push(e, rawMsg.Caption)
+	}
+	return out, count
+}
+
+func sliceUTF16ByEntity(s string, offsetCU, lengthCU int) string {
+	if strings.TrimSpace(s) == "" || offsetCU < 0 || lengthCU <= 0 {
+		return ""
+	}
+	endCU := offsetCU + lengthCU
+	if endCU <= offsetCU {
+		return ""
+	}
+	var b strings.Builder
+	cu := 0
+	for _, r := range s {
+		n := utf16.RuneLen(r)
+		if n < 1 {
+			n = 1
+		}
+		nextCU := cu + n
+		if nextCU <= offsetCU {
+			cu = nextCU
+			continue
+		}
+		if cu >= endCU {
+			break
+		}
+		b.WriteRune(r)
+		cu = nextCU
+	}
+	return b.String()
+}
+
+func buildTGEmojiSnippet(id, fallback string) string {
+	id = strings.TrimSpace(id)
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		fallback = "🙂"
+	}
+	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, id, fallback)
 }
 
 func searchImageInSerpAPI(query string) (generatedImage, error) {
