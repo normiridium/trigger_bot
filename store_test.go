@@ -177,6 +177,9 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 	if items[0].RegexError != "" {
 		t.Fatalf("valid regex trigger must not have regex error: %q", items[0].RegexError)
 	}
+	if items[0].RegexBenchUS <= 0 {
+		t.Fatalf("valid regex trigger must record benchmark, got %d", items[0].RegexBenchUS)
+	}
 }
 
 func TestSaveTriggerAssignsUID(t *testing.T) {
@@ -402,5 +405,73 @@ func TestImportJSONMixedFormatImportsOnlyNewRows(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Title != "new row" {
 		t.Fatalf("unexpected imported items: %#v", items)
+	}
+}
+
+func TestReorderTriggersByIDsChangesPriorityOrder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reorder.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	save := func(title string) int64 {
+		if err := s.SaveTrigger(Trigger{
+			Title:        title,
+			Enabled:      true,
+			TriggerMode:  "all",
+			AdminMode:    "anybody",
+			MatchText:    "найди",
+			MatchType:    "partial",
+			ActionType:   "send",
+			ResponseText: title,
+			Reply:        true,
+			Chance:       100,
+		}); err != nil {
+			t.Fatalf("save trigger %q: %v", title, err)
+		}
+		items, err := s.ListTriggers()
+		if err != nil {
+			t.Fatalf("list triggers: %v", err)
+		}
+		for _, it := range items {
+			if it.Title == title {
+				return it.ID
+			}
+		}
+		t.Fatalf("saved trigger %q not found", title)
+		return 0
+	}
+
+	id1 := save("t1")
+	id2 := save("t2")
+	id3 := save("t3")
+
+	if err := s.ReorderTriggersByIDs([]int64{id3, id1, id2}); err != nil {
+		t.Fatalf("reorder: %v", err)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers after reorder: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 triggers, got %d", len(items))
+	}
+	if items[0].ID != id3 || items[1].ID != id1 || items[2].ID != id2 {
+		t.Fatalf("unexpected order after reorder: got IDs [%d,%d,%d], want [%d,%d,%d]",
+			items[0].ID, items[1].ID, items[2].ID, id3, id1, id2)
+	}
+
+	got, ok, err := s.Match("найди песню")
+	if err != nil {
+		t.Fatalf("match failed: %v", err)
+	}
+	if !ok || got == nil {
+		t.Fatalf("expected match after reorder")
+	}
+	if got.ID != id3 {
+		t.Fatalf("expected highest-priority trigger id=%d, got id=%d", id3, got.ID)
 	}
 }

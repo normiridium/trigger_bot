@@ -64,6 +64,17 @@
     .action-mini i {
       font-size: .88rem;
     }
+    .drag-handle {
+      cursor: grab;
+      color: #9ca3af;
+      user-select: none;
+    }
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+    tr.dragging-row {
+      opacity: .55;
+    }
   </style>
 </head>
 <body class="text-light">
@@ -85,17 +96,19 @@
   <div class="table-responsive rounded border border-secondary-subtle">
     <table class="table table-dark table-striped table-hover align-middle mb-0">
       <thead>
-        <tr><th>ID</th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
+        <tr><th></th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
       </thead>
-      <tbody>
+      <tbody id="triggers_tbody">
         {{range .Items}}
-        <tr>
-          <td>{{.ID}}</td>
+        <tr data-id="{{.ID}}">
+          <td class="text-center"><i class="bi bi-grip-vertical drag-handle" title="Перетащить для изменения приоритета"></i></td>
           <td>{{.Title}}</td>
           <td>
             <code>{{.MatchText}}</code>
             {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger mx-1" title="{{.RegexError}}"></i>{{end}}
-            <small>({{.MatchType}})</small>
+            <small>
+              {{if eq .MatchType "regex"}}{{regexBenchText .}} {{end}}({{.MatchType}})
+            </small>
           </td>
           <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>
           <td class="text-nowrap">
@@ -275,6 +288,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script>
 function setSel(id,val){const el=document.getElementById(id); if(el && val!=null){el.value=String(val)}}
 function updateImportFileName(input){
@@ -457,6 +471,41 @@ function applyTokenToForms(){
   const ex = document.getElementById('export_link');
   if(ex){ ex.setAttribute('href', withToken('/trigger_bot/export')); }
 }
+async function persistTriggerOrder(){
+  const body = document.getElementById('triggers_tbody');
+  if(!body){ return; }
+  const ids = Array.from(body.querySelectorAll('tr[data-id]'))
+    .map((tr)=>Number(tr.getAttribute('data-id')))
+    .filter((id)=>Number.isFinite(id) && id > 0);
+  if(ids.length === 0){ return; }
+  const res = await fetch(withToken('/trigger_bot/reorder'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    credentials: 'same-origin',
+    body: JSON.stringify({ids})
+  });
+  if(!res.ok){
+    const txt = await res.text();
+    throw new Error(txt || ('HTTP '+res.status));
+  }
+}
+function initTriggerDragAndDrop(){
+  const body = document.getElementById('triggers_tbody');
+  if(!body || typeof Sortable === 'undefined'){ return; }
+  new Sortable(body, {
+    handle: '.drag-handle',
+    animation: 140,
+    ghostClass: 'dragging-row',
+    onEnd: async function(){
+      try{
+        await persistTriggerOrder();
+      }catch(err){
+        alert('Не удалось сохранить порядок: ' + (err && err.message ? err.message : err));
+        window.location.reload();
+      }
+    }
+  });
+}
 function fillForm(t){
   document.getElementById('f_id').value=pick(t,'id','ID','');
   document.getElementById('f_uid').value=pick(t,'uid','UID','');
@@ -514,6 +563,7 @@ window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'))
 document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
 applyTokenToForms();
 applyMatchTypeUI();
+initTriggerDragAndDrop();
 </script>
 </body>
 </html>
