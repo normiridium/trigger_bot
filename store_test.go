@@ -295,3 +295,76 @@ func TestImportJSONLegacyFormatNotSupported(t *testing.T) {
 		t.Fatalf("legacy format should not be supported anymore")
 	}
 }
+
+func TestImportJSONColumnFormatUsesDefaults(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "import_defaults.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	raw := `[{"title":"minimal import row"}]`
+	n, err := s.ImportJSON([]byte(raw))
+	if err != nil {
+		t.Fatalf("import json: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected imported count=1, got %d", n)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(items))
+	}
+	it := items[0]
+	if it.Title != "minimal import row" {
+		t.Fatalf("title mismatch: %q", it.Title)
+	}
+	if !it.Enabled || it.TriggerMode != "all" || it.AdminMode != "anybody" {
+		t.Fatalf("default modes mismatch: %#v", it)
+	}
+	if it.MatchType != "full" || it.ActionType != "send" {
+		t.Fatalf("default types mismatch: match_type=%q action_type=%q", it.MatchType, it.ActionType)
+	}
+	if !it.Reply || it.Preview {
+		t.Fatalf("default reply/preview mismatch: reply=%v preview=%v", it.Reply, it.Preview)
+	}
+	if it.Chance != 100 {
+		t.Fatalf("default chance mismatch: %d", it.Chance)
+	}
+	if it.UID == "" {
+		t.Fatalf("uid should be generated for imported row")
+	}
+}
+
+func TestImportJSONMixedFormatImportsOnlyNewRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "import_mixed.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	raw := `[
+	  {"title":"new row","match_text":"abc","match_type":"partial","action_type":"send","response_text":"ok"},
+	  {"t":"legacy row","cos":[{"tt":"x","ty":"1"}],"acs":[{"ty":"se","t":"old","sr":"1"}]}
+	]`
+	n, err := s.ImportJSON([]byte(raw))
+	if err != nil {
+		t.Fatalf("import mixed json: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected imported count=1 for mixed file, got %d", n)
+	}
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "new row" {
+		t.Fatalf("unexpected imported items: %#v", items)
+	}
+}
