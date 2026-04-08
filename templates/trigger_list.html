@@ -374,18 +374,18 @@ function fillForm(t){
   document.getElementById('f_id').value=pick(t,'id','ID','');
   document.getElementById('f_uid').value=pick(t,'uid','UID','');
   document.getElementById('f_title').value=pick(t,'title','Title','');
-  document.getElementById('f_match_text').value=pick(t,'match_text','MatchText','');
   document.getElementById('f_response_text').value=pick(t,'response_text','ResponseText','');
   document.getElementById('f_chance').value=pick(t,'chance','Chance',100);
   setSel('f_trigger_mode', pick(t,'trigger_mode','TriggerMode','all'));
   setSel('f_admin_mode', pick(t,'admin_mode','AdminMode','anybody'));
   setSel('f_match_type', pick(t,'match_type','MatchType','full'));
+  applyMatchTypeUI();
+  document.getElementById('f_match_text').value=pick(t,'match_text','MatchText','');
   setSel('f_action_type', pick(t,'action_type','ActionType','send'));
   setBool('f_enabled', !!pick(t,'enabled','Enabled',true));
   setBool('f_case_sensitive', !!pick(t,'case_sensitive','CaseSensitive',false));
   setBool('f_reply', !!pick(t,'reply','Reply',true));
   setBool('f_preview', !!pick(t,'preview','Preview',false));
-  applyMatchTypeUI();
 }
 async function openNew(){
   const r=await fetch(withToken('/trigger_bot/get'));
