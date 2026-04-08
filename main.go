@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -673,6 +675,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("create bot failed: %v", err)
 	}
+	var vkMusicClient *vkmusic.Client
+	if vkToken := strings.TrimSpace(os.Getenv("VK_TOKEN")); vkToken != "" {
+		vkMusicClient, err = vkmusic.NewClient(vkToken, strings.TrimSpace(os.Getenv("VK_USER_AGENT")))
+		if err != nil {
+			log.Printf("vk music client init failed: %v", err)
+		} else {
+			log.Printf("vk music client enabled")
+		}
+	}
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
 	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
@@ -741,7 +752,7 @@ func main() {
 			case "start", "help":
 				s := "Триггер-бот активен.\n\n" +
 					"Админка: /trigger_bot\n" +
-					"Команды: /start /help /emojiid\n\n" +
+					"Команды: /start /help /emojiid /vksearch\n\n" +
 					"Теги для ChatGPT-промпта:\n" +
 					"{{message}} / {{user_text}} — текст сообщения\n" +
 					"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
@@ -778,6 +789,34 @@ func main() {
 					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
 				}
 				sendHTML(bot, msg.Chat.ID, msg.MessageID, strings.Join(lines, "\n"), false)
+				continue
+			case "vksearch", "vkfind":
+				query := strings.TrimSpace(msg.CommandArguments())
+				if query == "" {
+					reply(bot, msg.Chat.ID, msg.MessageID, "Использование: /vksearch исполнитель или трек", false)
+					continue
+				}
+				if vkMusicClient == nil {
+					reply(bot, msg.Chat.ID, msg.MessageID, "VK-поиск не настроен (добавьте VK_TOKEN в .env).", false)
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+				tracks, err := vkMusicClient.SearchTracks(ctx, query, 5)
+				cancel()
+				if err != nil {
+					reply(bot, msg.Chat.ID, msg.MessageID, "Ошибка VK-поиска: "+clipText(err.Error(), 240), false)
+					continue
+				}
+				if len(tracks) == 0 {
+					reply(bot, msg.Chat.ID, msg.MessageID, "Ничего не найдено в VK.", false)
+					continue
+				}
+				var b strings.Builder
+				b.WriteString("VK поиск:\n")
+				for i, tr := range tracks {
+					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
+				}
+				sendHTML(bot, msg.Chat.ID, msg.MessageID, strings.TrimSpace(b.String()), false)
 				continue
 			}
 		}
