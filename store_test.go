@@ -214,6 +214,42 @@ func TestSaveTriggerAssignsUID(t *testing.T) {
 	}
 }
 
+func TestSaveTriggerPreservesResponseTextVerbatim(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "response_verbatim.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	want := "\n  первая строка\nвторая строка  \n"
+	if err := s.SaveTrigger(Trigger{
+		Title:        "verbatim response",
+		Enabled:      true,
+		TriggerMode:  "all",
+		AdminMode:    "anybody",
+		MatchText:    "тест",
+		MatchType:    "partial",
+		ActionType:   "send",
+		ResponseText: want,
+		Reply:        true,
+		Chance:       100,
+	}); err != nil {
+		t.Fatalf("save trigger: %v", err)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(items))
+	}
+	if items[0].ResponseText != want {
+		t.Fatalf("response text changed on save, got=%q want=%q", items[0].ResponseText, want)
+	}
+}
+
 func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "uid_import.db")
 	s, err := OpenStore(dbPath)
