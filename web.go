@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -108,6 +107,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	chance, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("chance")))
 	t := Trigger{
 		ID:            id,
+		UID:           strings.TrimSpace(r.FormValue("uid")),
 		Title:         r.FormValue("title"),
 		Enabled:       r.FormValue("enabled") == "1",
 		TriggerMode:   r.FormValue("trigger_mode"),
@@ -177,6 +177,7 @@ func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		_ = r.ParseForm()
 	}
@@ -194,8 +195,8 @@ func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = rw.Write([]byte(fmt.Sprintf("Импортировано: %d", added)))
+	log.Printf("web import triggers added=%d took=%s", added, time.Since(started))
+	redirectToListWithToken(rw, r)
 }
 
 func (w *WebAdmin) renderTemplate(rw http.ResponseWriter, name string, data interface{}) error {

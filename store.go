@@ -1,7 +1,9 @@
 package main
 
 import (
+	crand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 
 type Trigger struct {
 	ID            int64
+	UID           string `json:"uid,omitempty"`
 	Title         string
 	Enabled       bool
 	TriggerMode   string // all
@@ -64,6 +67,7 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS triggers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   trigger_mode TEXT NOT NULL DEFAULT 'all',
@@ -89,11 +93,18 @@ CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
 	_ = ensureColumn(db, "triggers", "trigger_mode", "TEXT NOT NULL DEFAULT 'all'")
 	_ = ensureColumn(db, "triggers", "admin_mode", "TEXT NOT NULL DEFAULT 'anybody'")
 	_ = ensureColumn(db, "triggers", "action_type", "TEXT NOT NULL DEFAULT 'send'")
+	_ = ensureColumn(db, "triggers", "uid", "TEXT NOT NULL DEFAULT ''")
 	_ = ensureColumn(db, "triggers", "regex_error", "TEXT NOT NULL DEFAULT ''")
-	return &Store{
+	_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_triggers_uid ON triggers(uid) WHERE uid <> ''`)
+	s := &Store{
 		db:       db,
 		cacheTTL: 2 * time.Second,
-	}, nil
+	}
+	if err := s.backfillMissingUIDs(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -204,7 +215,7 @@ func normalizeActionType(v string) string {
 }
 
 func (s *Store) ListTriggers() ([]Trigger, error) {
-	rows, err := s.db.Query(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id,uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +224,7 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	for rows.Next() {
 		var t Trigger
 		var enabled, cs, reply, preview int
-		if err := rows.Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
+		if err := rows.Scan(&t.ID, &t.UID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
 			return nil, err
 		}
 		t.Enabled = i2b(enabled)
@@ -233,8 +244,8 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 	var t Trigger
 	var enabled, cs, reply, preview int
-	err := s.db.QueryRow(`SELECT id,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
-		Scan(&t.ID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
+	err := s.db.QueryRow(`SELECT id,uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
+		Scan(&t.ID, &t.UID, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -255,6 +266,7 @@ func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 
 func (s *Store) SaveTrigger(t Trigger) error {
 	now := time.Now().Unix()
+	t.UID = strings.TrimSpace(t.UID)
 	t.Title = strings.TrimSpace(t.Title)
 	if t.Title == "" {
 		t.Title = strings.TrimSpace(t.MatchText)
@@ -280,16 +292,30 @@ func (s *Store) SaveTrigger(t Trigger) error {
 			t.RegexError = "Ошибка regex: " + strings.TrimSpace(err.Error())
 		}
 	}
+	if t.ID > 0 && t.UID == "" {
+		prevUID, err := s.getUIDByID(t.ID)
+		if err != nil {
+			return err
+		}
+		t.UID = prevUID
+	}
+	if t.UID == "" {
+		uid, err := newUUID4()
+		if err != nil {
+			return err
+		}
+		t.UID = uid
+	}
 	if t.ID <= 0 {
-		_, err := s.db.Exec(`INSERT INTO triggers(title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
+		_, err := s.db.Exec(`INSERT INTO triggers(uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.UID, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE triggers SET title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
-		t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
+	_, err := s.db.Exec(`UPDATE triggers SET uid=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
+		t.UID, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
 	if err == nil {
 		s.invalidateCache()
 	}
@@ -467,44 +493,36 @@ func (s *Store) Match(text string) (*Trigger, bool, error) {
 	return nil, false, nil
 }
 
-type exportItem struct {
-	T   string       `json:"t"`
-	Cos []exportCond `json:"cos"`
-	Acs []exportAct  `json:"acs"`
+type exportTriggerRow struct {
+	UID              string `json:"uid,omitempty"`
+	Title            string `json:"title"`
+	Enabled          bool   `json:"enabled"`
+	TriggerMode      string `json:"trigger_mode"`
+	AdminMode        string `json:"admin_mode"`
+	MatchText        string `json:"match_text"`
+	MatchType        string `json:"match_type"`
+	CaseSensitive    bool   `json:"case_sensitive"`
+	ActionType       string `json:"action_type"`
+	ResponseText     string `json:"response_text"`
+	SendAsReply      bool   `json:"send_as_reply"`
+	PreviewFirstLink bool   `json:"preview_first_link"`
+	Chance           int    `json:"chance"`
 }
 
-type exportCond struct {
-	Mty string `json:"mty"`
-	Tt  string `json:"tt"`
-	Ty  string `json:"ty"`
-}
-
-type exportAct struct {
-	Ty string `json:"ty"`
-	T  string `json:"t"`
-	Sr string `json:"sr"`
-}
-
-func exportTyToMatchType(ty string) string {
-	switch strings.TrimSpace(ty) {
-	case "2":
-		return "regex"
-	case "1":
-		return "partial"
-	default:
-		return "full"
-	}
-}
-
-func matchTypeToExportTy(mt string) string {
-	switch normalizeMatchType(mt) {
-	case "regex":
-		return "2"
-	case "partial", "starts", "ends":
-		return "1"
-	default:
-		return "0"
-	}
+type importTriggerRow struct {
+	UID              string `json:"uid"`
+	Title            string `json:"title"`
+	Enabled          *bool  `json:"enabled"`
+	TriggerMode      string `json:"trigger_mode"`
+	AdminMode        string `json:"admin_mode"`
+	MatchText        string `json:"match_text"`
+	MatchType        string `json:"match_type"`
+	CaseSensitive    *bool  `json:"case_sensitive"`
+	ActionType       string `json:"action_type"`
+	ResponseText     string `json:"response_text"`
+	SendAsReply      *bool  `json:"send_as_reply"`
+	PreviewFirstLink *bool  `json:"preview_first_link"`
+	Chance           *int   `json:"chance"`
 }
 
 func (s *Store) ExportJSON() ([]byte, error) {
@@ -512,20 +530,22 @@ func (s *Store) ExportJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]exportItem, 0, len(items))
+	out := make([]exportTriggerRow, 0, len(items))
 	for _, t := range items {
-		out = append(out, exportItem{
-			T: t.Title,
-			Cos: []exportCond{{
-				Mty: "0",
-				Tt:  t.MatchText,
-				Ty:  matchTypeToExportTy(t.MatchType),
-			}},
-			Acs: []exportAct{{
-				Ty: "se",
-				T:  t.ResponseText,
-				Sr: map[bool]string{true: "1", false: "0"}[t.Reply],
-			}},
+		out = append(out, exportTriggerRow{
+			UID:              t.UID,
+			Title:            t.Title,
+			Enabled:          t.Enabled,
+			TriggerMode:      t.TriggerMode,
+			AdminMode:        t.AdminMode,
+			MatchText:        t.MatchText,
+			MatchType:        t.MatchType,
+			CaseSensitive:    t.CaseSensitive,
+			ActionType:       t.ActionType,
+			ResponseText:     t.ResponseText,
+			SendAsReply:      t.Reply,
+			PreviewFirstLink: t.Preview,
+			Chance:           t.Chance,
 		})
 	}
 	return json.MarshalIndent(out, "", "  ")
@@ -536,33 +556,99 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 	if len(raw) == 0 {
 		return 0, nil
 	}
-	var items []exportItem
+	var rawItems []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawItems); err != nil {
+		return 0, err
+	}
+	if len(rawItems) == 0 {
+		return 0, nil
+	}
+	supportedRows := 0
+	for _, row := range rawItems {
+		if hasNewImportKeys(row) {
+			supportedRows++
+		}
+	}
+	if supportedRows == 0 {
+		return 0, errors.New("unsupported import format: expected column-style fields")
+	}
+
+	var items []importTriggerRow
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return 0, err
 	}
 	added := 0
-	for _, it := range items {
-		if len(it.Cos) == 0 || len(it.Acs) == 0 {
+	for i, it := range items {
+		if i >= len(rawItems) || !hasNewImportKeys(rawItems[i]) {
 			continue
 		}
-		matchText := strings.TrimSpace(it.Cos[0].Tt)
-		responseText := strings.TrimSpace(it.Acs[0].T)
-		if matchText == "" || responseText == "" {
-			continue
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			title = "Импортированный триггер"
 		}
-		err := s.SaveTrigger(Trigger{
-			Title:        strings.TrimSpace(it.T),
-			Enabled:      true,
-			TriggerMode:  "all",
-			AdminMode:    "anybody",
-			MatchText:    matchText,
-			MatchType:    exportTyToMatchType(it.Cos[0].Ty),
-			ActionType:   "send",
-			ResponseText: responseText,
-			Reply:        strings.TrimSpace(it.Acs[0].Sr) == "1",
-			Preview:      false,
-			Chance:       100,
-		})
+
+		enabled := true
+		if it.Enabled != nil {
+			enabled = *it.Enabled
+		}
+		triggerMode := "all"
+		if strings.TrimSpace(it.TriggerMode) != "" {
+			triggerMode = strings.TrimSpace(it.TriggerMode)
+		}
+		adminMode := "anybody"
+		if strings.TrimSpace(it.AdminMode) != "" {
+			adminMode = strings.TrimSpace(it.AdminMode)
+		}
+		matchText := strings.TrimSpace(it.MatchText)
+		matchType := "full"
+		if strings.TrimSpace(it.MatchType) != "" {
+			matchType = strings.TrimSpace(it.MatchType)
+		}
+		caseSensitive := false
+		if it.CaseSensitive != nil {
+			caseSensitive = *it.CaseSensitive
+		}
+		actionType := "send"
+		if strings.TrimSpace(it.ActionType) != "" {
+			actionType = strings.TrimSpace(it.ActionType)
+		}
+		responseText := strings.TrimSpace(it.ResponseText)
+		reply := true
+		if it.SendAsReply != nil {
+			reply = *it.SendAsReply
+		}
+		preview := false
+		if it.PreviewFirstLink != nil {
+			preview = *it.PreviewFirstLink
+		}
+		chance := 100
+		if it.Chance != nil {
+			chance = *it.Chance
+		}
+
+		tr := Trigger{
+			UID:           strings.TrimSpace(it.UID),
+			Title:         title,
+			Enabled:       enabled,
+			TriggerMode:   triggerMode,
+			AdminMode:     adminMode,
+			MatchText:     matchText,
+			MatchType:     matchType,
+			CaseSensitive: caseSensitive,
+			ActionType:    actionType,
+			ResponseText:  responseText,
+			Reply:         reply,
+			Preview:       preview,
+			Chance:        chance,
+		}
+		if tr.UID != "" {
+			id, err := s.getIDByUID(tr.UID)
+			if err != nil {
+				return added, err
+			}
+			tr.ID = id
+		}
+		err := s.SaveTrigger(tr)
 		if err != nil {
 			return added, err
 		}
@@ -572,4 +658,114 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 		s.invalidateCache()
 	}
 	return added, nil
+}
+
+func hasNewImportKeys(m map[string]json.RawMessage) bool {
+	if len(m) == 0 {
+		return false
+	}
+	keys := []string{
+		"uid",
+		"title",
+		"enabled",
+		"trigger_mode",
+		"admin_mode",
+		"match_text",
+		"match_type",
+		"case_sensitive",
+		"action_type",
+		"response_text",
+		"send_as_reply",
+		"preview_first_link",
+		"chance",
+	}
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) getUIDByID(id int64) (string, error) {
+	if id <= 0 {
+		return "", nil
+	}
+	var uid string
+	err := s.db.QueryRow(`SELECT uid FROM triggers WHERE id=?`, id).Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return strings.TrimSpace(uid), err
+}
+
+func (s *Store) getIDByUID(uid string) (int64, error) {
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return 0, nil
+	}
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM triggers WHERE uid=? LIMIT 1`, uid).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
+func newUUID4() (string, error) {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	hexed := hex.EncodeToString(b[:])
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexed[0:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32]), nil
+}
+
+func (s *Store) backfillMissingUIDs() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT id FROM triggers WHERE trim(uid)=''`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 16)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		updated := false
+		for i := 0; i < 5; i++ {
+			uid, err := newUUID4()
+			if err != nil {
+				return err
+			}
+			res, err := s.db.Exec(`UPDATE triggers SET uid=?, updated_at=? WHERE id=? AND trim(uid)=''`, uid, time.Now().Unix(), id)
+			if err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "unique") {
+					continue
+				}
+				return err
+			}
+			aff, _ := res.RowsAffected()
+			if aff > 0 {
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			return fmt.Errorf("failed to assign uid for trigger id=%d", id)
+		}
+	}
+	return nil
 }
