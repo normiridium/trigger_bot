@@ -61,21 +61,18 @@
 <body class="text-light">
 <div class="container-fluid py-4 app">
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-    <h3 class="m-0 me-auto">Триггеры</h3>
-    <button class="btn btn-success" type="button" onclick="openNew()"><i class="bi bi-plus-lg"></i> Новый</button>
-    <a class="btn btn-primary" id="export_link" href="/trigger_bot/export"><i class="bi bi-download"></i> Экспорт</a>
-  </div>
-
-  <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="row g-2 mb-3">
-    <div class="col-auto">
+    <h3 class="m-0 me-2">Триггеры</h3>
+    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto">
       <div class="import-file-wrap">
         <input class="d-none" type="file" name="file" id="import_file" accept="application/json" onchange="updateImportFileName(this)">
         <label class="import-file-btn" for="import_file">Выберите файл</label>
         <span class="import-file-name" id="import_file_name">Файл не выбран</span>
       </div>
-    </div>
-    <div class="col-auto"><button class="btn btn-secondary" type="submit"><i class="bi bi-upload"></i> Импорт JSON</button></div>
-  </form>
+      <button class="btn btn-secondary" type="submit"><i class="bi bi-upload"></i> Импорт JSON</button>
+    </form>
+    <button class="btn btn-success" type="button" onclick="openNew()"><i class="bi bi-plus-lg"></i> Новый</button>
+    <a class="btn btn-primary" id="export_link" href="/trigger_bot/export"><i class="bi bi-download"></i> Экспорт</a>
+  </div>
 
   <div class="table-responsive rounded border border-secondary-subtle">
     <table class="table table-dark table-striped table-hover align-middle mb-0">
@@ -96,7 +93,6 @@
           <td class="text-nowrap">
             <button class="btn btn-sm btn-outline-primary" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать"><i class="bi bi-pencil"></i></button>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/toggle"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-warning" type="submit" title="Вкл/Выкл" aria-label="Вкл/Выкл"><i class="bi bi-power"></i></button></form>
-            <button class="btn btn-sm btn-outline-info ms-1" type="button" onclick="openClone({{.ID}})" title="Клонировать" aria-label="Клонировать"><i class="bi bi-copy"></i></button>
             <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')"><input type="hidden" name="id" value="{{.ID}}"><button class="btn btn-sm btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить"><i class="bi bi-x-lg"></i></button></form>
           </td>
         </tr>
@@ -247,6 +243,7 @@
         </div>
         <div class="modal-footer border-secondary">
           <button class="btn btn-success" type="submit"><i class="bi bi-floppy"></i> Сохранить</button>
+          <button class="btn btn-outline-info" type="button" onclick="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
           <button class="btn btn-outline-light" type="button" data-bs-dismiss="modal">Закрыть</button>
         </div>
       </form>
@@ -402,19 +399,16 @@ async function openEdit(id){
   const t=await r.json();
   fillForm(t); openModal();
 }
-async function openClone(id){
-  const r=await fetch(withToken('/trigger_bot/get?id='+encodeURIComponent(id)));
-  if(!r.ok){ alert('Не удалось загрузить триггер для клонирования: ' + r.status); return; }
-  const t=await r.json();
-  t.id = '';
-  t.ID = '';
-  t.uid = '';
-  t.UID = '';
-  const title = (t.title ?? t.Title ?? '').toString().trim();
-  const cloneTitle = title ? `${title} (копия)` : 'Новый триггер (копия)';
-  t.title = cloneTitle;
-  t.Title = cloneTitle;
-  fillForm(t); openModal();
+function cloneCurrentTrigger(){
+  const titleEl = document.getElementById('f_title');
+  const idEl = document.getElementById('f_id');
+  const uidEl = document.getElementById('f_uid');
+  if(idEl){ idEl.value = ''; }
+  if(uidEl){ uidEl.value = ''; }
+  if(titleEl){
+    const title = String(titleEl.value || '').trim();
+    titleEl.value = title ? `${title} (копия)` : 'Новый триггер (копия)';
+  }
 }
 window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
 document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
