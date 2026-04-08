@@ -26,7 +26,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     string // full|partial|regex|starts|ends|idle
 	CaseSensitive bool
-	ActionType    string // send|delete|gpt_prompt|gpt_image|search_image
+	ActionType    string // send|delete|gpt_prompt|gpt_image|search_image|vk_music_audio
 	ResponseText  string
 	Reply         bool
 	Preview       bool
@@ -209,6 +209,8 @@ func normalizeActionType(v string) string {
 		return "gpt_image"
 	case "search_image":
 		return "search_image"
+	case "vk_music_audio":
+		return "vk_music_audio"
 	default:
 		return "send"
 	}
