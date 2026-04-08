@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,8 +23,8 @@ import (
 	"time"
 	"unicode/utf16"
 
-	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 )
 
 var chatErrorLogEnabled bool
@@ -995,6 +996,77 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
+		case "vk_music_audio":
+			if vkMusicClient == nil {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+				continue
+			}
+			query := buildVKMusicQueryFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
+			if query == "" {
+				query = strings.TrimSpace(msg.Text)
+			}
+			if query == "" {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			tracks, err := vkMusicClient.SearchTracks(ctx, query, 5)
+			cancel()
+			if err != nil {
+				log.Printf("vk music search failed: %v", err)
+				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска музыки VK", err)
+				continue
+			}
+			if len(tracks) == 0 {
+				if debugTriggerLogEnabled {
+					log.Printf("vk music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
+				}
+				continue
+			}
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			var sendErr error
+			sent := false
+			maxCandidates := 3
+			for i := 0; i < len(tracks) && i < maxCandidates; i++ {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+				song, err := vkMusicClient.GetAudioURL(ctx2, tracks[i].ID)
+				cancel2()
+				if err != nil {
+					sendErr = err
+					if debugTriggerLogEnabled {
+						log.Printf("vk music get audio failed trigger=%d track_id=%q err=%v", tr.ID, tracks[i].ID, err)
+					}
+					continue
+				}
+				if song == nil || strings.TrimSpace(song.URL) == "" {
+					sendErr = errors.New("empty audio URL")
+					if debugTriggerLogEnabled {
+						log.Printf("vk music no direct url trigger=%d track_id=%q", tr.ID, tracks[i].ID)
+					}
+					continue
+				}
+				if err := sendAudioFromURL(bot, msg.Chat.ID, replyTo, song.URL, song.Artist, song.Title); err != nil {
+					sendErr = err
+					if debugTriggerLogEnabled {
+						log.Printf("vk music send failed trigger=%d track_id=%q err=%v", tr.ID, tracks[i].ID, err)
+					}
+					continue
+				}
+				sent = true
+				break
+			}
+			if !sent {
+				if sendErr != nil {
+					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио VK", sendErr)
+				}
+				continue
+			}
+			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			if debugTriggerLogEnabled {
+				log.Printf("send vk/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+			}
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -1156,6 +1228,219 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 		}
 	}
 	return true
+}
+
+func sendAudioFromURL(bot *tgbotapi.BotAPI, chatID int64, replyTo int, audioURL, performer, title string) error {
+	audioURL = strings.TrimSpace(audioURL)
+	if bot == nil || chatID == 0 || audioURL == "" {
+		return errors.New("invalid audio send params")
+	}
+	tmpPath, err := downloadAudioToTempFile(audioURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rmErr := os.Remove(tmpPath); rmErr != nil && debugTriggerLogEnabled {
+			log.Printf("audio temp cleanup failed path=%q err=%v", tmpPath, rmErr)
+		}
+	}()
+
+	m := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(tmpPath))
+	if replyTo > 0 {
+		m.ReplyToMessageID = replyTo
+		m.AllowSendingWithoutReply = true
+	}
+	m.Performer = strings.TrimSpace(performer)
+	m.Title = strings.TrimSpace(title)
+	sent, err := bot.Send(m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send audio ok chat=%d msg=%d replyTo=%d performer=%q title=%q", chatID, sent.MessageID, replyTo, m.Performer, m.Title)
+	}
+	return nil
+}
+
+func downloadAudioToTempFile(audioURL string) (string, error) {
+	tmp, err := os.CreateTemp("", "vk-audio-*.mp3")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	maxMB := envInt("VK_AUDIO_MAX_MB", 60)
+	if maxMB < 5 {
+		maxMB = 5
+	}
+	ffmpegTimeout := envInt("VK_AUDIO_FFMPEG_TIMEOUT_SEC", 120)
+	if ffmpegTimeout < 30 {
+		ffmpegTimeout = 30
+	}
+	ua := strings.TrimSpace(os.Getenv("VK_USER_AGENT"))
+	if ua == "" {
+		ua = "VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)"
+	}
+	retries := envInt("VK_AUDIO_RETRY_COUNT", 3)
+	if retries < 1 {
+		retries = 1
+	}
+	var runErr error
+	for attempt := 1; attempt <= retries; attempt++ {
+		_ = os.Remove(tmpPath)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ffmpegTimeout)*time.Second)
+		err := runFFmpegAudioDownload(ctx, audioURL, tmpPath, ua)
+		cancel()
+		if err == nil {
+			runErr = nil
+			break
+		}
+		runErr = err
+		if debugTriggerLogEnabled {
+			log.Printf("ffmpeg audio attempt=%d/%d failed: %v", attempt, retries, err)
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	if runErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", runErr
+	}
+	st, err := os.Stat(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	size := st.Size()
+	limit := int64(maxMB) << 20
+	if size <= 0 {
+		_ = os.Remove(tmpPath)
+		return "", errors.New("ffmpeg produced empty audio file")
+	}
+	if size > limit {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("audio too large: %d bytes (limit %d MB)", size, maxMB)
+	}
+	return tmpPath, nil
+}
+
+func runFFmpegAudioDownload(ctx context.Context, audioURL, outPath, userAgent string) error {
+	if strings.Contains(strings.ToLower(audioURL), ".m3u8") {
+		return runFFmpegAudioDownloadFromM3U8(ctx, audioURL, outPath, userAgent)
+	}
+	return runFFmpegAudioDownloadDirect(ctx, audioURL, outPath, userAgent)
+}
+
+func runFFmpegAudioDownloadFromM3U8(ctx context.Context, audioURL, outPath, userAgent string) error {
+	tmpTS, err := os.CreateTemp("", "vk-audio-*.ts")
+	if err != nil {
+		return err
+	}
+	tmpTSPath := tmpTS.Name()
+	_ = tmpTS.Close()
+	defer os.Remove(tmpTSPath)
+
+	var stderr1 bytes.Buffer
+	copyCmd := exec.CommandContext(ctx,
+		"ffmpeg",
+		"-nostdin",
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-http_persistent", "false",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_at_eof", "1",
+		"-reconnect_delay_max", "5",
+		"-rw_timeout", "15000000",
+		"-user_agent", userAgent,
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+		"-allowed_extensions", "ALL",
+		"-i", audioURL,
+		"-vn",
+		"-c", "copy",
+		tmpTSPath,
+	)
+	copyCmd.Stderr = &stderr1
+	if err := copyCmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr1.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ffmpeg timeout")
+		}
+		return fmt.Errorf("ffmpeg m3u8 copy failed: %s", clipText(msg, 400))
+	}
+
+	var stderr2 bytes.Buffer
+	transcodeCmd := exec.CommandContext(ctx,
+		"ffmpeg",
+		"-nostdin",
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-i", tmpTSPath,
+		"-vn",
+		"-acodec", "libmp3lame",
+		"-b:a", "192k",
+		outPath,
+	)
+	transcodeCmd.Stderr = &stderr2
+	if err := transcodeCmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr2.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ffmpeg timeout")
+		}
+		return fmt.Errorf("ffmpeg m3u8 transcode failed: %s", clipText(msg, 400))
+	}
+	return nil
+}
+
+func runFFmpegAudioDownloadDirect(ctx context.Context, audioURL, outPath, userAgent string) error {
+	var stderr bytes.Buffer
+	headers := "Referer: https://vk.com/\r\nOrigin: https://vk.com\r\nAccept: */*\r\n"
+	cmd := exec.CommandContext(ctx,
+		"ffmpeg",
+		"-nostdin",
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		// Network resilience for HLS.
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_at_eof", "1",
+		"-reconnect_delay_max", "5",
+		"-rw_timeout", "15000000",
+		"-http_persistent", "0",
+		"-headers", headers,
+		"-user_agent", userAgent,
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+		"-allowed_extensions", "ALL",
+		"-http_seekable", "0",
+		"-fflags", "+discardcorrupt",
+		"-i", audioURL,
+		// Be tolerant to damaged frames in VK-protected streams.
+		"-err_detect", "ignore_err",
+		"-vn",
+		"-acodec", "libmp3lame",
+		"-b:a", "192k",
+		outPath,
+	)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ffmpeg timeout")
+		}
+		return fmt.Errorf("ffmpeg failed: %s", clipText(msg, 400))
+	}
+	return nil
 }
 
 func sendPhotoWithSpoilerAPI(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string) error {
@@ -1349,6 +1634,21 @@ func isOlenyamTrigger(tr *Trigger) bool {
 }
 
 func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
+	query := strings.TrimSpace(applyCapturingTemplate(queryTemplate, capturingText))
+	if msg == nil {
+		return query
+	}
+	replacements := buildMessageTemplateReplacements(bot, msg)
+	if query == "" {
+		return strings.TrimSpace(replacements["{{message}}"])
+	}
+	for tag, value := range replacements {
+		query = strings.ReplaceAll(query, tag, value)
+	}
+	return strings.TrimSpace(query)
+}
+
+func buildVKMusicQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
 	query := strings.TrimSpace(applyCapturingTemplate(queryTemplate, capturingText))
 	if msg == nil {
 		return query
