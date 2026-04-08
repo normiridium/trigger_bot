@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,5 +124,124 @@ func TestExtractCustomEmojiFromRaw(t *testing.T) {
 	}
 	if hits[0].Fallback != "🙂" || hits[1].Fallback != "🦌" {
 		t.Fatalf("unexpected fallbacks: %#v", hits)
+	}
+}
+
+func TestCanonicalizeTGEmojiTags(t *testing.T) {
+	in := `Aга, вот: \"<tg-emoji emoji-id=\"5247191236632152397\">\"</tg-emoji>`
+	got := canonicalizeTGEmojiTags(in)
+	if want := `<tg-emoji emoji-id="5247191236632152397">🙂</tg-emoji>`; !strings.Contains(got, want) {
+		t.Fatalf("canonical tg-emoji not found, got=%q", got)
+	}
+}
+
+func TestReplaceTGEmojiTagsWithFallback(t *testing.T) {
+	in := `Привет <tg-emoji emoji-id="1">🦌</tg-emoji> мир`
+	got := replaceTGEmojiTagsWithFallback(in)
+	if got != "Привет 🦌 мир" {
+		t.Fatalf("unexpected fallback replace: %q", got)
+	}
+}
+
+func TestContainsTelegramHTMLMarkup(t *testing.T) {
+	if !containsTelegramHTMLMarkup(`Привет <b>мир</b>`) {
+		t.Fatalf("expected true for <b> tag")
+	}
+	if !containsTelegramHTMLMarkup(`<tg-emoji emoji-id="1">💗</tg-emoji>`) {
+		t.Fatalf("expected true for tg-emoji tag")
+	}
+	if containsTelegramHTMLMarkup(`**markdown** без html`) {
+		t.Fatalf("expected false for pure markdown")
+	}
+}
+
+func TestMarkdownToTelegramHTMLLite(t *testing.T) {
+	in := "Код:\n```python\nprint('hi')\n```\nИ `x=1` и [сайт](https://example.com)"
+	got := markdownToTelegramHTMLLite(in)
+	if !strings.Contains(got, `<pre><code class="language-python">`) {
+		t.Fatalf("fenced code not converted: %q", got)
+	}
+	if !strings.Contains(got, `<code>x=1</code>`) {
+		t.Fatalf("inline code not converted: %q", got)
+	}
+	if !strings.Contains(got, `<a href="https://example.com">сайт</a>`) {
+		t.Fatalf("link not converted: %q", got)
+	}
+}
+
+func TestGPTDebouncerLeadingImmediate(t *testing.T) {
+	d := newGPTPromptDebouncer(120 * time.Millisecond)
+	if d == nil {
+		t.Fatalf("debouncer is nil")
+	}
+	orig := runGPTPromptTask
+	defer func() { runGPTPromptTask = orig }()
+
+	var mu sync.Mutex
+	calls := []int{}
+	ch := make(chan struct{}, 4)
+	runGPTPromptTask = func(task gptPromptTask) {
+		mu.Lock()
+		calls = append(calls, task.Msg.MessageID)
+		mu.Unlock()
+		ch <- struct{}{}
+	}
+
+	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 101}})
+	select {
+	case <-ch:
+	case <-time.After(40 * time.Millisecond):
+		t.Fatalf("expected immediate leading call")
+	}
+	select {
+	case <-ch:
+		t.Fatalf("unexpected extra call")
+	case <-time.After(150 * time.Millisecond):
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 || calls[0] != 101 {
+		t.Fatalf("unexpected calls: %#v", calls)
+	}
+}
+
+func TestGPTDebouncerTrailingLatest(t *testing.T) {
+	d := newGPTPromptDebouncer(140 * time.Millisecond)
+	if d == nil {
+		t.Fatalf("debouncer is nil")
+	}
+	orig := runGPTPromptTask
+	defer func() { runGPTPromptTask = orig }()
+
+	var mu sync.Mutex
+	calls := []int{}
+	ch := make(chan struct{}, 8)
+	runGPTPromptTask = func(task gptPromptTask) {
+		mu.Lock()
+		calls = append(calls, task.Msg.MessageID)
+		mu.Unlock()
+		ch <- struct{}{}
+	}
+
+	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 201}}) // immediate
+	<-ch
+	time.Sleep(30 * time.Millisecond)
+	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 202}})
+	time.Sleep(30 * time.Millisecond)
+	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 203}}) // latest in window
+
+	select {
+	case <-ch:
+	case <-time.After(220 * time.Millisecond):
+		t.Fatalf("expected trailing call")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %#v", calls)
+	}
+	if calls[0] != 201 || calls[1] != 203 {
+		t.Fatalf("expected [201 203], got %#v", calls)
 	}
 }

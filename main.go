@@ -210,8 +210,10 @@ type gptPromptDebouncer struct {
 }
 
 type gptPromptDebounceEntry struct {
-	timer *time.Timer
-	task  gptPromptTask
+	timer      *time.Timer
+	task       gptPromptTask
+	hasPending bool
+	lastSentAt time.Time
 }
 
 type chatIdleState struct {
@@ -289,41 +291,71 @@ func newGPTPromptDebouncer(delay time.Duration) *gptPromptDebouncer {
 
 func (d *gptPromptDebouncer) Schedule(chatID int64, task gptPromptTask) {
 	if d == nil || chatID == 0 {
-		executeGPTPromptTask(task)
+		runGPTPromptTask(task)
 		return
 	}
 
+	executeNow := false
+	now := time.Now()
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	ent, ok := d.pending[chatID]
+	if !ok {
+		ent = &gptPromptDebounceEntry{}
+		d.pending[chatID] = ent
+	}
 
-	if ent, ok := d.pending[chatID]; ok {
+	// Leading edge: if quiet window already passed, answer immediately.
+	if ent.lastSentAt.IsZero() || now.Sub(ent.lastSentAt) >= d.delay {
+		ent.task = task
+		ent.hasPending = false
+		ent.lastSentAt = now
+		if ent.timer != nil {
+			ent.timer.Stop()
+			ent.timer = nil
+		}
+		executeNow = true
+	} else {
+		// Trailing edge inside active window: keep only latest task.
+		ent.task = task
+		ent.hasPending = true
+		remaining := d.delay - now.Sub(ent.lastSentAt)
+		if remaining < 10*time.Millisecond {
+			remaining = 10 * time.Millisecond
+		}
 		if ent.timer != nil {
 			ent.timer.Stop()
 		}
-		ent.task = task
-		ent.timer = time.AfterFunc(d.delay, func() {
+		ent.timer = time.AfterFunc(remaining, func() {
 			d.fire(chatID)
 		})
-		return
 	}
+	d.mu.Unlock()
 
-	ent := &gptPromptDebounceEntry{task: task}
-	ent.timer = time.AfterFunc(d.delay, func() {
-		d.fire(chatID)
-	})
-	d.pending[chatID] = ent
+	if executeNow {
+		runGPTPromptTask(task)
+	}
 }
 
 func (d *gptPromptDebouncer) fire(chatID int64) {
 	d.mu.Lock()
 	ent := d.pending[chatID]
-	delete(d.pending, chatID)
-	d.mu.Unlock()
 	if ent == nil {
+		d.mu.Unlock()
 		return
 	}
-	executeGPTPromptTask(ent.task)
+	ent.timer = nil
+	if !ent.hasPending {
+		d.mu.Unlock()
+		return
+	}
+	task := ent.task
+	ent.hasPending = false
+	ent.lastSentAt = time.Now()
+	d.mu.Unlock()
+	runGPTPromptTask(task)
 }
+
+var runGPTPromptTask = executeGPTPromptTask
 
 func executeGPTPromptTask(task gptPromptTask) {
 	if task.Bot == nil || task.Msg == nil {
@@ -339,14 +371,167 @@ func executeGPTPromptTask(task gptPromptTask) {
 	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
 		replyTo = task.Msg.MessageID
 	}
-	if ok := sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, out, task.Trigger.Preview); ok {
+	rawOut := out
+	if debugGPTLogEnabled {
+		log.Printf("gpt flow trigger=%d chat=%d msg=%d raw_len=%d raw_tgemoji=%d raw=%q",
+			task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, len(rawOut), countTGEmojiTags(rawOut), clipText(rawOut, 1400))
+	}
+	out = canonicalizeTGEmojiTags(out)
+	if debugGPTLogEnabled {
+		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical=%q",
+			task.Trigger.ID, len(out), countTGEmojiTags(out), clipText(out, 1400))
+	}
+	sent := false
+	sendMode := "markdown"
+	hasHTML := containsTelegramHTMLMarkup(out)
+	if debugGPTLogEnabled {
+		log.Printf("gpt flow trigger=%d has_html=%v", task.Trigger.ID, hasHTML)
+	}
+	if hasHTML {
+		htmlOut := markdownToTelegramHTMLLite(out)
+		if debugGPTLogEnabled {
+			log.Printf("gpt flow trigger=%d html_len=%d html_tgemoji=%d html=%q",
+				task.Trigger.ID, len(htmlOut), countTGEmojiTags(htmlOut), clipText(htmlOut, 1400))
+		}
+		if ok := sendHTML(task.Bot, task.Msg.Chat.ID, replyTo, htmlOut, task.Trigger.Preview); ok {
+			sent = true
+			sendMode = "html"
+		} else {
+			fallbackText := replaceTGEmojiTagsWithFallback(out)
+			if debugGPTLogEnabled {
+				log.Printf("gpt flow trigger=%d html_send_failed fallback_len=%d fallback_tgemoji=%d fallback=%q",
+					task.Trigger.ID, len(fallbackText), countTGEmojiTags(fallbackText), clipText(fallbackText, 1400))
+			}
+			if ok := sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, fallbackText, task.Trigger.Preview); ok {
+				sent = true
+				sendMode = "markdown(fallback)"
+			}
+		}
+	} else if ok := sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, out, task.Trigger.Preview); ok {
+		sent = true
+	}
+	if sent {
 		if task.IdleTracker != nil {
 			task.IdleTracker.MarkActivity(task.ChatID, time.Now())
 		}
 	}
 	if debugTriggerLogEnabled {
-		log.Printf("send gpt/markdown attempted trigger=%d replyTo=%d", task.Trigger.ID, replyTo)
+		log.Printf("send gpt/%s attempted trigger=%d replyTo=%d", sendMode, task.Trigger.ID, replyTo)
 	}
+}
+
+var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P<id>\d+)"?\s*>"?(?P<fallback>.*?)"?</tg-emoji>"?`)
+var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
+var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
+
+func canonicalizeTGEmojiTags(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	if !strings.Contains(strings.ToLower(s), "tg-emoji") {
+		return s
+	}
+	return tgEmojiLooseRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := tgEmojiLooseRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		id := strings.TrimSpace(sub[1])
+		fallback := strings.TrimSpace(sub[2])
+		if fallback == "" {
+			fallback = "🙂"
+		}
+		return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, id, fallback)
+	})
+}
+
+func replaceTGEmojiTagsWithFallback(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	return tgEmojiCanonicalRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := tgEmojiCanonicalRe.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return "🙂"
+		}
+		fallback := strings.TrimSpace(sub[1])
+		if fallback == "" {
+			return "🙂"
+		}
+		return fallback
+	})
+}
+
+func containsTelegramHTMLMarkup(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	return telegramHTMLTagRe.FindStringIndex(s) != nil
+}
+
+func countTGEmojiTags(s string) int {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	return len(tgEmojiCanonicalRe.FindAllString(s, -1))
+}
+
+var mdFenceRe = regexp.MustCompile("(?s)```([a-zA-Z0-9_+-]*)\\n(.*?)```")
+var mdInlineCodeRe = regexp.MustCompile("`([^`\\n]+)`")
+var mdLinkRe = regexp.MustCompile(`\[(.*?)\]\((https?://[^\s)]+)\)`)
+var mdSpoilerRe = regexp.MustCompile(`\|\|(.+?)\|\|`)
+
+func markdownToTelegramHTMLLite(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	// Fenced code blocks first.
+	s = mdFenceRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := mdFenceRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		lang := strings.TrimSpace(sub[1])
+		code := html.EscapeString(sub[2])
+		if lang != "" {
+			return `<pre><code class="language-` + html.EscapeString(lang) + `">` + code + `</code></pre>`
+		}
+		return `<pre><code>` + code + `</code></pre>`
+	})
+	// Inline code.
+	s = mdInlineCodeRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := mdInlineCodeRe.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return m
+		}
+		return `<code>` + html.EscapeString(sub[1]) + `</code>`
+	})
+	// Links.
+	s = mdLinkRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := mdLinkRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		txt := html.EscapeString(strings.TrimSpace(sub[1]))
+		u := strings.TrimSpace(sub[2])
+		if txt == "" || u == "" {
+			return m
+		}
+		return `<a href="` + html.EscapeString(u) + `">` + txt + `</a>`
+	})
+	// Spoiler.
+	s = mdSpoilerRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := mdSpoilerRe.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return m
+		}
+		return `<tg-spoiler>` + html.EscapeString(sub[1]) + `</tg-spoiler>`
+	})
+	return s
 }
 
 func parseIdleMinutes(raw string) (int, bool) {
@@ -513,7 +698,7 @@ func main() {
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
 	gptDebouncer := newGPTPromptDebouncer(time.Duration(gptDebounceSec) * time.Second)
 	if gptDebounceSec > 0 {
-		log.Printf("gpt prompt debounce enabled: %ds (trailing per chat)", gptDebounceSec)
+		log.Printf("gpt prompt debounce enabled: %ds (leading+trailing per chat)", gptDebounceSec)
 	}
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
