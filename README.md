@@ -54,6 +54,7 @@ set -a; source .env; set +a
 - `SERPAPI_KEY` — обязательный ключ для `search_image`
 - `SERPAPI_ENGINE` — движок SerpAPI (по умолчанию `google_images`)
 - `GPT_PROMPT_DEBOUNCE_SEC` — debounce для `gpt_prompt` (если `>0`, бот отвечает только на последнее сообщение в окне времени, per chat)
+- `match_type=idle` — специальный тип условия: в поле `match_text` указывается время простоя в минутах, после которого бот автоответит на первое следующее сообщение (для `gpt_prompt`)
 
 ## UI-правки без ребилда
 

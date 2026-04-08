@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type WebAdmin struct {
@@ -96,6 +99,7 @@ func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	if err := r.ParseForm(); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
@@ -121,7 +125,8 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
+	log.Printf("web save trigger id=%d title=%q match_type=%s action=%s took=%s", t.ID, clipText(t.Title, 80), t.MatchType, t.ActionType, time.Since(started))
+	redirectToListWithToken(rw, r)
 }
 
 func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
@@ -133,7 +138,7 @@ func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
 	if id > 0 {
 		_ = w.store.ToggleTrigger(id)
 	}
-	http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
+	redirectToListWithToken(rw, r)
 }
 
 func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
@@ -145,7 +150,19 @@ func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
 	if id > 0 {
 		_ = w.store.DeleteTrigger(id)
 	}
-	http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
+	redirectToListWithToken(rw, r)
+}
+
+func redirectToListWithToken(rw http.ResponseWriter, r *http.Request) {
+	path := "/trigger_bot"
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		token = strings.TrimSpace(r.FormValue("token"))
+	}
+	if token != "" {
+		path = path + "?token=" + url.QueryEscape(token)
+	}
+	http.Redirect(rw, r, path, http.StatusFound)
 }
 
 func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {

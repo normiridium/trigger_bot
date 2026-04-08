@@ -34,9 +34,11 @@ func (e *TriggerEngine) Select(
 		if !cand.Enabled {
 			continue
 		}
-		if !TriggerMatches(cand, text) {
+		matched, capture := TriggerMatchCapture(cand, text)
+		if !matched {
 			continue
 		}
+		cand.CapturingText = capture
 		if !triggerModeMatches(bot, &cand, msg) {
 			continue
 		}
@@ -59,4 +61,3 @@ func (e *TriggerEngine) Select(
 	}
 	return nil
 }
-

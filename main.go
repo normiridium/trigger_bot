@@ -168,6 +168,8 @@ type gptPromptTask struct {
 	Trigger       Trigger
 	Msg           *tgbotapi.Message
 	RecentContext string
+	IdleTracker   *chatIdleTracker
+	ChatID        int64
 }
 
 type gptPromptDebouncer struct {
@@ -179,6 +181,69 @@ type gptPromptDebouncer struct {
 type gptPromptDebounceEntry struct {
 	timer *time.Timer
 	task  gptPromptTask
+}
+
+type chatIdleState struct {
+	firstSeen    time.Time
+	lastActivity time.Time
+}
+
+type chatIdleTracker struct {
+	mu    sync.RWMutex
+	chats map[int64]chatIdleState
+}
+
+func newChatIdleTracker() *chatIdleTracker {
+	return &chatIdleTracker{
+		chats: make(map[int64]chatIdleState),
+	}
+}
+
+func (t *chatIdleTracker) Seen(chatID int64, now time.Time) {
+	if t == nil || chatID == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	st := t.chats[chatID]
+	if st.firstSeen.IsZero() {
+		st.firstSeen = now
+	}
+	t.chats[chatID] = st
+}
+
+func (t *chatIdleTracker) MarkActivity(chatID int64, now time.Time) {
+	if t == nil || chatID == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	st := t.chats[chatID]
+	if st.firstSeen.IsZero() {
+		st.firstSeen = now
+	}
+	st.lastActivity = now
+	t.chats[chatID] = st
+}
+
+func (t *chatIdleTracker) ShouldAutoReply(chatID int64, idleAfter time.Duration, now time.Time) bool {
+	if t == nil || chatID == 0 || idleAfter <= 0 {
+		return false
+	}
+	t.mu.RLock()
+	st, ok := t.chats[chatID]
+	t.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	base := st.lastActivity
+	if base.IsZero() {
+		base = st.firstSeen
+	}
+	if base.IsZero() {
+		return false
+	}
+	return now.Sub(base) >= idleAfter
 }
 
 func newGPTPromptDebouncer(delay time.Duration) *gptPromptDebouncer {
@@ -233,7 +298,7 @@ func executeGPTPromptTask(task gptPromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
-	out, err := generateChatGPTReply(task.Bot, task.Trigger.ResponseText, task.Msg, task.RecentContext)
+	out, err := generateChatGPTReply(task.Bot, task.Trigger.ResponseText, task.Msg, task.RecentContext, task.Trigger.CapturingText)
 	if err != nil {
 		log.Printf("gpt prompt failed: %v", err)
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
@@ -243,10 +308,71 @@ func executeGPTPromptTask(task gptPromptTask) {
 	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
 		replyTo = task.Msg.MessageID
 	}
-	sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, out, task.Trigger.Preview)
+	if ok := sendMarkdownV2(task.Bot, task.Msg.Chat.ID, replyTo, out, task.Trigger.Preview); ok {
+		if task.IdleTracker != nil {
+			task.IdleTracker.MarkActivity(task.ChatID, time.Now())
+		}
+	}
 	if debugTriggerLogEnabled {
 		log.Printf("send gpt/markdown attempted trigger=%d replyTo=%d", task.Trigger.ID, replyTo)
 	}
+}
+
+func parseIdleMinutes(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+func selectIdleAutoReplyTrigger(
+	bot *tgbotapi.BotAPI,
+	msg *tgbotapi.Message,
+	items []Trigger,
+	isAdminFn func() bool,
+) (*Trigger, time.Duration) {
+	if msg == nil || len(items) == 0 {
+		return nil, 0
+	}
+	adminChecked := false
+	isAdmin := false
+
+	for i := range items {
+		it := items[i]
+		if !it.Enabled || it.ActionType != "gpt_prompt" || normalizeMatchType(it.MatchType) != "idle" {
+			continue
+		}
+		minutes, ok := parseIdleMinutes(it.MatchText)
+		if !ok {
+			continue
+		}
+		if !triggerModeMatches(bot, &it, msg) {
+			continue
+		}
+		if it.AdminMode != "anybody" {
+			if !adminChecked {
+				isAdmin = isAdminFn()
+				adminChecked = true
+			}
+			if it.AdminMode == "admins" && !isAdmin {
+				continue
+			}
+			if it.AdminMode == "not_admins" && isAdmin {
+				continue
+			}
+		}
+		if it.Chance < 100 && rand.Intn(100) >= it.Chance {
+			continue
+		}
+		cp := it
+		return &cp, time.Duration(minutes) * time.Minute
+	}
+	return nil, 0
 }
 
 func newAdminStatusCache(ttl time.Duration) *adminStatusCache {
@@ -352,6 +478,7 @@ func main() {
 	adminCacheTTL := time.Duration(envInt("ADMIN_CACHE_TTL_SEC", 120)) * time.Second
 	adminCache := newAdminStatusCache(adminCacheTTL)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	idleTracker := newChatIdleTracker()
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
 	gptDebouncer := newGPTPromptDebouncer(time.Duration(gptDebounceSec) * time.Second)
 	if gptDebounceSec > 0 {
@@ -404,6 +531,7 @@ func main() {
 					"{{sender_tag}}\n" +
 					"{{chat_id}}, {{chat_title}}\n" +
 					"{{reply_text}}\n" +
+					"{{capturing_text}}\n" +
 					"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
 					"{{reply_display_name}}, {{reply_label}}\n" +
 					"{{reply_sender_tag}}"
@@ -416,6 +544,8 @@ func main() {
 		if text == "" {
 			continue
 		}
+		now := time.Now()
+		idleTracker.Seen(msg.Chat.ID, now)
 
 		recentBefore := chatRecent.RecentText(msg.Chat.ID, envInt("OLENYAM_CONTEXT_MESSAGES", 4))
 		displayName := strings.TrimSpace(msg.From.FirstName)
@@ -450,6 +580,34 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("no trigger matched for msg=%d", msg.MessageID)
 			}
+			if idleTracker != nil {
+				autoTr, idleAfter := selectIdleAutoReplyTrigger(bot, msg, items, func() bool {
+					return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+				})
+				if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
+					ctx := ""
+					if isOlenyamTrigger(autoTr) {
+						ctx = recentBefore
+					}
+					task := gptPromptTask{
+						Bot:           bot,
+						Trigger:       *autoTr,
+						Msg:           msg,
+						RecentContext: ctx,
+						IdleTracker:   idleTracker,
+						ChatID:        msg.Chat.ID,
+					}
+					if gptDebouncer != nil {
+						gptDebouncer.Schedule(msg.Chat.ID, task)
+					} else {
+						executeGPTPromptTask(task)
+					}
+					if debugTriggerLogEnabled {
+						log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
+					}
+					continue
+				}
+			}
 			continue
 		}
 		if debugTriggerLogEnabled {
@@ -465,8 +623,11 @@ func main() {
 			if _, err := bot.Request(cfg); err != nil {
 				log.Printf("delete message failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка удаления сообщения", err)
-			} else if debugTriggerLogEnabled {
-				log.Printf("delete ok msg=%d by trigger=%d", msg.MessageID, tr.ID)
+			} else {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				if debugTriggerLogEnabled {
+					log.Printf("delete ok msg=%d by trigger=%d", msg.MessageID, tr.ID)
+				}
 			}
 		case "gpt_prompt":
 			ctx := ""
@@ -479,6 +640,8 @@ func main() {
 					Trigger:       *tr,
 					Msg:           msg,
 					RecentContext: ctx,
+					IdleTracker:   idleTracker,
+					ChatID:        msg.Chat.ID,
 				})
 				if debugTriggerLogEnabled {
 					log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
@@ -490,9 +653,11 @@ func main() {
 				Trigger:       *tr,
 				Msg:           msg,
 				RecentContext: ctx,
+				IdleTracker:   idleTracker,
+				ChatID:        msg.Chat.ID,
 			})
 		case "gpt_image":
-			img, err := generateChatGPTImage(bot, tr.ResponseText, msg)
+			img, err := generateChatGPTImage(bot, tr.ResponseText, msg, tr.CapturingText)
 			if err != nil {
 				log.Printf("gpt image failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -502,12 +667,14 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendPhoto(bot, msg.Chat.ID, replyTo, img, "CW: сгенерено нейросетью", true)
+			if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "CW: сгенерено нейросетью", true); ok {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
 			if debugTriggerLogEnabled {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "search_image":
-			query := buildImageSearchQueryFromMessage(bot, tr.ResponseText, msg)
+			query := buildImageSearchQueryFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
 			img, err := searchImageInSerpAPI(query)
 			if err != nil {
 				log.Printf("search image failed: %v", err)
@@ -518,7 +685,9 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendPhoto(bot, msg.Chat.ID, replyTo, img, "", false)
+			if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "", false); ok {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
@@ -527,7 +696,10 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			sendHTML(bot, msg.Chat.ID, replyTo, tr.ResponseText, tr.Preview)
+			out := applyCapturingTemplate(tr.ResponseText, tr.CapturingText)
+			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
 			if debugTriggerLogEnabled {
 				log.Printf("send static/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
@@ -582,7 +754,7 @@ func reply(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview
 	}
 }
 
-func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, preview bool) {
+func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, preview bool) bool {
 	html = normalizeTelegramLineBreaks(html)
 	m := tgbotapi.NewMessage(chatID, html)
 	m.ParseMode = "HTML"
@@ -598,14 +770,15 @@ func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, prev
 	if err != nil {
 		log.Printf("send html failed: %v", err)
 		reportChatFailure(bot, chatID, "ошибка отправки HTML-сообщения", err)
-		return
+		return false
 	}
 	if debugTriggerLogEnabled {
 		log.Printf("send html ok chat=%d msg=%d replyTo=%d text=%q", chatID, sent.MessageID, replyTo, clipText(m.Text, 120))
 	}
+	return true
 }
 
-func sendMarkdownV2(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview bool) {
+func sendMarkdownV2(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview bool) bool {
 	text = normalizeTelegramLineBreaks(text)
 	text = escapeMarkdownV2PreservingFences(text)
 	m := tgbotapi.NewMessage(chatID, text)
@@ -622,11 +795,12 @@ func sendMarkdownV2(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string
 	if err != nil {
 		log.Printf("send markdown failed: %v", err)
 		reportChatFailure(bot, chatID, "ошибка отправки Markdown-сообщения", err)
-		return
+		return false
 	}
 	if debugTriggerLogEnabled {
 		log.Printf("send markdown ok chat=%d msg=%d replyTo=%d text=%q", chatID, sent.MessageID, replyTo, clipText(m.Text, 120))
 	}
+	return true
 }
 
 type generatedImage struct {
@@ -634,17 +808,17 @@ type generatedImage struct {
 	Bytes []byte
 }
 
-func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string, spoiler bool) {
+func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string, spoiler bool) bool {
 	if spoiler {
 		if err := sendPhotoWithSpoilerAPI(bot, chatID, replyTo, img, caption); err != nil {
 			log.Printf("send photo (spoiler) failed: %v", err)
 			reportChatFailure(bot, chatID, "ошибка отправки картинки", err)
-			return
+			return false
 		}
 		if debugTriggerLogEnabled {
 			log.Printf("send photo (spoiler) ok chat=%d replyTo=%d", chatID, replyTo)
 		}
-		return
+		return true
 	}
 
 	var file tgbotapi.RequestFileData
@@ -655,7 +829,7 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 		file = tgbotapi.FileBytes{Name: "generated.png", Bytes: img.Bytes}
 	default:
 		reportChatFailure(bot, chatID, "ошибка отправки картинки", errors.New("empty image payload"))
-		return
+		return false
 	}
 
 	m := tgbotapi.NewPhoto(chatID, file)
@@ -668,7 +842,7 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 	if err != nil {
 		log.Printf("send photo failed: %v", err)
 		reportChatFailure(bot, chatID, "ошибка отправки картинки", err)
-		return
+		return false
 	}
 	if debugTriggerLogEnabled {
 		if strings.TrimSpace(img.URL) != "" {
@@ -677,6 +851,7 @@ func sendPhoto(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedIma
 			log.Printf("send photo ok chat=%d msg=%d replyTo=%d source=bytes size=%d", chatID, sent.MessageID, replyTo, len(img.Bytes))
 		}
 	}
+	return true
 }
 
 func sendPhotoWithSpoilerAPI(bot *tgbotapi.BotAPI, chatID int64, replyTo int, img generatedImage, caption string) error {
@@ -854,6 +1029,13 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 	return prompt + "\n\nСообщение пользователя:\n" + replacements["{{message}}"]
 }
 
+func applyCapturingTemplate(s, capture string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, "{{capturing_text}}", strings.TrimSpace(capture))
+}
+
 func isOlenyamTrigger(tr *Trigger) bool {
 	if tr == nil {
 		return false
@@ -862,8 +1044,8 @@ func isOlenyamTrigger(tr *Trigger) bool {
 	return strings.Contains(title, "оле-ням") || strings.Contains(title, "оленям") || strings.Contains(title, "оле ням")
 }
 
-func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message) string {
-	query := strings.TrimSpace(queryTemplate)
+func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
+	query := strings.TrimSpace(applyCapturingTemplate(queryTemplate, capturingText))
 	if msg == nil {
 		return query
 	}
@@ -1039,7 +1221,7 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 		return generatedImage{}, errors.New("nothing found")
 	}
 
-	var lastErr error
+	candidates := make([]string, 0, len(payload.ImagesResult))
 	for _, it := range payload.ImagesResult {
 		u := strings.TrimSpace(it.Original)
 		if u == "" {
@@ -1051,6 +1233,16 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 		if u == "" {
 			continue
 		}
+		candidates = append(candidates, u)
+	}
+	if len(candidates) == 0 {
+		return generatedImage{}, errors.New("image URL is empty")
+	}
+
+	perm := rand.Perm(len(candidates))
+	var lastErr error
+	for _, idx := range perm {
+		u := candidates[idx]
 		imgBytes, err := fetchImageBytes(u)
 		if err != nil {
 			lastErr = err
@@ -1094,7 +1286,7 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 	return bodyBytes, nil
 }
 
-func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, recentContext string) (string, error) {
+func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, recentContext string, capturingText string) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return "", errors.New("OPENAI_API_KEY is empty")
@@ -1104,7 +1296,7 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 		model = "gpt-4.1-mini"
 	}
 
-	prompt := buildPromptFromMessage(bot, promptTemplate, msg)
+	prompt := buildPromptFromMessage(bot, applyCapturingTemplate(promptTemplate, capturingText), msg)
 	if strings.TrimSpace(recentContext) != "" {
 		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
 	}
@@ -1165,7 +1357,7 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 	return out, nil
 }
 
-func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message) (generatedImage, error) {
+func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, capturingText string) (generatedImage, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return generatedImage{}, errors.New("OPENAI_API_KEY is empty")
@@ -1179,7 +1371,7 @@ func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 		size = "1024x1024"
 	}
 
-	prompt := buildPromptFromMessage(bot, promptTemplate, msg)
+	prompt := buildPromptFromMessage(bot, applyCapturingTemplate(promptTemplate, capturingText), msg)
 	if debugGPTLogEnabled {
 		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, clipText(prompt, 1400))
 	}
