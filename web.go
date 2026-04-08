@@ -99,17 +99,31 @@ func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
+	// Save is submitted from JS as multipart/form-data (FormData),
+	// and sometimes as regular form-urlencoded. Support both robustly.
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		if err := r.ParseForm(); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
 	chance, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("chance")))
+	enabledRaw := strings.TrimSpace(r.FormValue("enabled"))
+	enabled := enabledRaw == "1"
+	if id <= 0 && enabledRaw == "" {
+		enabled = true
+	}
+	replyRaw := strings.TrimSpace(r.FormValue("reply"))
+	reply := replyRaw == "1"
+	if id <= 0 && replyRaw == "" {
+		reply = true
+	}
 	t := Trigger{
 		ID:            id,
 		UID:           strings.TrimSpace(r.FormValue("uid")),
 		Title:         r.FormValue("title"),
-		Enabled:       r.FormValue("enabled") == "1",
+		Enabled:       enabled,
 		TriggerMode:   r.FormValue("trigger_mode"),
 		AdminMode:     r.FormValue("admin_mode"),
 		MatchText:     r.FormValue("match_text"),
@@ -117,7 +131,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		CaseSensitive: r.FormValue("case_sensitive") == "1",
 		ActionType:    r.FormValue("action_type"),
 		ResponseText:  r.FormValue("response_text"),
-		Reply:         r.FormValue("reply") == "1",
+		Reply:         reply,
 		Preview:       r.FormValue("preview") == "1",
 		Chance:        chance,
 	}
@@ -213,6 +227,18 @@ func (w *WebAdmin) renderTemplate(rw http.ResponseWriter, name string, data inte
 				return "ВКЛ"
 			}
 			return "ВЫКЛ"
+		},
+		"statusTitle": func(enabled bool) string {
+			if enabled {
+				return "Включен"
+			}
+			return "Выключен"
+		},
+		"statusIcon": func(enabled bool) string {
+			if enabled {
+				return "bi-eye-fill"
+			}
+			return "bi-eye-slash-fill"
 		},
 	}).ParseFiles(tplPath)
 	if err != nil {

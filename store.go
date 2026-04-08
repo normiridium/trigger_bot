@@ -275,7 +275,6 @@ func (s *Store) SaveTrigger(t Trigger) error {
 		t.Title = "Новый триггер"
 	}
 	t.MatchText = strings.TrimSpace(t.MatchText)
-	t.ResponseText = strings.TrimSpace(t.ResponseText)
 	t.TriggerMode = normalizeTriggerMode(t.TriggerMode)
 	t.AdminMode = normalizeAdminMode(t.AdminMode)
 	t.MatchType = normalizeMatchType(t.MatchType)
