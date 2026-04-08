@@ -583,7 +583,7 @@ func reply(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview
 }
 
 func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, preview bool) {
-	html = normalizeEscapedHTMLBreaks(html)
+	html = normalizeTelegramLineBreaks(html)
 	m := tgbotapi.NewMessage(chatID, html)
 	m.ParseMode = "HTML"
 	m.DisableWebPagePreview = !preview
@@ -606,7 +606,7 @@ func sendHTML(bot *tgbotapi.BotAPI, chatID int64, replyTo int, html string, prev
 }
 
 func sendMarkdownV2(bot *tgbotapi.BotAPI, chatID int64, replyTo int, text string, preview bool) {
-	text = normalizeEscapedHTMLBreaks(text)
+	text = normalizeTelegramLineBreaks(text)
 	text = escapeMarkdownV2PreservingFences(text)
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ParseMode = "MarkdownV2"
@@ -747,10 +747,13 @@ func sendPhotoWithSpoilerAPI(bot *tgbotapi.BotAPI, chatID int64, replyTo int, im
 	return nil
 }
 
-func normalizeEscapedHTMLBreaks(s string) string {
-	s = strings.ReplaceAll(s, "\\r\\n", "<br>")
-	s = strings.ReplaceAll(s, "\\n", "<br>")
-	s = strings.ReplaceAll(s, "\\r", "<br>")
+func normalizeTelegramLineBreaks(s string) string {
+	s = strings.ReplaceAll(s, "\\r\\n", "\n")
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	s = strings.ReplaceAll(s, "\\r", "\n")
+	s = strings.ReplaceAll(s, "<br>", "\n")
+	s = strings.ReplaceAll(s, "<br/>", "\n")
+	s = strings.ReplaceAll(s, "<br />", "\n")
 	return s
 }
 
