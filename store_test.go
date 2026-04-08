@@ -178,3 +178,120 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 		t.Fatalf("valid regex trigger must not have regex error: %q", items[0].RegexError)
 	}
 }
+
+func TestSaveTriggerAssignsUID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "uid_assign.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SaveTrigger(Trigger{
+		Title:        "uid auto",
+		Enabled:      true,
+		TriggerMode:  "all",
+		AdminMode:    "anybody",
+		MatchText:    "тест",
+		MatchType:    "partial",
+		ActionType:   "send",
+		ResponseText: "ok",
+		Reply:        true,
+		Chance:       100,
+	}); err != nil {
+		t.Fatalf("save trigger: %v", err)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(items))
+	}
+	if items[0].UID == "" {
+		t.Fatalf("uid must be auto-assigned")
+	}
+}
+
+func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "uid_import.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	const uid = "11111111-2222-4333-8444-555555555555"
+	if err := s.SaveTrigger(Trigger{
+		UID:          uid,
+		Title:        "old title",
+		Enabled:      true,
+		TriggerMode:  "all",
+		AdminMode:    "anybody",
+		MatchText:    "старое",
+		MatchType:    "partial",
+		ActionType:   "send",
+		ResponseText: "старый ответ",
+		Reply:        true,
+		Chance:       100,
+	}); err != nil {
+		t.Fatalf("save base trigger: %v", err)
+	}
+
+	raw := `[
+	  {"uid":"11111111-2222-4333-8444-555555555555","title":"new title","match_text":"новое","match_type":"partial","action_type":"send","response_text":"новый ответ","send_as_reply":true},
+	  {"title":"partial item without columns"}
+	]`
+	n, err := s.ImportJSON([]byte(raw))
+	if err != nil {
+		t.Fatalf("import json: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected imported count=2, got %d", n)
+	}
+
+	items, err := s.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 triggers total (1 update + 1 new), got %d", len(items))
+	}
+
+	var updated *Trigger
+	var partial *Trigger
+	for i := range items {
+		it := &items[i]
+		if it.UID == uid {
+			updated = it
+			continue
+		}
+		if it.Title == "partial item without columns" {
+			partial = it
+		}
+	}
+	if updated == nil {
+		t.Fatalf("updated trigger by uid not found")
+	}
+	if updated.Title != "new title" || updated.MatchText != "новое" || updated.ResponseText != "новый ответ" {
+		t.Fatalf("uid-based update not applied: %#v", *updated)
+	}
+	if partial == nil {
+		t.Fatalf("partial item was not imported")
+	}
+}
+
+func TestImportJSONLegacyFormatNotSupported(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy_import.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	legacy := `[{"t":"legacy","cos":[{"tt":"x","ty":"1"}],"acs":[{"ty":"se","t":"ok","sr":"1"}]}]`
+	if _, err := s.ImportJSON([]byte(legacy)); err == nil {
+		t.Fatalf("legacy format should not be supported anymore")
+	}
+}
