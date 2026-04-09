@@ -516,7 +516,7 @@ func benchmarkRegex100US(re *regexp.Regexp) int64 {
 	if re == nil {
 		return 0
 	}
-	const iterations = 100
+	const iterations = 1000
 	sample := randomBenchmarkText(512)
 	start := time.Now()
 	for i := 0; i < iterations; i++ {
