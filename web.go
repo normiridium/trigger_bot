@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -49,10 +50,13 @@ func (w *WebAdmin) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (w *WebAdmin) routes() http.Handler {
 	mux := http.NewServeMux()
+	staticDir := envOr("WEB_STATIC_DIR", "./static")
+	mux.Handle("/trigger_bot/static/", http.StripPrefix("/trigger_bot/static/", http.FileServer(http.Dir(staticDir))))
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 	})
 	mux.HandleFunc("/trigger_bot", w.withAuth(w.listPage))
+	mux.HandleFunc("/trigger_bot/list", w.withAuth(w.listJSON))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
@@ -68,17 +72,29 @@ func (w *WebAdmin) routes() http.Handler {
 }
 
 func (w *WebAdmin) listPage(rw http.ResponseWriter, r *http.Request) {
-	items, err := w.store.ListTriggers()
+	body, err := w.renderTemplate("trigger_list.html", map[string]interface{}{})
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := w.renderTemplate(rw, "trigger_list.html", map[string]interface{}{
-		"Items": items,
-	}); err != nil {
+	rw.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write(body)
+}
+
+func (w *WebAdmin) listJSON(rw http.ResponseWriter, r *http.Request) {
+	items, err := w.store.ListTriggers()
+	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		Items []Trigger `json:"items"`
+	}{
+		Items: items,
+	})
 }
 
 func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
@@ -121,6 +137,8 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	if id <= 0 && replyRaw == "" {
 		reply = true
 	}
+	deleteSourceRaw := strings.TrimSpace(r.FormValue("delete_source"))
+	deleteSource := deleteSourceRaw == "1"
 	t := Trigger{
 		ID:            id,
 		UID:           strings.TrimSpace(r.FormValue("uid")),
@@ -135,6 +153,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		ResponseText:  r.FormValue("response_text"),
 		Reply:         reply,
 		Preview:       r.FormValue("preview") == "1",
+		DeleteSource:  deleteSource,
 		Chance:        chance,
 	}
 	if err := w.store.SaveTrigger(t); err != nil {
@@ -235,7 +254,7 @@ func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 	redirectToListWithToken(rw, r)
 }
 
-func (w *WebAdmin) renderTemplate(rw http.ResponseWriter, name string, data interface{}) error {
+func (w *WebAdmin) renderTemplate(name string, data interface{}) ([]byte, error) {
 	tplPath := filepath.Join(envOr("WEB_TEMPLATE_DIR", "./templates"), name)
 	tpl, err := template.New(name).Funcs(template.FuncMap{
 		"statusClass": func(enabled bool) string {
@@ -270,7 +289,11 @@ func (w *WebAdmin) renderTemplate(rw http.ResponseWriter, name string, data inte
 		},
 	}).ParseFiles(tplPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return tpl.Execute(rw, data)
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

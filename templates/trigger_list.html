@@ -4,95 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Триггеры</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-  <style>
-    body { background: #111827; }
-    .app { max-width: 1280px; }
-    .table code { font-size: .9rem; }
-    .mini-toolbar .btn,
-    .mini-toolbar .form-select {
-      font-size: .75rem;
-      padding: .15rem .35rem;
-      line-height: 1.2;
-    }
-    .mini-toolbar .btn i {
-      font-size: .8rem;
-    }
-    .import-file-wrap {
-      display: inline-flex;
-      align-items: stretch;
-      border: 1px solid #4b5563;
-      border-radius: .5rem;
-      overflow: hidden;
-      background: #0b1220;
-      min-width: 390px;
-      max-width: 520px;
-    }
-    .import-file-btn {
-      border: 0;
-      border-right: 1px solid #4b5563;
-      border-radius: 0;
-      background: #1f2937;
-      color: #e5e7eb;
-      padding: .5rem .75rem;
-      font-size: 1rem;
-      line-height: 1.5;
-      cursor: pointer;
-      margin: 0;
-    }
-    .import-file-btn:hover {
-      background: #273548;
-      color: #f3f4f6;
-    }
-    .import-file-name {
-      display: inline-flex;
-      align-items: center;
-      padding: .5rem .75rem;
-      color: #e5e7eb;
-      min-width: 180px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      background: #0b1220;
-    }
-    .action-mini {
-      padding: .18rem .42rem;
-      line-height: 1;
-      font-size: .78rem;
-    }
-    .action-mini i {
-      font-size: .88rem;
-    }
-    .drag-handle {
-      cursor: grab;
-      color: #9ca3af;
-      user-select: none;
-    }
-    .drag-handle:active {
-      cursor: grabbing;
-    }
-    tr.dragging-row {
-      opacity: .55;
-    }
-    .regex-bench {
-      color: #9ca3af;
-    }
-  </style>
+  <link href="/trigger_bot/static/trigger_list.css" rel="stylesheet">
 </head>
 <body class="text-light">
-<div class="container-fluid py-4 app">
+<div class="container-fluid py-4 app" x-data="triggerApp()" x-init="initTriggerPage()">
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
     <h3 class="m-0 me-2">Триггеры</h3>
-    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto">
+    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
       <div class="import-file-wrap">
-        <input class="d-none" type="file" name="file" id="import_file" accept="application/json" onchange="updateImportFileName(this)">
+        <input class="d-none" type="file" name="file" id="import_file" accept="application/json" x-on:change="updateImportFileName($event.target)">
         <label class="import-file-btn" for="import_file">Выберите файл</label>
         <span class="import-file-name" id="import_file_name">Файл не выбран</span>
       </div>
-      <button class="btn btn-secondary" type="submit"><i class="bi bi-upload"></i> Импорт JSON</button>
+      <button class="btn btn-secondary" type="submit" id="import_submit_btn"><i class="bi bi-upload"></i> Импорт JSON</button>
     </form>
-    <button class="btn btn-success" type="button" onclick="openNew()"><i class="bi bi-plus-lg"></i> Новый</button>
+    <button class="btn btn-success" type="button" x-on:click="openNew()"><i class="bi bi-plus-lg"></i> Новый</button>
     <a class="btn btn-primary" id="export_link" href="/trigger_bot/export"><i class="bi bi-download"></i> Экспорт</a>
   </div>
 
@@ -101,39 +30,7 @@
       <thead>
         <tr><th></th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
       </thead>
-      <tbody id="triggers_tbody">
-        {{range .Items}}
-        <tr data-id="{{.ID}}">
-          <td class="text-center"><i class="bi bi-grip-vertical drag-handle" title="Перетащить для изменения приоритета"></i></td>
-          <td>{{.Title}}</td>
-          <td>
-            <code>{{.MatchText}}</code>
-            {{if .RegexError}}<i class="bi bi-exclamation-triangle-fill text-danger mx-1" title="{{.RegexError}}"></i>{{end}}
-            <small>
-              {{if eq .MatchType "regex"}}<span class="regex-bench">{{regexBenchText .}}</span> {{end}}({{.MatchType}})
-            </small>
-          </td>
-          <td><small>{{.ActionType}} / {{.AdminMode}}</small></td>
-          <td class="text-nowrap">
-            <form class="d-inline" method="post" action="/trigger_bot/toggle">
-              <input type="hidden" name="id" value="{{.ID}}">
-              <button class="btn btn-sm action-mini {{if .Enabled}}btn-outline-success{{else}}btn-outline-secondary{{end}}" type="submit" title="Переключить статус" aria-label="Переключить статус">
-                <i class="bi {{statusIcon .Enabled}}"></i>
-              </button>
-            </form>
-            <button class="btn btn-sm action-mini btn-outline-primary ms-1" type="button" onclick="openEdit({{.ID}})" title="Редактировать" aria-label="Редактировать">
-              <i class="bi bi-pencil"></i>
-            </button>
-            <form class="d-inline ms-1" method="post" action="/trigger_bot/delete" onsubmit="return confirm('Удалить?')">
-              <input type="hidden" name="id" value="{{.ID}}">
-              <button class="btn btn-sm action-mini btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить">
-                <i class="bi bi-x-lg"></i>
-              </button>
-            </form>
-          </td>
-        </tr>
-        {{end}}
-      </tbody>
+      <tbody id="triggers_tbody"></tbody>
     </table>
   </div>
 </div>
@@ -141,11 +38,18 @@
 <div class="modal fade" id="triggerModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
     <div class="modal-content bg-dark text-light border-secondary">
+      <form method="post" action="/trigger_bot/save" id="trigger_form" x-on:submit="submitTriggerForm($event)">
       <div class="modal-header border-secondary">
-        <h5 class="modal-title">Триггер</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        <h5 class="modal-title me-3">Триггер</h5>
+        <div class="ms-auto d-flex align-items-center gap-3">
+          <input type="hidden" name="enabled" id="f_enabled" value="1">
+          <div class="form-check form-switch enabled-switch-head m-0">
+            <input class="form-check-input" type="checkbox" role="switch" id="f_enabled_switch" x-on:change="syncSwitch('f_enabled')" title="Включен" aria-label="Включен">
+            <label class="form-check-label" for="f_enabled_switch">Включен</label>
+          </div>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
       </div>
-      <form method="post" action="/trigger_bot/save" id="trigger_form" onsubmit="return submitTriggerForm(event)">
         <div class="modal-body">
           <input type="hidden" name="id" id="f_id">
           <input type="hidden" name="uid" id="f_uid">
@@ -211,31 +115,31 @@
             <div class="col-12">
               <div class="row g-3">
                 <div class="col-12 col-sm-6 col-lg-3">
-                  <input type="hidden" name="enabled" id="f_enabled" value="1">
-                  <div class="form-check form-switch mt-1">
-                    <input class="form-check-input" type="checkbox" role="switch" id="f_enabled_switch" onchange="syncSwitch('f_enabled')">
-                    <label class="form-check-label" for="f_enabled_switch">Включен</label>
-                  </div>
-                </div>
-                <div class="col-12 col-sm-6 col-lg-3">
                   <input type="hidden" name="case_sensitive" id="f_case_sensitive" value="0">
                   <div class="form-check form-switch mt-1">
-                    <input class="form-check-input" type="checkbox" role="switch" id="f_case_sensitive_switch" onchange="syncSwitch('f_case_sensitive')">
+                    <input class="form-check-input" type="checkbox" role="switch" id="f_case_sensitive_switch" x-on:change="syncSwitch('f_case_sensitive')">
                     <label class="form-check-label" for="f_case_sensitive_switch">Учитывать регистр</label>
                   </div>
                 </div>
                 <div class="col-12 col-sm-6 col-lg-3">
                   <input type="hidden" name="reply" id="f_reply" value="1">
                   <div class="form-check form-switch mt-1">
-                    <input class="form-check-input" type="checkbox" role="switch" id="f_reply_switch" onchange="syncSwitch('f_reply')">
+                    <input class="form-check-input" type="checkbox" role="switch" id="f_reply_switch" x-on:change="syncSwitch('f_reply')">
                     <label class="form-check-label" for="f_reply_switch">Отправлять reply</label>
                   </div>
                 </div>
                 <div class="col-12 col-sm-6 col-lg-3">
                   <input type="hidden" name="preview" id="f_preview" value="0">
                   <div class="form-check form-switch mt-1">
-                    <input class="form-check-input" type="checkbox" role="switch" id="f_preview_switch" onchange="syncSwitch('f_preview')">
+                    <input class="form-check-input" type="checkbox" role="switch" id="f_preview_switch" x-on:change="syncSwitch('f_preview')">
                     <label class="form-check-label" for="f_preview_switch">Превью ссылки</label>
+                  </div>
+                </div>
+                <div class="col-12 col-sm-6 col-lg-3">
+                  <input type="hidden" name="delete_source" id="f_delete_source" value="0">
+                  <div class="form-check form-switch mt-1">
+                    <input class="form-check-input" type="checkbox" role="switch" id="f_delete_source_switch" x-on:change="syncSwitch('f_delete_source')">
+                    <label class="form-check-label" for="f_delete_source_switch">Удалять исходное сообщение</label>
                   </div>
                 </div>
               </div>
@@ -243,18 +147,18 @@
 
             <div class="col-12">
               <div class="d-flex flex-wrap align-items-center gap-1 mb-1 mini-toolbar">
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<b>','</b>')" title="Жирный"><i class="bi bi-type-bold"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<i>','</i>')" title="Курсив"><i class="bi bi-type-italic"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<u>','</u>')" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<s>','</s>')" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<code>','</code>')" title="Код"><i class="bi bi-code-square"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<pre>','</pre>')" title="Блок кода"><i class="bi bi-braces"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<blockquote>','</blockquote>')" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="insertResponseLink()" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="wrapResponseSelection('<tg-spoiler>','</tg-spoiler>')" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="insertTgEmojiSnippet()" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="showTelegramHtmlHelp()" title="Подсказка по HTML"><i class="bi bi-question-lg"></i></button>
-                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto" id="f_template_tag_picker" style="max-width: 320px;" onchange="insertTemplateTagFromPicker(this)">
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<b>','</b>')" title="Жирный"><i class="bi bi-type-bold"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<i>','</i>')" title="Курсив"><i class="bi bi-type-italic"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<u>','</u>')" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<s>','</s>')" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<code>','</code>')" title="Код"><i class="bi bi-code-square"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<pre>','</pre>')" title="Блок кода"><i class="bi bi-braces"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<blockquote>','</blockquote>')" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="insertResponseLink()" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<tg-spoiler>','</tg-spoiler>')" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="insertTgEmojiSnippet()" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="showTelegramHtmlHelp()" title="Подсказка по HTML"><i class="bi bi-question-lg"></i></button>
+                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker" x-on:change="insertTemplateTagFromPicker($event.target)">
                   <option value="">Вставить тег сообщения…</option>
                   <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
                   <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}} — текст/подпись сообщения</option>
@@ -282,7 +186,7 @@
         </div>
         <div class="modal-footer border-secondary">
           <button class="btn btn-success" type="submit" id="f_save_btn"><i class="bi bi-floppy"></i> Сохранить</button>
-          <button class="btn btn-outline-info" type="button" id="f_clone_btn" onclick="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
+          <button class="btn btn-outline-info" type="button" id="f_clone_btn" x-on:click="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
           <button class="btn btn-outline-light" type="button" data-bs-dismiss="modal">Закрыть</button>
         </div>
       </form>
@@ -292,281 +196,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-<script>
-function setSel(id,val){const el=document.getElementById(id); if(el && val!=null){el.value=String(val)}}
-function updateImportFileName(input){
-  const out = document.getElementById('import_file_name');
-  if(!out){ return; }
-  const f = input && input.files && input.files[0];
-  out.textContent = f ? f.name : 'Файл не выбран';
-}
-function setSaveBusy(busy){
-  const saveBtn = document.getElementById('f_save_btn');
-  const cloneBtn = document.getElementById('f_clone_btn');
-  if(saveBtn){
-    saveBtn.disabled = !!busy;
-    saveBtn.innerHTML = busy ? '<span class="spinner-border spinner-border-sm me-1"></span>Сохраняю...' : '<i class="bi bi-floppy"></i> Сохранить';
-  }
-  if(cloneBtn){ cloneBtn.disabled = !!busy; }
-}
-async function submitTriggerForm(event){
-  if(event){ event.preventDefault(); }
-  const form = document.getElementById('trigger_form');
-  if(!form){ return false; }
-  // Defensive sync in case switch onChange was skipped.
-  syncSwitch('f_enabled');
-  syncSwitch('f_case_sensitive');
-  syncSwitch('f_reply');
-  syncSwitch('f_preview');
-  const idEl = document.getElementById('f_id');
-  const isNew = !idEl || !String(idEl.value || '').trim();
-  const enabledEl = document.getElementById('f_enabled');
-  const replyEl = document.getElementById('f_reply');
-  if(isNew && enabledEl && !String(enabledEl.value || '').trim()){ enabledEl.value = '1'; }
-  if(isNew && replyEl && !String(replyEl.value || '').trim()){ replyEl.value = '1'; }
-  setSaveBusy(true);
-  try{
-    const controller = new AbortController();
-    const timeout = setTimeout(()=>controller.abort(), 15000);
-    const res = await fetch(form.getAttribute('action') || withToken('/trigger_bot/save'), {
-      method: 'POST',
-      body: new FormData(form),
-      signal: controller.signal,
-      credentials: 'same-origin'
-    });
-    clearTimeout(timeout);
-    if(!res.ok){
-      const txt = await res.text();
-      alert('Ошибка сохранения: ' + (txt || res.status));
-      setSaveBusy(false);
-      return false;
-    }
-    window.location.href = withToken('/trigger_bot');
-  }catch(err){
-    alert('Сохранение не удалось: ' + (err && err.message ? err.message : err));
-    setSaveBusy(false);
-  }
-  return false;
-}
-function getResponseTextArea(){
-  return document.getElementById('f_response_text');
-}
-function replaceTextAreaSelection(el, before, after){
-  if(!el){ return; }
-  const start = el.selectionStart ?? 0;
-  const end = el.selectionEnd ?? 0;
-  const val = el.value ?? '';
-  const selected = val.slice(start, end) || 'текст';
-  const next = val.slice(0, start) + before + selected + after + val.slice(end);
-  el.value = next;
-  const caret = start + before.length + selected.length + after.length;
-  el.focus();
-  el.setSelectionRange(caret, caret);
-}
-function insertTextAtCursor(el, text){
-  if(!el){ return; }
-  const start = el.selectionStart ?? 0;
-  const end = el.selectionEnd ?? 0;
-  const val = el.value ?? '';
-  el.value = val.slice(0, start) + text + val.slice(end);
-  const caret = start + text.length;
-  el.focus();
-  el.setSelectionRange(caret, caret);
-}
-function wrapResponseSelection(before, after){
-  replaceTextAreaSelection(getResponseTextArea(), before, after);
-}
-function insertResponseLink(){
-  const url = prompt('URL ссылки', 'https://');
-  if(!url){ return; }
-  const el = getResponseTextArea();
-  if(!el){ return; }
-  const start = el.selectionStart ?? 0;
-  const end = el.selectionEnd ?? 0;
-  const val = el.value ?? '';
-  const selected = val.slice(start, end) || 'ссылка';
-  const linked = `<a href="${url}">${selected}</a>`;
-  el.value = val.slice(0, start) + linked + val.slice(end);
-  const caret = start + linked.length;
-  el.focus();
-  el.setSelectionRange(caret, caret);
-}
-function insertTgEmojiSnippet(){
-  const id = prompt('ID кастомного emoji (из Telegram)', '12345');
-  if(!id){ return; }
-  const safeId = String(id).trim();
-  if(!safeId){ return; }
-  insertTextAtCursor(getResponseTextArea(), `<tg-emoji emoji-id="${safeId}">🙂</tg-emoji>`);
-}
-function showTelegramHtmlHelp(){
-  alert(
-    'Поддерживаемые HTML-теги Telegram:\n' +
-    '<b> <strong>, <i> <em>, <u> <ins>, <s> <strike> <del>,\n' +
-    '<code>, <pre>, <blockquote>, <a href=\"...\">, <tg-spoiler>,\n' +
-    '<tg-emoji emoji-id=\"...\">🙂</tg-emoji>\n\n' +
-    'Важно: не все обычные HTML-теги поддерживаются Telegram.'
-  );
-}
-function insertTemplateTagFromPicker(sel){
-  if(!sel || !sel.value){ return; }
-  insertTextAtCursor(getResponseTextArea(), sel.value);
-  sel.value = '';
-}
-function applyMatchTypeUI(){
-  const mt = document.getElementById('f_match_type');
-  const lbl = document.getElementById('f_match_text_label');
-  const inp = document.getElementById('f_match_text');
-  const cs = document.getElementById('f_case_sensitive_switch');
-  const csHidden = document.getElementById('f_case_sensitive');
-  if(!mt || !lbl || !inp){ return; }
-  if(mt.value === 'idle'){
-    lbl.textContent = 'Время простоя (мин)';
-    inp.type = 'number';
-    inp.min = '1';
-    inp.step = '1';
-    inp.placeholder = 'например, 120';
-    if(cs){ cs.disabled = true; cs.checked = false; }
-    if(csHidden){ csHidden.value = '0'; }
-  } else {
-    lbl.textContent = 'Текст триггера';
-    inp.type = 'text';
-    inp.removeAttribute('min');
-    inp.removeAttribute('step');
-    inp.placeholder = 'Текст триггера';
-    if(cs){ cs.disabled = false; }
-  }
-}
-function syncSwitch(id){
-  const hidden = document.getElementById(id);
-  const sw = document.getElementById(id + '_switch');
-  if(!hidden || !sw) return;
-  hidden.value = sw.checked ? '1' : '0';
-}
-function setBool(id,v){
-  const hidden = document.getElementById(id);
-  const sw = document.getElementById(id + '_switch');
-  if(hidden && sw){
-    sw.checked = !!v;
-    hidden.value = sw.checked ? '1' : '0';
-    return;
-  }
-  setSel(id, v ? '1' : '0');
-}
-function openModal(){window.__trgModal.show()}
-function closeModal(){window.__trgModal.hide()}
-function pick(o, a, b, d){
-  if(o && o[a] !== undefined && o[a] !== null) return o[a];
-  if(o && b && o[b] !== undefined && o[b] !== null) return o[b];
-  return d;
-}
-function withToken(path){
-  const token = new URLSearchParams(window.location.search).get('token');
-  if(!token){ return path; }
-  const u = new URL(path, window.location.origin);
-  u.searchParams.set('token', token);
-  return u.pathname + u.search;
-}
-function applyTokenToForms(){
-  document.querySelectorAll('form[action]').forEach((f)=>{
-    const action = f.getAttribute('action') || '';
-    if(action.startsWith('/')){ f.setAttribute('action', withToken(action)); }
-  });
-  const ex = document.getElementById('export_link');
-  if(ex){ ex.setAttribute('href', withToken('/trigger_bot/export')); }
-}
-async function persistTriggerOrder(){
-  const body = document.getElementById('triggers_tbody');
-  if(!body){ return; }
-  const ids = Array.from(body.querySelectorAll('tr[data-id]'))
-    .map((tr)=>Number(tr.getAttribute('data-id')))
-    .filter((id)=>Number.isFinite(id) && id > 0);
-  if(ids.length === 0){ return; }
-  const res = await fetch(withToken('/trigger_bot/reorder'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    credentials: 'same-origin',
-    body: JSON.stringify({ids})
-  });
-  if(!res.ok){
-    const txt = await res.text();
-    throw new Error(txt || ('HTTP '+res.status));
-  }
-}
-function initTriggerDragAndDrop(){
-  const body = document.getElementById('triggers_tbody');
-  if(!body || typeof Sortable === 'undefined'){ return; }
-  new Sortable(body, {
-    handle: '.drag-handle',
-    animation: 140,
-    ghostClass: 'dragging-row',
-    onEnd: async function(){
-      try{
-        await persistTriggerOrder();
-      }catch(err){
-        alert('Не удалось сохранить порядок: ' + (err && err.message ? err.message : err));
-        window.location.reload();
-      }
-    }
-  });
-}
-function fillForm(t){
-  document.getElementById('f_id').value=pick(t,'id','ID','');
-  document.getElementById('f_uid').value=pick(t,'uid','UID','');
-  document.getElementById('f_title').value=pick(t,'title','Title','');
-  document.getElementById('f_response_text').value=pick(t,'response_text','ResponseText','');
-  document.getElementById('f_chance').value=pick(t,'chance','Chance',100);
-  setSel('f_trigger_mode', pick(t,'trigger_mode','TriggerMode','all'));
-  setSel('f_admin_mode', pick(t,'admin_mode','AdminMode','anybody'));
-  setSel('f_match_type', pick(t,'match_type','MatchType','full'));
-  applyMatchTypeUI();
-  document.getElementById('f_match_text').value=pick(t,'match_text','MatchText','');
-  setSel('f_action_type', pick(t,'action_type','ActionType','send'));
-  setBool('f_enabled', !!pick(t,'enabled','Enabled',true));
-  setBool('f_case_sensitive', !!pick(t,'case_sensitive','CaseSensitive',false));
-  setBool('f_reply', !!pick(t,'reply','Reply',true));
-  setBool('f_preview', !!pick(t,'preview','Preview',false));
-}
-async function openNew(){
-  fillForm({
-    id: '',
-    uid: '',
-    title: '',
-    enabled: true,
-    trigger_mode: 'all',
-    admin_mode: 'anybody',
-    match_text: '',
-    match_type: 'full',
-    case_sensitive: false,
-    action_type: 'send',
-    response_text: '',
-    reply: true,
-    preview: false,
-    chance: 100
-  });
-  openModal();
-}
-async function openEdit(id){
-  const r=await fetch(withToken('/trigger_bot/get?id='+encodeURIComponent(id)));
-  if(!r.ok){ alert('Не удалось загрузить триггер: ' + r.status); return; }
-  const t=await r.json();
-  fillForm(t); openModal();
-}
-function cloneCurrentTrigger(){
-  const titleEl = document.getElementById('f_title');
-  const idEl = document.getElementById('f_id');
-  const uidEl = document.getElementById('f_uid');
-  if(idEl){ idEl.value = ''; }
-  if(uidEl){ uidEl.value = ''; }
-  if(titleEl){
-    const title = String(titleEl.value || '').trim();
-    titleEl.value = title ? `${title} (копия)` : 'Новый триггер (копия)';
-  }
-}
-window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
-document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
-applyTokenToForms();
-applyMatchTypeUI();
-initTriggerDragAndDrop();
-</script>
+<script src="/trigger_bot/static/trigger_list.js"></script>
 </body>
 </html>
