@@ -32,6 +32,7 @@ type Trigger struct {
 	ResponseText  string
 	Reply         bool
 	Preview       bool
+	DeleteSource  bool
 	Chance        int
 	CreatedAt     int64
 	UpdatedAt     int64
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS triggers (
   response_text TEXT NOT NULL,
   send_as_reply INTEGER NOT NULL DEFAULT 1,
   preview_first_link INTEGER NOT NULL DEFAULT 0,
+  delete_source_message INTEGER NOT NULL DEFAULT 0,
   chance INTEGER NOT NULL DEFAULT 100,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -308,7 +310,7 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	if s != nil && s.mg != nil {
 		return s.mg.listTriggers()
 	}
-	rows, err := s.db.Query(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY priority DESC, id ASC`)
+	rows, err := s.db.Query(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error FROM triggers ORDER BY priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +318,8 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	out := make([]Trigger, 0, 64)
 	for rows.Next() {
 		var t Trigger
-		var enabled, cs, reply, preview int
-		if err := rows.Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
+		var enabled, cs, reply, preview, deleteSource int
+		if err := rows.Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
 			return nil, err
 		}
 		t.Enabled = i2b(enabled)
@@ -327,6 +329,7 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 		t.ActionType = normalizeActionType(t.ActionType)
 		t.Reply = i2b(reply)
 		t.Preview = i2b(preview)
+		t.DeleteSource = i2b(deleteSource)
 		t.MatchType = normalizeMatchType(t.MatchType)
 		t.Chance = sanitizeChance(t.Chance)
 		out = append(out, t)
@@ -339,9 +342,9 @@ func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 		return s.mg.getTrigger(id)
 	}
 	var t Trigger
-	var enabled, cs, reply, preview int
-	err := s.db.QueryRow(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
-		Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
+	var enabled, cs, reply, preview, deleteSource int
+	err := s.db.QueryRow(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
+		Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -355,6 +358,7 @@ func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 	t.ActionType = normalizeActionType(t.ActionType)
 	t.Reply = i2b(reply)
 	t.Preview = i2b(preview)
+	t.DeleteSource = i2b(deleteSource)
 	t.MatchType = normalizeMatchType(t.MatchType)
 	t.Chance = sanitizeChance(t.Chance)
 	return &t, nil
@@ -422,8 +426,8 @@ func (s *Store) SaveTrigger(t Trigger) error {
 			}
 			return nil
 		}
-		_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
+		_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
@@ -436,8 +440,8 @@ func (s *Store) SaveTrigger(t Trigger) error {
 		s.invalidateCache()
 		return nil
 	}
-	_, err := s.db.Exec(`UPDATE triggers SET uid=?,regex_bench_us=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
-		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
+	_, err := s.db.Exec(`UPDATE triggers SET uid=?,regex_bench_us=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,delete_source_message=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
+		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, t.RegexError, t.ID)
 	if err == nil {
 		s.invalidateCache()
 	}
@@ -681,6 +685,7 @@ type exportTriggerRow struct {
 	ResponseText     string `json:"response_text"`
 	SendAsReply      bool   `json:"send_as_reply"`
 	PreviewFirstLink bool   `json:"preview_first_link"`
+	DeleteSourceMsg  bool   `json:"delete_source_message"`
 	Chance           int    `json:"chance"`
 }
 
@@ -699,6 +704,7 @@ type importTriggerRow struct {
 	ResponseText     string `json:"response_text"`
 	SendAsReply      *bool  `json:"send_as_reply"`
 	PreviewFirstLink *bool  `json:"preview_first_link"`
+	DeleteSourceMsg  *bool  `json:"delete_source_message"`
 	Chance           *int   `json:"chance"`
 }
 
@@ -724,6 +730,7 @@ func (s *Store) ExportJSON() ([]byte, error) {
 			ResponseText:     t.ResponseText,
 			SendAsReply:      t.Reply,
 			PreviewFirstLink: t.Preview,
+			DeleteSourceMsg:  t.DeleteSource,
 			Chance:           t.Chance,
 		})
 	}
@@ -800,6 +807,10 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 		if it.PreviewFirstLink != nil {
 			preview = *it.PreviewFirstLink
 		}
+		deleteSource := false
+		if it.DeleteSourceMsg != nil {
+			deleteSource = *it.DeleteSourceMsg
+		}
 		chance := 100
 		if it.Chance != nil {
 			chance = *it.Chance
@@ -818,6 +829,7 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			ResponseText:  responseText,
 			Reply:         reply,
 			Preview:       preview,
+			DeleteSource:  deleteSource,
 			Chance:        chance,
 		}
 		if it.Priority != nil {
@@ -864,6 +876,7 @@ func hasNewImportKeys(m map[string]json.RawMessage) bool {
 		"response_text",
 		"send_as_reply",
 		"preview_first_link",
+		"delete_source_message",
 		"chance",
 	}
 	for _, k := range keys {
