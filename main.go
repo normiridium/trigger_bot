@@ -441,9 +441,29 @@ func executeGPTPromptTask(task gptPromptTask) {
 		if task.IdleTracker != nil {
 			task.IdleTracker.MarkActivity(task.ChatID, time.Now())
 		}
+		deleteTriggerSourceMessage(task.Bot, task.Msg, &task.Trigger)
 	}
 	if debugTriggerLogEnabled {
 		log.Printf("send gpt/%s attempted trigger=%d replyTo=%d", sendMode, task.Trigger.ID, replyTo)
+	}
+}
+
+func deleteTriggerSourceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger) {
+	if bot == nil || msg == nil || tr == nil {
+		return
+	}
+	if !tr.DeleteSource {
+		return
+	}
+	if tr.ActionType == "delete" {
+		return
+	}
+	_, err := bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    msg.Chat.ID,
+		MessageID: msg.MessageID,
+	})
+	if err != nil && debugTriggerLogEnabled {
+		log.Printf("delete source msg failed trigger=%d chat=%d msg=%d err=%v", tr.ID, msg.Chat.ID, msg.MessageID, err)
 	}
 }
 
@@ -1671,6 +1691,7 @@ func main() {
 			}
 			if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "CW: сгенерено нейросетью", true); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				deleteTriggerSourceMessage(bot, msg, tr)
 			}
 			if debugTriggerLogEnabled {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
@@ -1689,6 +1710,7 @@ func main() {
 			}
 			if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "", false); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				deleteTriggerSourceMessage(bot, msg, tr)
 			}
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
@@ -1761,6 +1783,7 @@ func main() {
 				continue
 			}
 			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(bot, msg, tr)
 			if debugTriggerLogEnabled {
 				log.Printf("send vk/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 			}
@@ -1772,6 +1795,7 @@ func main() {
 			out := applyCapturingTemplate(tr.ResponseText, tr.CapturingText)
 			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				deleteTriggerSourceMessage(bot, msg, tr)
 			}
 			if debugTriggerLogEnabled {
 				log.Printf("send static/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)

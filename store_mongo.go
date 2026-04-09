@@ -39,6 +39,7 @@ type mongoTriggerDoc struct {
 	ResponseText  string `bson:"response_text"`
 	Reply         bool   `bson:"send_as_reply"`
 	Preview       bool   `bson:"preview_first_link"`
+	DeleteSource  bool   `bson:"delete_source_message"`
 	Chance        int    `bson:"chance"`
 	CreatedAt     int64  `bson:"created_at"`
 	UpdatedAt     int64  `bson:"updated_at"`
@@ -184,6 +185,7 @@ func triggerToDoc(t Trigger) mongoTriggerDoc {
 		ResponseText:  t.ResponseText,
 		Reply:         t.Reply,
 		Preview:       t.Preview,
+		DeleteSource:  t.DeleteSource,
 		Chance:        sanitizeChance(t.Chance),
 		CreatedAt:     t.CreatedAt,
 		UpdatedAt:     t.UpdatedAt,
@@ -208,6 +210,7 @@ func docToTrigger(d mongoTriggerDoc) Trigger {
 		ResponseText:  d.ResponseText,
 		Reply:         d.Reply,
 		Preview:       d.Preview,
+		DeleteSource:  d.DeleteSource,
 		Chance:        sanitizeChance(d.Chance),
 		CreatedAt:     d.CreatedAt,
 		UpdatedAt:     d.UpdatedAt,
@@ -294,22 +297,23 @@ func (m *mongoBackend) updateTrigger(t Trigger, now int64) error {
 	defer cancel()
 	t.UpdatedAt = now
 	set := bson.M{
-		"uid":                strings.TrimSpace(t.UID),
-		"regex_bench_us":     t.RegexBenchUS,
-		"title":              t.Title,
-		"enabled":            t.Enabled,
-		"trigger_mode":       normalizeTriggerMode(t.TriggerMode),
-		"admin_mode":         normalizeAdminMode(t.AdminMode),
-		"match_text":         t.MatchText,
-		"match_type":         normalizeMatchType(t.MatchType),
-		"case_sensitive":     t.CaseSensitive,
-		"action_type":        normalizeActionType(t.ActionType),
-		"response_text":      t.ResponseText,
-		"send_as_reply":      t.Reply,
-		"preview_first_link": t.Preview,
-		"chance":             sanitizeChance(t.Chance),
-		"updated_at":         now,
-		"regex_error":        t.RegexError,
+		"uid":                   strings.TrimSpace(t.UID),
+		"regex_bench_us":        t.RegexBenchUS,
+		"title":                 t.Title,
+		"enabled":               t.Enabled,
+		"trigger_mode":          normalizeTriggerMode(t.TriggerMode),
+		"admin_mode":            normalizeAdminMode(t.AdminMode),
+		"match_text":            t.MatchText,
+		"match_type":            normalizeMatchType(t.MatchType),
+		"case_sensitive":        t.CaseSensitive,
+		"action_type":           normalizeActionType(t.ActionType),
+		"response_text":         t.ResponseText,
+		"send_as_reply":         t.Reply,
+		"preview_first_link":    t.Preview,
+		"delete_source_message": t.DeleteSource,
+		"chance":                sanitizeChance(t.Chance),
+		"updated_at":            now,
+		"regex_error":           t.RegexError,
 	}
 	res, err := m.triggers.UpdateOne(ctx, bson.M{"id": t.ID}, bson.M{"$set": set})
 	if err != nil {
