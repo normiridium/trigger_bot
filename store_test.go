@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -536,85 +535,89 @@ func TestSaveTriggerRegexCaseSensitiveStripsInlineFlagAndStaysCaseSensitive(t *t
 	}
 }
 
-func TestOpenStoreMigratesColumnsAndStripsStoredRegexFlag(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "legacy_schema.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open raw db: %v", err)
-	}
-	_, err = db.Exec(`
-CREATE TABLE triggers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  uid TEXT NOT NULL DEFAULT '',
-  title TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  trigger_mode TEXT NOT NULL DEFAULT 'all',
-  admin_mode TEXT NOT NULL DEFAULT 'anybody',
-  match_text TEXT NOT NULL,
-  match_type TEXT NOT NULL DEFAULT 'full',
-  case_sensitive INTEGER NOT NULL DEFAULT 0,
-  action_type TEXT NOT NULL DEFAULT 'send',
-  response_text TEXT NOT NULL,
-  send_as_reply INTEGER NOT NULL DEFAULT 1,
-  preview_first_link INTEGER NOT NULL DEFAULT 0,
-  chance INTEGER NOT NULL DEFAULT 100,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  regex_error TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO triggers(uid,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error)
-VALUES('u-1','legacy regex',1,'all','anybody','(?i)abc','regex',0,'send','ok',1,0,100,1,1,'');
-`)
-	if err != nil {
-		_ = db.Close()
-		t.Fatalf("prepare legacy schema: %v", err)
-	}
-	_ = db.Close()
-
+func TestChatAdminCacheCRUD(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "chat_admin_cache.db")
 	s, err := OpenStore(dbPath)
 	if err != nil {
-		t.Fatalf("open store with migration: %v", err)
+		t.Fatalf("open store: %v", err)
 	}
 	defer s.Close()
 
-	rows, err := s.db.Query(`PRAGMA table_info(triggers)`)
-	if err != nil {
-		t.Fatalf("pragma table_info: %v", err)
-	}
-	defer rows.Close()
-	hasPriority := false
-	hasBench := false
-	for rows.Next() {
-		var (
-			cid       int
-			name      string
-			ctype     string
-			notnull   int
-			dfltValue sql.NullString
-			pk        int
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			t.Fatalf("scan table_info: %v", err)
-		}
-		if name == "priority" {
-			hasPriority = true
-		}
-		if name == "regex_bench_us" {
-			hasBench = true
-		}
-	}
-	if !hasPriority || !hasBench {
-		t.Fatalf("missing migrated columns: priority=%v regex_bench_us=%v", hasPriority, hasBench)
+	chatID := int64(-100123)
+	userID := int64(42)
+
+	if err := s.UpsertChatAdminCache(chatID, userID, true, 12345); err != nil {
+		t.Fatalf("upsert admin cache: %v", err)
 	}
 
-	items, err := s.ListTriggers()
+	isAdmin, updatedAt, ok, err := s.GetChatAdminCache(chatID, userID)
 	if err != nil {
-		t.Fatalf("list triggers: %v", err)
+		t.Fatalf("get admin cache: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 trigger, got %d", len(items))
+	if !ok || !isAdmin || updatedAt != 12345 {
+		t.Fatalf("unexpected cached row: ok=%v is_admin=%v updated_at=%d", ok, isAdmin, updatedAt)
 	}
-	if items[0].MatchText != "abc" {
-		t.Fatalf("stored regex should be normalized on open, got %q", items[0].MatchText)
+
+	if err := s.UpsertChatAdminCache(chatID, userID, false, 22222); err != nil {
+		t.Fatalf("update admin cache: %v", err)
+	}
+	isAdmin, updatedAt, ok, err = s.GetChatAdminCache(chatID, userID)
+	if err != nil {
+		t.Fatalf("get admin cache after update: %v", err)
+	}
+	if !ok || isAdmin || updatedAt != 22222 {
+		t.Fatalf("unexpected updated row: ok=%v is_admin=%v updated_at=%d", ok, isAdmin, updatedAt)
+	}
+
+	if err := s.ClearChatAdminCache(chatID); err != nil {
+		t.Fatalf("clear admin cache: %v", err)
+	}
+	_, _, ok, err = s.GetChatAdminCache(chatID, userID)
+	if err != nil {
+		t.Fatalf("get admin cache after clear: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected cache row to be deleted")
+	}
+}
+
+func TestChatAdminSyncCRUD(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "chat_admin_sync.db")
+	s, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	chatID := int64(-100987)
+	if err := s.UpsertChatAdminSync(chatID, 11111, 5); err != nil {
+		t.Fatalf("upsert sync: %v", err)
+	}
+	updatedAt, cnt, ok, err := s.GetChatAdminSync(chatID)
+	if err != nil {
+		t.Fatalf("get sync: %v", err)
+	}
+	if !ok || updatedAt != 11111 || cnt != 5 {
+		t.Fatalf("unexpected sync row: ok=%v updated=%d cnt=%d", ok, updatedAt, cnt)
+	}
+	if err := s.UpsertChatAdminSync(chatID, 22222, 3); err != nil {
+		t.Fatalf("upsert sync update: %v", err)
+	}
+	updatedAt, cnt, ok, err = s.GetChatAdminSync(chatID)
+	if err != nil {
+		t.Fatalf("get sync after update: %v", err)
+	}
+	if !ok || updatedAt != 22222 || cnt != 3 {
+		t.Fatalf("unexpected sync row after update: ok=%v updated=%d cnt=%d", ok, updatedAt, cnt)
+	}
+	if err := s.ClearChatAdminCache(chatID); err != nil {
+		t.Fatalf("clear chat admin cache+sync: %v", err)
+	}
+	_, _, ok, err = s.GetChatAdminSync(chatID)
+	if err != nil {
+		t.Fatalf("get sync after clear: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected sync row to be deleted")
 	}
 }

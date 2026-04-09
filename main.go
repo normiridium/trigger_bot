@@ -78,7 +78,9 @@ type adminCacheEntry struct {
 type adminStatusCache struct {
 	mu     sync.RWMutex
 	ttl    time.Duration
+	store  *Store
 	values map[string]adminCacheEntry
+	chats  map[int64]time.Time
 }
 
 type recentChatMessage struct {
@@ -93,6 +95,28 @@ type chatRecentStore struct {
 	maxPer   int
 	maxAge   time.Duration
 	messages map[int64][]recentChatMessage
+}
+
+type chatUserIndex struct {
+	mu      sync.RWMutex
+	byChat  map[int64]map[string]int64
+	byID    map[int64]map[int64]string
+	maxSize int
+}
+
+type readonlyManager struct {
+	mu     sync.Mutex
+	on     map[int64]bool
+	timers map[int64]*time.Timer
+}
+
+type moderationRequest struct {
+	Action      string
+	Silent      bool
+	Targets     []string
+	Duration    time.Duration
+	DurationRaw string
+	Reason      string
 }
 
 type rawMessageEntity struct {
@@ -594,21 +618,83 @@ func selectIdleAutoReplyTrigger(
 	return nil, 0
 }
 
-func newAdminStatusCache(ttl time.Duration) *adminStatusCache {
+func newAdminStatusCache(ttl time.Duration, store *Store) *adminStatusCache {
 	if ttl <= 0 {
 		ttl = 2 * time.Minute
 	}
 	return &adminStatusCache{
 		ttl:    ttl,
+		store:  store,
 		values: make(map[string]adminCacheEntry),
+		chats:  make(map[int64]time.Time),
 	}
+}
+
+func adminCacheKey(chatID, userID int64) string {
+	return strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(userID, 10)
+}
+
+func (c *adminStatusCache) setCached(chatID, userID int64, isAdmin bool, now time.Time) {
+	if c == nil {
+		return
+	}
+	key := adminCacheKey(chatID, userID)
+	c.mu.Lock()
+	c.values[key] = adminCacheEntry{
+		isAdmin:   isAdmin,
+		expiresAt: now.Add(c.ttl),
+	}
+	c.mu.Unlock()
+}
+
+func (c *adminStatusCache) chatFresh(chatID int64, now time.Time) bool {
+	if c == nil || chatID == 0 {
+		return false
+	}
+	c.mu.RLock()
+	exp, ok := c.chats[chatID]
+	c.mu.RUnlock()
+	return ok && now.Before(exp)
+}
+
+func (c *adminStatusCache) markChatFresh(chatID int64, now time.Time) {
+	if c == nil || chatID == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.chats[chatID] = now.Add(c.ttl)
+	c.mu.Unlock()
+}
+
+func (c *adminStatusCache) EnsureChatAdminsFresh(bot *tgbotapi.BotAPI, chatID int64) (int, error) {
+	if c == nil {
+		return 0, errors.New("admin cache is nil")
+	}
+	if bot == nil || chatID == 0 {
+		return 0, errors.New("invalid chat preload params")
+	}
+	now := time.Now()
+	if c.chatFresh(chatID, now) {
+		return 0, nil
+	}
+
+	if c.store != nil {
+		updatedAt, count, ok, err := c.store.GetChatAdminSync(chatID)
+		if err == nil && ok {
+			if now.Sub(time.Unix(updatedAt, 0)) < c.ttl {
+				c.markChatFresh(chatID, now)
+				return count, nil
+			}
+		}
+	}
+	return c.ReloadChatAdmins(bot, chatID)
 }
 
 func (c *adminStatusCache) IsChatAdmin(bot *tgbotapi.BotAPI, chatID, userID int64) bool {
 	if c == nil {
 		return fetchChatAdminStatus(bot, chatID, userID)
 	}
-	key := strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(userID, 10)
+	key := adminCacheKey(chatID, userID)
 	now := time.Now()
 
 	c.mu.RLock()
@@ -618,15 +704,91 @@ func (c *adminStatusCache) IsChatAdmin(bot *tgbotapi.BotAPI, chatID, userID int6
 	}
 	c.mu.RUnlock()
 
-	isAdmin := fetchChatAdminStatus(bot, chatID, userID)
+	_, _ = c.EnsureChatAdminsFresh(bot, chatID)
 
-	c.mu.Lock()
-	c.values[key] = adminCacheEntry{
-		isAdmin:   isAdmin,
-		expiresAt: now.Add(c.ttl),
+	c.mu.RLock()
+	if cached, ok := c.values[key]; ok && now.Before(cached.expiresAt) {
+		c.mu.RUnlock()
+		return cached.isAdmin
 	}
+	c.mu.RUnlock()
+
+	if c.store != nil {
+		isAdmin, updatedAt, ok, err := c.store.GetChatAdminCache(chatID, userID)
+		if err == nil && ok {
+			ts := time.Unix(updatedAt, 0)
+			if now.Sub(ts) < c.ttl {
+				expiresAt := ts.Add(c.ttl)
+				if expiresAt.Before(now) {
+					expiresAt = now.Add(c.ttl)
+				}
+				c.mu.Lock()
+				c.values[key] = adminCacheEntry{
+					isAdmin:   isAdmin,
+					expiresAt: expiresAt,
+				}
+				c.mu.Unlock()
+				return isAdmin
+			}
+		}
+	}
+
+	return false
+}
+
+func (c *adminStatusCache) ClearChat(chatID int64) error {
+	if c == nil || chatID == 0 {
+		return nil
+	}
+	prefix := strconv.FormatInt(chatID, 10) + ":"
+	c.mu.Lock()
+	for key := range c.values {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.values, key)
+		}
+	}
+	delete(c.chats, chatID)
 	c.mu.Unlock()
-	return isAdmin
+	if c.store != nil {
+		return c.store.ClearChatAdminCache(chatID)
+	}
+	return nil
+}
+
+func (c *adminStatusCache) ReloadChatAdmins(bot *tgbotapi.BotAPI, chatID int64) (int, error) {
+	if c == nil {
+		return 0, errors.New("admin cache is nil")
+	}
+	if bot == nil || chatID == 0 {
+		return 0, errors.New("invalid chat reload params")
+	}
+	if err := c.ClearChat(chatID); err != nil {
+		return 0, err
+	}
+	admins, err := bot.GetChatAdministrators(tgbotapi.ChatAdministratorsConfig{
+		ChatConfig: tgbotapi.ChatConfig{ChatID: chatID},
+	})
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	count := 0
+	for _, member := range admins {
+		if member.User == nil || member.User.ID == 0 {
+			continue
+		}
+		uid := member.User.ID
+		c.setCached(chatID, uid, true, now)
+		if c.store != nil {
+			_ = c.store.UpsertChatAdminCache(chatID, uid, true, now.Unix())
+		}
+		count++
+	}
+	c.markChatFresh(chatID, now)
+	if c.store != nil {
+		_ = c.store.UpsertChatAdminSync(chatID, now.Unix(), count)
+	}
+	return count, nil
 }
 
 func envOr(key, fallback string) string {
@@ -657,6 +819,520 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
+func newChatUserIndex(maxSize int) *chatUserIndex {
+	if maxSize <= 0 {
+		maxSize = 500
+	}
+	return &chatUserIndex{
+		byChat:  make(map[int64]map[string]int64),
+		byID:    make(map[int64]map[int64]string),
+		maxSize: maxSize,
+	}
+}
+
+func (i *chatUserIndex) remember(chatID int64, u *tgbotapi.User) {
+	if i == nil || chatID == 0 || u == nil || u.ID == 0 {
+		return
+	}
+	uname := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u.UserName), "@"))
+	label := strings.TrimSpace(u.FirstName)
+	if label == "" {
+		label = strings.TrimSpace(u.UserName)
+	}
+	if label == "" {
+		label = strconv.FormatInt(u.ID, 10)
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	um := i.byChat[chatID]
+	if um == nil {
+		um = make(map[string]int64)
+		i.byChat[chatID] = um
+	}
+	if uname != "" {
+		um[uname] = u.ID
+	}
+	idm := i.byID[chatID]
+	if idm == nil {
+		idm = make(map[int64]string)
+		i.byID[chatID] = idm
+	}
+	idm[u.ID] = label
+	if len(idm) > i.maxSize {
+		for k := range idm {
+			delete(idm, k)
+			break
+		}
+	}
+}
+
+func (i *chatUserIndex) RememberFromMessage(msg *tgbotapi.Message) {
+	if i == nil || msg == nil || msg.Chat == nil {
+		return
+	}
+	i.remember(msg.Chat.ID, msg.From)
+	if msg.ReplyToMessage != nil {
+		i.remember(msg.Chat.ID, msg.ReplyToMessage.From)
+	}
+}
+
+func (i *chatUserIndex) Resolve(chatID int64, raw string) (int64, string, bool) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return 0, "", false
+	}
+	token = strings.Trim(token, ",;")
+	if token == "" {
+		return 0, "", false
+	}
+	if id, err := strconv.ParseInt(token, 10, 64); err == nil && id != 0 {
+		return id, token, true
+	}
+	name := strings.ToLower(strings.TrimPrefix(token, "@"))
+	if name == "" {
+		return 0, "", false
+	}
+	if i == nil {
+		return 0, "", false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	um := i.byChat[chatID]
+	if um == nil {
+		return 0, "", false
+	}
+	id, ok := um[name]
+	if !ok {
+		return 0, "", false
+	}
+	return id, "@" + name, true
+}
+
+func (i *chatUserIndex) Display(chatID, userID int64) string {
+	if i == nil || chatID == 0 || userID == 0 {
+		return strconv.FormatInt(userID, 10)
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if m := i.byID[chatID]; m != nil {
+		if v := strings.TrimSpace(m[userID]); v != "" {
+			return v
+		}
+	}
+	return strconv.FormatInt(userID, 10)
+}
+
+func newReadonlyManager() *readonlyManager {
+	return &readonlyManager{
+		on:     make(map[int64]bool),
+		timers: make(map[int64]*time.Timer),
+	}
+}
+
+func (m *readonlyManager) IsOn(chatID int64) bool {
+	if m == nil || chatID == 0 {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.on[chatID]
+}
+
+func (m *readonlyManager) Set(chatID int64, on bool) {
+	if m == nil || chatID == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.on[chatID] = on
+	if !on {
+		if t := m.timers[chatID]; t != nil {
+			t.Stop()
+		}
+		delete(m.timers, chatID)
+	}
+}
+
+func (m *readonlyManager) ScheduleOff(chatID int64, d time.Duration, fn func()) {
+	if m == nil || chatID == 0 || d <= 0 || fn == nil {
+		return
+	}
+	m.mu.Lock()
+	if t := m.timers[chatID]; t != nil {
+		t.Stop()
+	}
+	m.timers[chatID] = time.AfterFunc(d, fn)
+	m.mu.Unlock()
+}
+
+func parseModerationDurationToken(raw string) (time.Duration, bool) {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return 0, false
+	}
+	if len(raw) < 2 {
+		return 0, false
+	}
+	unit := raw[len(raw)-1]
+	num, err := strconv.Atoi(raw[:len(raw)-1])
+	if err != nil || num <= 0 {
+		return 0, false
+	}
+	switch unit {
+	case 'm':
+		return time.Duration(num) * time.Minute, true
+	case 'h':
+		return time.Duration(num) * time.Hour, true
+	case 'd':
+		return time.Duration(num) * 24 * time.Hour, true
+	case 'w':
+		return time.Duration(num) * 7 * 24 * time.Hour, true
+	default:
+		return 0, false
+	}
+}
+
+func parseModerationCommand(text string) (moderationRequest, bool, error) {
+	raw := strings.TrimSpace(text)
+	if raw == "" || !strings.HasPrefix(raw, "!") {
+		return moderationRequest{}, false, nil
+	}
+	firstLine := raw
+	reason := ""
+	if nl := strings.IndexByte(raw, '\n'); nl >= 0 {
+		firstLine = strings.TrimSpace(raw[:nl])
+		reason = strings.TrimSpace(raw[nl+1:])
+	}
+	parts := strings.Fields(firstLine)
+	if len(parts) == 0 {
+		return moderationRequest{}, false, nil
+	}
+	cmd := strings.ToLower(strings.TrimSpace(parts[0]))
+	args := parts[1:]
+	out := moderationRequest{Reason: reason}
+
+	switch cmd {
+	case "!ban":
+		out.Action = "ban"
+	case "!sban":
+		out.Action = "ban"
+		out.Silent = true
+	case "!unban":
+		out.Action = "unban"
+	case "!sunban":
+		out.Action = "unban"
+		out.Silent = true
+	case "!mute":
+		out.Action = "mute"
+	case "!smute":
+		out.Action = "mute"
+		out.Silent = true
+	case "!unmute":
+		out.Action = "unmute"
+	case "!kick":
+		out.Action = "kick"
+	case "!skick":
+		out.Action = "kick"
+		out.Silent = true
+	case "!readonly", "!ro", "!channelmode":
+		out.Action = "readonly"
+	case "!reload_admins":
+		out.Action = "reload_admins"
+	default:
+		return moderationRequest{}, false, nil
+	}
+
+	if out.Action == "reload_admins" {
+		return out, true, nil
+	}
+
+	if out.Action == "readonly" {
+		if len(args) > 0 {
+			if d, ok := parseModerationDurationToken(args[0]); ok {
+				out.Duration = d
+				out.DurationRaw = strings.ToLower(strings.TrimSpace(args[0]))
+			}
+		}
+		return out, true, nil
+	}
+
+	if len(args) > 0 {
+		if d, ok := parseModerationDurationToken(args[len(args)-1]); ok && (out.Action == "ban" || out.Action == "mute") {
+			out.Duration = d
+			out.DurationRaw = strings.ToLower(strings.TrimSpace(args[len(args)-1]))
+			args = args[:len(args)-1]
+		}
+	}
+	for _, a := range args {
+		v := strings.TrimSpace(strings.Trim(a, ",;"))
+		if v != "" {
+			out.Targets = append(out.Targets, v)
+		}
+	}
+	return out, true, nil
+}
+
+func htmlUserLabel(label string, userID int64) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = strconv.FormatInt(userID, 10)
+	}
+	return html.EscapeString(label) + ` (<code>` + strconv.FormatInt(userID, 10) + `</code>)`
+}
+
+func applyReadonly(bot *tgbotapi.BotAPI, chatID int64, on bool) error {
+	if bot == nil || chatID == 0 {
+		return errors.New("invalid readonly params")
+	}
+	perm := &tgbotapi.ChatPermissions{}
+	if !on {
+		perm = &tgbotapi.ChatPermissions{
+			CanSendMessages:       true,
+			CanSendMediaMessages:  true,
+			CanSendPolls:          true,
+			CanSendOtherMessages:  true,
+			CanAddWebPagePreviews: true,
+			CanChangeInfo:         true,
+			CanInviteUsers:        true,
+			CanPinMessages:        true,
+		}
+	}
+	_, err := bot.Request(tgbotapi.SetChatPermissionsConfig{
+		ChatConfig:  tgbotapi.ChatConfig{ChatID: chatID},
+		Permissions: perm,
+	})
+	return err
+}
+
+func handleModerationCommand(
+	bot *tgbotapi.BotAPI,
+	msg *tgbotapi.Message,
+	text string,
+	adminCache *adminStatusCache,
+	userIndex *chatUserIndex,
+	ro *readonlyManager,
+) bool {
+	req, ok, err := parseModerationCommand(text)
+	if !ok {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	if bot == nil || msg == nil || msg.Chat == nil || msg.From == nil {
+		return true
+	}
+	if msg.Chat.IsPrivate() {
+		reply(bot, msg.Chat.ID, msg.MessageID, "Мод-команды работают только в группах.", false)
+		return true
+	}
+	if !adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID) {
+		reply(bot, msg.Chat.ID, msg.MessageID, "Только администраторы могут использовать эту команду.", false)
+		return true
+	}
+
+	deleteCmd := func() {
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+			ChatID:    msg.Chat.ID,
+			MessageID: msg.MessageID,
+		})
+	}
+
+	actionLabel := map[string]string{
+		"ban":      "Бан",
+		"unban":    "Разбан",
+		"mute":     "Мьют",
+		"unmute":   "Размьют",
+		"kick":     "Кик",
+		"readonly": "Только чтение",
+	}
+
+	if req.Action == "reload_admins" {
+		count, err := adminCache.ReloadChatAdmins(bot, msg.Chat.ID)
+		if err != nil {
+			reportChatFailure(bot, msg.Chat.ID, "ошибка обновления кэша админов", err)
+			return true
+		}
+		deleteCmd()
+		reply(bot, msg.Chat.ID, 0, fmt.Sprintf("Кэш админов обновлён: %d.", count), false)
+		return true
+	}
+
+	if req.Action == "readonly" {
+		turnOn := true
+		if ro != nil && ro.IsOn(msg.Chat.ID) {
+			turnOn = false
+		}
+		if err := applyReadonly(bot, msg.Chat.ID, turnOn); err != nil {
+			reportChatFailure(bot, msg.Chat.ID, "ошибка переключения readonly", err)
+			return true
+		}
+		if ro != nil {
+			ro.Set(msg.Chat.ID, turnOn)
+		}
+		deleteCmd()
+		if turnOn && req.Duration > 0 && ro != nil {
+			chatID := msg.Chat.ID
+			ro.ScheduleOff(chatID, req.Duration, func() {
+				_ = applyReadonly(bot, chatID, false)
+				ro.Set(chatID, false)
+				reply(bot, chatID, 0, "Режим только чтения автоматически выключен.", false)
+			})
+		}
+		if !req.Silent {
+			state := "включен"
+			if !turnOn {
+				state = "выключен"
+			}
+			var b strings.Builder
+			b.WriteString("<b>")
+			b.WriteString(actionLabel["readonly"])
+			b.WriteString("</b>: ")
+			b.WriteString(state)
+			if req.DurationRaw != "" && turnOn {
+				b.WriteString("\nСрок: ")
+				b.WriteString(html.EscapeString(req.DurationRaw))
+			}
+			if req.Reason != "" {
+				b.WriteString("\nПричина: ")
+				b.WriteString(html.EscapeString(req.Reason))
+			}
+			b.WriteString("\nМодератор: ")
+			b.WriteString(htmlUserLabel(userIndex.Display(msg.Chat.ID, msg.From.ID), msg.From.ID))
+			sendHTML(bot, msg.Chat.ID, 0, b.String(), false)
+		}
+		return true
+	}
+
+	seen := make(map[int64]struct{})
+	targets := make([]int64, 0, 4)
+	targetLabels := make([]string, 0, 4)
+	addTarget := func(id int64, label string) {
+		if id == 0 {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		targets = append(targets, id)
+		targetLabels = append(targetLabels, label)
+	}
+
+	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil {
+		u := msg.ReplyToMessage.From
+		addTarget(u.ID, userIndex.Display(msg.Chat.ID, u.ID))
+	}
+	for _, tok := range req.Targets {
+		id, label, ok := userIndex.Resolve(msg.Chat.ID, tok)
+		if !ok {
+			reply(bot, msg.Chat.ID, msg.MessageID, "Не удалось распознать участника: "+tok, false)
+			return true
+		}
+		if label == "" {
+			label = userIndex.Display(msg.Chat.ID, id)
+		}
+		addTarget(id, label)
+	}
+	if len(targets) == 0 {
+		reply(bot, msg.Chat.ID, msg.MessageID, "Нужен reply на сообщение участника или список @username/ID.", false)
+		return true
+	}
+
+	var firstErr error
+	for _, uid := range targets {
+		cfgMember := tgbotapi.ChatMemberConfig{ChatID: msg.Chat.ID, UserID: uid}
+		switch req.Action {
+		case "ban":
+			cfg := tgbotapi.BanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				RevokeMessages:   true,
+			}
+			if req.Duration > 0 {
+				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
+			}
+			_, err = bot.Request(cfg)
+		case "unban":
+			_, err = bot.Request(tgbotapi.UnbanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				OnlyIfBanned:     false,
+			})
+		case "mute":
+			cfg := tgbotapi.RestrictChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				Permissions:      &tgbotapi.ChatPermissions{},
+			}
+			if req.Duration > 0 {
+				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
+			}
+			_, err = bot.Request(cfg)
+		case "unmute":
+			_, err = bot.Request(tgbotapi.RestrictChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				Permissions: &tgbotapi.ChatPermissions{
+					CanSendMessages:       true,
+					CanSendMediaMessages:  true,
+					CanSendPolls:          true,
+					CanSendOtherMessages:  true,
+					CanAddWebPagePreviews: true,
+				},
+			})
+		case "kick":
+			_, err = bot.Request(tgbotapi.BanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				UntilDate:        time.Now().Add(45 * time.Second).Unix(),
+				RevokeMessages:   false,
+			})
+			if err == nil {
+				_, err = bot.Request(tgbotapi.UnbanChatMemberConfig{
+					ChatMemberConfig: cfgMember,
+					OnlyIfBanned:     true,
+				})
+			}
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		reportChatFailure(bot, msg.Chat.ID, "ошибка модерации", firstErr)
+		return true
+	}
+
+	deleteCmd()
+	if req.Silent {
+		return true
+	}
+	var b strings.Builder
+	b.WriteString("<b>")
+	b.WriteString(actionLabel[req.Action])
+	b.WriteString("</b>:\n")
+	for i, uid := range targets {
+		lbl := userIndex.Display(msg.Chat.ID, uid)
+		if i < len(targetLabels) && strings.TrimSpace(targetLabels[i]) != "" {
+			lbl = targetLabels[i]
+		}
+		b.WriteString("• ")
+		b.WriteString(htmlUserLabel(lbl, uid))
+		b.WriteByte('\n')
+	}
+	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
+		b.WriteString("Срок: ")
+		b.WriteString(html.EscapeString(req.DurationRaw))
+		b.WriteByte('\n')
+	}
+	if req.Reason != "" {
+		b.WriteString("Причина: ")
+		b.WriteString(html.EscapeString(req.Reason))
+		b.WriteByte('\n')
+	}
+	b.WriteString("Модератор: ")
+	b.WriteString(htmlUserLabel(userIndex.Display(msg.Chat.ID, msg.From.ID), msg.From.ID))
+	sendHTML(bot, msg.Chat.ID, 0, strings.TrimSpace(b.String()), false)
+	return true
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -665,12 +1341,20 @@ func main() {
 		log.Fatal("TELEGRAM_BOT_TOKEN is required")
 	}
 
-	dbPath := envOr("BOT_DB_FILE", "./trigger_bot.db")
-	store, err := OpenStore(dbPath)
+	dbTarget := strings.TrimSpace(os.Getenv("MONGO_URI"))
+	if dbTarget == "" {
+		dbTarget = envOr("BOT_DB_FILE", "./trigger_bot.db")
+	}
+	store, err := OpenStore(dbTarget)
 	if err != nil {
 		log.Fatalf("open db failed: %v", err)
 	}
 	defer store.Close()
+	if isMongoURI(dbTarget) {
+		log.Printf("storage backend: mongodb")
+	} else {
+		log.Printf("storage backend: sqlite")
+	}
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -704,7 +1388,9 @@ func main() {
 		log.Printf("chat allow-list is disabled (ALLOWED_CHAT_IDS is empty)")
 	}
 	adminCacheTTL := time.Duration(envInt("ADMIN_CACHE_TTL_SEC", 120)) * time.Second
-	adminCache := newAdminStatusCache(adminCacheTTL)
+	adminCache := newAdminStatusCache(adminCacheTTL, store)
+	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
+	readonly := newReadonlyManager()
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	idleTracker := newChatIdleTracker()
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
@@ -746,6 +1432,16 @@ func main() {
 			}
 			continue
 		}
+		userIndex.RememberFromMessage(msg)
+		if !isPrivateChat {
+			if _, err := adminCache.EnsureChatAdminsFresh(bot, msg.Chat.ID); err != nil && debugTriggerLogEnabled {
+				log.Printf("admin cache warmup failed chat=%d: %v", msg.Chat.ID, err)
+			}
+		}
+
+		if handleModerationCommand(bot, msg, strings.TrimSpace(msg.Text), adminCache, userIndex, readonly) {
+			continue
+		}
 
 		if msg.IsCommand() {
 			cmd := msg.Command()
@@ -753,7 +1449,8 @@ func main() {
 			case "start", "help":
 				s := "Триггер-бот активен.\n\n" +
 					"Админка: /trigger_bot\n" +
-					"Команды: /start /help /emojiid /vksearch\n\n" +
+					"Команды: /start /help /emojiid /vksearch\n" +
+					"Мод-команды: !ban !unban !mute !unmute !kick !readonly !reload_admins (+ тихие !sban !smute !skick)\n\n" +
 					"Теги для ChatGPT-промпта:\n" +
 					"{{message}} / {{user_text}} — текст сообщения\n" +
 					"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
