@@ -41,6 +41,7 @@ type Trigger struct {
 
 type Store struct {
 	db *sql.DB
+	mg *mongoBackend
 
 	cacheMu      sync.RWMutex
 	cached       []Trigger
@@ -50,6 +51,9 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
+	if isMongoURI(path) {
+		return openMongoStore(path)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -89,71 +93,134 @@ CREATE TABLE IF NOT EXISTS triggers (
   regex_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_enabled ON triggers(enabled);
+
+CREATE TABLE IF NOT EXISTS chat_admin_cache (
+  chat_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  is_admin INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_admin_cache_updated_at ON chat_admin_cache(updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_admin_sync (
+  chat_id INTEGER PRIMARY KEY,
+  updated_at INTEGER NOT NULL,
+  admin_count INTEGER NOT NULL DEFAULT 0
+);
 `); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	// migration for older schema
-	_ = ensureColumn(db, "triggers", "trigger_mode", "TEXT NOT NULL DEFAULT 'all'")
-	_ = ensureColumn(db, "triggers", "admin_mode", "TEXT NOT NULL DEFAULT 'anybody'")
-	_ = ensureColumn(db, "triggers", "action_type", "TEXT NOT NULL DEFAULT 'send'")
-	_ = ensureColumn(db, "triggers", "uid", "TEXT NOT NULL DEFAULT ''")
-	if err := ensureColumn(db, "triggers", "priority", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := ensureColumn(db, "triggers", "regex_bench_us", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	_ = ensureColumn(db, "triggers", "regex_error", "TEXT NOT NULL DEFAULT ''")
 	_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_triggers_uid ON triggers(uid) WHERE uid <> ''`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_triggers_priority ON triggers(priority DESC, id ASC)`)
 	s := &Store{
 		db:       db,
 		cacheTTL: 2 * time.Second,
 	}
-	if err := s.normalizeStoredRegexCaseFlags(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := s.backfillMissingPriorities(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := s.backfillMissingUIDs(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.mg != nil {
+		return s.mg.close()
+	}
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
 
-func ensureColumn(db *sql.DB, table, col, ddl string) error {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+func (s *Store) GetChatAdminCache(chatID, userID int64) (bool, int64, bool, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.getChatAdminCache(chatID, userID)
+	}
+	var (
+		isAdmin   int
+		updatedAt int64
+	)
+	err := s.db.QueryRow(`SELECT is_admin, updated_at FROM chat_admin_cache WHERE chat_id=? AND user_id=?`, chatID, userID).Scan(&isAdmin, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, 0, false, nil
+	}
+	if err != nil {
+		return false, 0, false, err
+	}
+	return isAdmin == 1, updatedAt, true, nil
+}
+
+func (s *Store) GetChatAdminSync(chatID int64) (int64, int, bool, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.getChatAdminSync(chatID)
+	}
+	var (
+		updatedAt int64
+		adminCnt  int
+	)
+	err := s.db.QueryRow(`SELECT updated_at, admin_count FROM chat_admin_sync WHERE chat_id=?`, chatID).Scan(&updatedAt, &adminCnt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return updatedAt, adminCnt, true, nil
+}
+
+func (s *Store) UpsertChatAdminSync(chatID int64, updatedAt int64, adminCount int) error {
+	if s != nil && s.mg != nil {
+		return s.mg.upsertChatAdminSync(chatID, updatedAt, adminCount)
+	}
+	if updatedAt <= 0 {
+		updatedAt = time.Now().Unix()
+	}
+	_, err := s.db.Exec(`
+INSERT INTO chat_admin_sync(chat_id,updated_at,admin_count)
+VALUES(?,?,?)
+ON CONFLICT(chat_id) DO UPDATE SET
+  updated_at=excluded.updated_at,
+  admin_count=excluded.admin_count
+`, chatID, updatedAt, adminCount)
+	return err
+}
+
+func (s *Store) UpsertChatAdminCache(chatID, userID int64, isAdmin bool, updatedAt int64) error {
+	if s != nil && s.mg != nil {
+		return s.mg.upsertChatAdminCache(chatID, userID, isAdmin, updatedAt)
+	}
+	if updatedAt <= 0 {
+		updatedAt = time.Now().Unix()
+	}
+	_, err := s.db.Exec(`
+INSERT INTO chat_admin_cache(chat_id,user_id,is_admin,updated_at)
+VALUES(?,?,?,?)
+ON CONFLICT(chat_id,user_id) DO UPDATE SET
+  is_admin=excluded.is_admin,
+  updated_at=excluded.updated_at
+`, chatID, userID, b2i(isAdmin), updatedAt)
+	return err
+}
+
+func (s *Store) ClearChatAdminCache(chatID int64) error {
+	if s != nil && s.mg != nil {
+		return s.mg.clearChatAdminCache(chatID)
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	var (
-		cid       int
-		name      string
-		ctype     string
-		notnull   int
-		dfltValue sql.NullString
-		pk        int
-	)
-	for rows.Next() {
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			return err
-		}
-		if name == col {
-			return nil
-		}
+	if _, err := tx.Exec(`DELETE FROM chat_admin_cache WHERE chat_id=?`, chatID); err != nil {
+		_ = tx.Rollback()
+		return err
 	}
-	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, ddl))
-	return err
+	if _, err := tx.Exec(`DELETE FROM chat_admin_sync WHERE chat_id=?`, chatID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func normalizeMatchType(v string) string {
@@ -238,6 +305,9 @@ func normalizeActionType(v string) string {
 }
 
 func (s *Store) ListTriggers() ([]Trigger, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.listTriggers()
+	}
 	rows, err := s.db.Query(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers ORDER BY priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -265,6 +335,9 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 }
 
 func (s *Store) GetTrigger(id int64) (*Trigger, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.getTrigger(id)
+	}
 	var t Trigger
 	var enabled, cs, reply, preview int
 	err := s.db.QueryRow(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
@@ -341,12 +414,27 @@ func (s *Store) SaveTrigger(t Trigger) error {
 			}
 			t.Priority = p
 		}
+		if s != nil && s.mg != nil {
+			if err := s.mg.insertTrigger(t, now); err == nil {
+				s.invalidateCache()
+			} else {
+				return err
+			}
+			return nil
+		}
 		_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
 		return err
+	}
+	if s != nil && s.mg != nil {
+		if err := s.mg.updateTrigger(t, now); err != nil {
+			return err
+		}
+		s.invalidateCache()
+		return nil
 	}
 	_, err := s.db.Exec(`UPDATE triggers SET uid=?,regex_bench_us=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
 		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), t.Chance, now, t.RegexError, t.ID)
@@ -357,6 +445,14 @@ func (s *Store) SaveTrigger(t Trigger) error {
 }
 
 func (s *Store) ToggleTrigger(id int64) error {
+	if s != nil && s.mg != nil {
+		if err := s.mg.toggleTrigger(id); err == nil {
+			s.invalidateCache()
+		} else {
+			return err
+		}
+		return nil
+	}
 	_, err := s.db.Exec(`UPDATE triggers SET enabled=CASE WHEN enabled=1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?`, time.Now().Unix(), id)
 	if err == nil {
 		s.invalidateCache()
@@ -365,6 +461,14 @@ func (s *Store) ToggleTrigger(id int64) error {
 }
 
 func (s *Store) DeleteTrigger(id int64) error {
+	if s != nil && s.mg != nil {
+		if err := s.mg.deleteTrigger(id); err == nil {
+			s.invalidateCache()
+		} else {
+			return err
+		}
+		return nil
+	}
 	_, err := s.db.Exec(`DELETE FROM triggers WHERE id=?`, id)
 	if err == nil {
 		s.invalidateCache()
@@ -771,6 +875,9 @@ func hasNewImportKeys(m map[string]json.RawMessage) bool {
 }
 
 func (s *Store) nextInsertPriority() (int, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.nextInsertPriority()
+	}
 	var minPri sql.NullInt64
 	if err := s.db.QueryRow(`SELECT MIN(priority) FROM triggers`).Scan(&minPri); err != nil {
 		return 0, err
@@ -779,79 +886,6 @@ func (s *Store) nextInsertPriority() (int, error) {
 		return 1, nil
 	}
 	return int(minPri.Int64) - 1, nil
-}
-
-func (s *Store) backfillMissingPriorities() error {
-	rows, err := s.db.Query(`SELECT id FROM triggers WHERE priority=0 ORDER BY id ASC`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	ids := make([]int64, 0, 64)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	for i, id := range ids {
-		pri := len(ids) - i
-		if _, err := tx.Exec(`UPDATE triggers SET priority=? WHERE id=?`, pri, id); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func (s *Store) normalizeStoredRegexCaseFlags() error {
-	if s == nil || s.db == nil {
-		return nil
-	}
-	rows, err := s.db.Query(`SELECT id, match_text FROM triggers WHERE match_type='regex'`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type rec struct {
-		id int64
-		mt string
-	}
-	var updates []rec
-	for rows.Next() {
-		var id int64
-		var mt string
-		if err := rows.Scan(&id, &mt); err != nil {
-			return err
-		}
-		clean := stripLeadingCaseInsensitiveFlag(mt)
-		if clean != strings.TrimSpace(mt) {
-			updates = append(updates, rec{id: id, mt: clean})
-		}
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	for _, u := range updates {
-		if _, err := tx.Exec(`UPDATE triggers SET match_text=?, updated_at=? WHERE id=?`, u.mt, now, u.id); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *Store) ReorderTriggersByIDs(orderedTopToBottom []int64) error {
@@ -887,6 +921,13 @@ func (s *Store) ReorderTriggersByIDs(orderedTopToBottom []int64) error {
 		}
 		finalOrder = append(finalOrder, t.ID)
 	}
+	if s != nil && s.mg != nil {
+		if err := s.mg.reorderTriggersByIDs(finalOrder); err != nil {
+			return err
+		}
+		s.invalidateCache()
+		return nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -906,6 +947,9 @@ func (s *Store) ReorderTriggersByIDs(orderedTopToBottom []int64) error {
 }
 
 func (s *Store) getUIDByID(id int64) (string, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.getUIDByID(id)
+	}
 	if id <= 0 {
 		return "", nil
 	}
@@ -918,6 +962,9 @@ func (s *Store) getUIDByID(id int64) (string, error) {
 }
 
 func (s *Store) getIDByUID(uid string) (int64, error) {
+	if s != nil && s.mg != nil {
+		return s.mg.getIDByUID(uid)
+	}
 	uid = strings.TrimSpace(uid)
 	if uid == "" {
 		return 0, nil
@@ -939,51 +986,4 @@ func newUUID4() (string, error) {
 	b[8] = (b[8] & 0x3f) | 0x80
 	hexed := hex.EncodeToString(b[:])
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hexed[0:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32]), nil
-}
-
-func (s *Store) backfillMissingUIDs() error {
-	if s == nil || s.db == nil {
-		return nil
-	}
-	rows, err := s.db.Query(`SELECT id FROM triggers WHERE trim(uid)=''`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	ids := make([]int64, 0, 16)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	for _, id := range ids {
-		updated := false
-		for i := 0; i < 5; i++ {
-			uid, err := newUUID4()
-			if err != nil {
-				return err
-			}
-			res, err := s.db.Exec(`UPDATE triggers SET uid=?, updated_at=? WHERE id=? AND trim(uid)=''`, uid, time.Now().Unix(), id)
-			if err != nil {
-				if strings.Contains(strings.ToLower(err.Error()), "unique") {
-					continue
-				}
-				return err
-			}
-			aff, _ := res.RowsAffected()
-			if aff > 0 {
-				updated = true
-				break
-			}
-		}
-		if !updated {
-			return fmt.Errorf("failed to assign uid for trigger id=%d", id)
-		}
-	}
-	return nil
 }

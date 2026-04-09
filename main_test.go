@@ -245,3 +245,65 @@ func TestGPTDebouncerTrailingLatest(t *testing.T) {
 		t.Fatalf("expected [201 203], got %#v", calls)
 	}
 }
+
+func TestParseModerationCommandBan(t *testing.T) {
+	raw := "!ban @user 2h\nспам ссылками"
+	req, ok, err := parseModerationCommand(raw)
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected recognized command")
+	}
+	if req.Action != "ban" || req.Silent {
+		t.Fatalf("unexpected action/silent: %#v", req)
+	}
+	if len(req.Targets) != 1 || req.Targets[0] != "@user" {
+		t.Fatalf("unexpected targets: %#v", req.Targets)
+	}
+	if req.Duration != 2*time.Hour || req.DurationRaw != "2h" {
+		t.Fatalf("unexpected duration: %s raw=%q", req.Duration, req.DurationRaw)
+	}
+	if req.Reason != "спам ссылками" {
+		t.Fatalf("unexpected reason: %q", req.Reason)
+	}
+}
+
+func TestParseModerationCommandReadonlyAlias(t *testing.T) {
+	req, ok, err := parseModerationCommand("!ro 30m")
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok || req.Action != "readonly" {
+		t.Fatalf("unexpected parse: ok=%v req=%#v", ok, req)
+	}
+	if req.Duration != 30*time.Minute || req.DurationRaw != "30m" {
+		t.Fatalf("unexpected duration: %s raw=%q", req.Duration, req.DurationRaw)
+	}
+}
+
+func TestParseModerationCommandUnknown(t *testing.T) {
+	_, ok, err := parseModerationCommand("!notreal test")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ok {
+		t.Fatalf("unknown command should not be recognized")
+	}
+}
+
+func TestParseModerationCommandReloadAdmins(t *testing.T) {
+	req, ok, err := parseModerationCommand("!reload_admins")
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected recognized command")
+	}
+	if req.Action != "reload_admins" {
+		t.Fatalf("unexpected action: %#v", req)
+	}
+	if len(req.Targets) != 0 || req.Duration != 0 || req.Reason != "" {
+		t.Fatalf("unexpected fields for reload command: %#v", req)
+	}
+}
