@@ -11,9 +11,9 @@
 </head>
 <body class="text-light">
 <div class="container-fluid py-4 app" x-data="triggerApp()" x-init="initTriggerPage()">
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3 trigger-toolbar">
     <h3 class="m-0 me-2">Триггеры</h3>
-    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
+    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto import-actions" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
       <div class="import-file-wrap">
         <input class="d-none" type="file" name="file" id="import_file" accept="application/json" x-on:change="updateImportFileName($event.target)">
         <label class="import-file-btn" for="import_file">Выберите файл</label>
@@ -26,7 +26,7 @@
   </div>
 
   <div class="table-responsive rounded border border-secondary-subtle">
-    <table class="table table-dark table-striped table-hover align-middle mb-0">
+    <table class="table table-dark table-striped table-hover align-middle mb-0 trigger-table">
       <thead>
         <tr><th></th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
       </thead>
@@ -36,7 +36,7 @@
 </div>
 
 <div class="modal fade" id="triggerModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+  <div class="modal-dialog modal-xl modal-fullscreen-md-down">
     <div class="modal-content bg-dark text-light border-secondary">
       <form method="post" action="/trigger_bot/save" id="trigger_form" x-on:submit="submitTriggerForm($event)">
       <div class="modal-header border-secondary">
@@ -80,11 +80,17 @@
               </select>
             </div>
 
-            <div class="col-md-6">
+            <div class="col-md-6" id="match_text_col">
               <label class="form-label" id="f_match_text_label">Текст триггера</label>
-              <input class="form-control bg-black text-light border-secondary" type="text" name="match_text" id="f_match_text" placeholder="Текст триггера">
+              <div class="match-text-wrap">
+                <input class="match-text-control" type="text" name="match_text" id="f_match_text" placeholder="Текст триггера">
+                <textarea class="match-text-control d-none" rows="6" id="f_match_text_area" placeholder="Текст триггера"></textarea>
+                <button class="match-text-toggle" type="button" title="Развернуть" onclick="toggleMatchTextArea()">
+                  <i class="bi bi-textarea-resize"></i>
+                </button>
+              </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-6" id="match_type_col">
               <label class="form-label">Тип условия</label>
               <select class="form-select bg-black text-light border-secondary" name="match_type" id="f_match_type">
                 <option value="idle">Простой вызова бота</option>
@@ -147,18 +153,17 @@
 
             <div class="col-12">
               <div class="d-flex flex-wrap align-items-center gap-1 mb-1 mini-toolbar">
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<b>','</b>')" title="Жирный"><i class="bi bi-type-bold"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<i>','</i>')" title="Курсив"><i class="bi bi-type-italic"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<u>','</u>')" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<s>','</s>')" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<code>','</code>')" title="Код"><i class="bi bi-code-square"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<pre>','</pre>')" title="Блок кода"><i class="bi bi-braces"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<blockquote>','</blockquote>')" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="insertResponseLink()" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="wrapResponseSelection('<tg-spoiler>','</tg-spoiler>')" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="insertTgEmojiSnippet()" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
-                <button class="btn btn-outline-secondary btn-sm" type="button" x-on:click="showTelegramHtmlHelp()" title="Подсказка по HTML"><i class="bi bi-question-lg"></i></button>
-                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker" x-on:change="insertTemplateTagFromPicker($event.target)">
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;b&gt;" data-after="&lt;/b&gt;" title="Жирный"><i class="bi bi-type-bold"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;i&gt;" data-after="&lt;/i&gt;" title="Курсив"><i class="bi bi-type-italic"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;u&gt;" data-after="&lt;/u&gt;" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;s&gt;" data-after="&lt;/s&gt;" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;code&gt;" data-after="&lt;/code&gt;" title="Код"><i class="bi bi-code-square"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;pre&gt;" data-after="&lt;/pre&gt;" title="Блок кода"><i class="bi bi-braces"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;blockquote&gt;" data-after="&lt;/blockquote&gt;" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="link" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;tg-spoiler&gt;" data-after="&lt;/tg-spoiler&gt;" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-action="emoji" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
+                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker">
                   <option value="">Вставить тег сообщения…</option>
                   <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
                   <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}} — текст/подпись сообщения</option>
@@ -180,6 +185,7 @@
                   <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}} — тег адресата в чате</option>
                 </select>
               </div>
+              <div id="response_editor" class="cm-wrap mb-2"></div>
               <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text" placeholder="Текст ответа / промпт"></textarea>
             </div>
           </div>
@@ -196,6 +202,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script type="module" src="/trigger_bot/static/trigger_codemirror.js"></script>
 <script src="/trigger_bot/static/trigger_list.js"></script>
 </body>
 </html>

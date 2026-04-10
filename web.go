@@ -165,13 +165,26 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
+	_ = r.ParseForm()
+	idStr := strings.TrimSpace(r.FormValue("id"))
+	if idStr == "" {
+		idStr = strings.TrimSpace(r.URL.Query().Get("id"))
+	}
+	id, _ := strconv.ParseInt(idStr, 10, 64)
+	if id <= 0 {
+		http.Error(rw, "id required", http.StatusBadRequest)
 		return
 	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
-	if id > 0 {
-		_ = w.store.ToggleTrigger(id)
+	enabled, err := w.store.ToggleTrigger(id)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "application/json") || r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = rw.Write([]byte(fmt.Sprintf(`{"ok":true,"id":%d,"enabled":%v}`, id, enabled)))
+		return
 	}
 	redirectToListWithToken(rw, r)
 }
