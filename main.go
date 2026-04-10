@@ -1962,7 +1962,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			out := applyCapturingTemplate(tr.ResponseText, tr.CapturingText)
+			out := buildResponseFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
 			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				deleteTriggerSourceMessage(bot, msg, tr)
@@ -2696,6 +2696,22 @@ func applyCapturingTemplate(s, capture string) string {
 	return strings.ReplaceAll(s, "{{capturing_text}}", strings.TrimSpace(capture))
 }
 
+func renderTemplateWithMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture string) string {
+	out := applyCapturingTemplate(template, capture)
+	if msg == nil {
+		return out
+	}
+	replacements := buildMessageTemplateReplacements(bot, msg)
+	for tag, value := range replacements {
+		out = strings.ReplaceAll(out, tag, value)
+	}
+	return out
+}
+
+func buildResponseFromMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture string) string {
+	return renderTemplateWithMessage(bot, template, msg, capture)
+}
+
 func isOlenyamTrigger(tr *Trigger) bool {
 	if tr == nil {
 		return false
@@ -2705,31 +2721,25 @@ func isOlenyamTrigger(tr *Trigger) bool {
 }
 
 func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
-	query := strings.TrimSpace(applyCapturingTemplate(queryTemplate, capturingText))
+	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText))
 	if msg == nil {
 		return query
 	}
-	replacements := buildMessageTemplateReplacements(bot, msg)
 	if query == "" {
+		replacements := buildMessageTemplateReplacements(bot, msg)
 		return strings.TrimSpace(replacements["{{message}}"])
-	}
-	for tag, value := range replacements {
-		query = strings.ReplaceAll(query, tag, value)
 	}
 	return strings.TrimSpace(query)
 }
 
 func buildVKMusicQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
-	query := strings.TrimSpace(applyCapturingTemplate(queryTemplate, capturingText))
+	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText))
 	if msg == nil {
 		return query
 	}
-	replacements := buildMessageTemplateReplacements(bot, msg)
 	if query == "" {
+		replacements := buildMessageTemplateReplacements(bot, msg)
 		return strings.TrimSpace(replacements["{{message}}"])
-	}
-	for tag, value := range replacements {
-		query = strings.ReplaceAll(query, tag, value)
 	}
 	return strings.TrimSpace(query)
 }
