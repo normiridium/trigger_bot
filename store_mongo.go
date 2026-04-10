@@ -325,15 +325,19 @@ func (m *mongoBackend) updateTrigger(t Trigger, now int64) error {
 	return nil
 }
 
-func (m *mongoBackend) toggleTrigger(id int64) error {
+func (m *mongoBackend) toggleTrigger(id int64) (bool, error) {
 	ctx, cancel := mongoCtx()
 	defer cancel()
 	var d mongoTriggerDoc
 	if err := m.triggers.FindOne(ctx, bson.M{"id": id}).Decode(&d); err != nil {
-		return err
+		return false, err
 	}
-	_, err := m.triggers.UpdateOne(ctx, bson.M{"id": id}, bson.M{"$set": bson.M{"enabled": !d.Enabled, "updated_at": time.Now().Unix()}})
-	return err
+	next := !d.Enabled
+	_, err := m.triggers.UpdateOne(ctx, bson.M{"id": id}, bson.M{"$set": bson.M{"enabled": next, "updated_at": time.Now().Unix()}})
+	if err != nil {
+		return false, err
+	}
+	return next, nil
 }
 
 func (m *mongoBackend) deleteTrigger(id int64) error {

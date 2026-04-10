@@ -28,6 +28,20 @@
 {"t":"Список СДВГ","cos":[{"mty":"0","tt":"Список СДВГ","ty":"0"}],"acs":[{"ty":"se","t":"...","sr":"1"}]}
 ```
 
+## System dependencies
+
+Debian/Ubuntu:
+
+```bash
+./scripts/install_deps.sh
+```
+
+To also install MongoDB on Debian bullseye:
+
+```bash
+INSTALL_MONGODB=1 ./scripts/install_deps.sh
+```
+
 ## Запуск
 
 ```bash

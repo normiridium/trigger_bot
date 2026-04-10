@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -30,6 +33,149 @@ import (
 var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
+
+type vkPickRequest struct {
+	Token        string
+	TrackID      string
+	Artist       string
+	Title        string
+	ChatID       int64
+	ReplyTo      int
+	SourceMsgID  int
+	UserID       int64
+	DeleteSource bool
+	ExpiresAt    time.Time
+}
+
+var vkPickMu sync.Mutex
+var vkPickRequests = make(map[string]vkPickRequest)
+
+func newVKPickToken() string {
+	var b [6]byte
+	_, _ = crand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func putVKPick(req vkPickRequest) string {
+	vkPickMu.Lock()
+	defer vkPickMu.Unlock()
+	now := time.Now()
+	for k, v := range vkPickRequests {
+		if v.ExpiresAt.Before(now) {
+			delete(vkPickRequests, k)
+		}
+	}
+	token := newVKPickToken()
+	req.Token = token
+	if req.ExpiresAt.IsZero() {
+		req.ExpiresAt = now.Add(5 * time.Minute)
+	}
+	vkPickRequests[token] = req
+	return token
+}
+
+func takeVKPick(token string, userID int64) (vkPickRequest, bool, string) {
+	vkPickMu.Lock()
+	defer vkPickMu.Unlock()
+	req, ok := vkPickRequests[token]
+	if !ok {
+		return vkPickRequest{}, false, "выбор устарел"
+	}
+	if time.Now().After(req.ExpiresAt) {
+		delete(vkPickRequests, token)
+		return vkPickRequest{}, false, "выбор устарел"
+	}
+	if req.UserID != 0 && userID != 0 && req.UserID != userID {
+		return vkPickRequest{}, false, "этот выбор доступен только автору запроса"
+	}
+	delete(vkPickRequests, token)
+	return req, true, ""
+}
+
+func buildVKPickKeyboard(msg *tgbotapi.Message, tr *Trigger, tracks []vkmusic.Track) tgbotapi.InlineKeyboardMarkup {
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(tracks))
+	for _, track := range tracks {
+		label := strings.TrimSpace(track.Title)
+		artist := strings.TrimSpace(track.Artist)
+		if artist != "" {
+			label = artist + " — " + label
+		}
+		if track.Duration > 0 {
+			label = fmt.Sprintf("%s (%s)", label, formatDuration(float64(track.Duration)))
+		}
+		if label == "" {
+			label = track.ID
+		}
+		token := putVKPick(vkPickRequest{
+			TrackID:      track.ID,
+			Artist:       artist,
+			Title:        strings.TrimSpace(track.Title),
+			ChatID:       msg.Chat.ID,
+			ReplyTo:      msg.MessageID,
+			SourceMsgID:  msg.MessageID,
+			UserID:       msg.From.ID,
+			DeleteSource: tr != nil && tr.DeleteSource,
+		})
+		btn := tgbotapi.NewInlineKeyboardButtonData(label, "vkpick:"+token)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func handleVKPickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, vkMusicClient *vkmusic.Client) bool {
+	if cb == nil || bot == nil {
+		return false
+	}
+	if !strings.HasPrefix(cb.Data, "vkpick:") {
+		return false
+	}
+	token := strings.TrimPrefix(cb.Data, "vkpick:")
+	req, ok, msg := takeVKPick(token, cb.From.ID)
+	if !ok {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+		return true
+	}
+	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Скачиваю..."))
+
+	var pickMsgID int
+	if cb.Message != nil {
+		pickMsgID = cb.Message.MessageID
+		edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "🎵 Выбрано: "+strings.TrimSpace(req.Artist+" — "+req.Title))
+		_, _ = bot.Request(edit)
+	}
+
+	if vkMusicClient == nil {
+		reportChatFailure(bot, req.ChatID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	song, err := vkMusicClient.GetAudioURL(ctx, req.TrackID)
+	cancel()
+	if err != nil || song == nil || strings.TrimSpace(song.URL) == "" {
+		if err == nil {
+			err = errors.New("empty audio URL")
+		}
+		reportChatFailure(bot, req.ChatID, "ошибка отправки аудио VK", err)
+		return true
+	}
+	if err := sendAudioFromURL(bot, req.ChatID, 0, song.URL, song.Artist, song.Title); err != nil {
+		reportChatFailure(bot, req.ChatID, "ошибка отправки аудио VK", err)
+		return true
+	}
+	if pickMsgID > 0 {
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+			ChatID:    req.ChatID,
+			MessageID: pickMsgID,
+		})
+	}
+	if req.DeleteSource && req.SourceMsgID > 0 {
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+			ChatID:    req.ChatID,
+			MessageID: req.SourceMsgID,
+		})
+	}
+	return true
+}
 
 type chatAllowList struct {
 	enabled bool
@@ -1437,6 +1583,11 @@ func main() {
 	engine := NewTriggerEngine()
 
 	for update := range updates {
+		if update.Update.CallbackQuery != nil {
+			if handleVKPickCallback(bot, update.Update.CallbackQuery, vkMusicClient) {
+				continue
+			}
+		}
 		if update.Update.Message == nil {
 			continue
 		}
@@ -1519,7 +1670,7 @@ func main() {
 					continue
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-				tracks, err := vkMusicClient.SearchTracks(ctx, query, 5)
+				tracks, err := vkMusicClient.SearchTracks(ctx, query, 10)
 				cancel()
 				if err != nil {
 					reply(bot, msg.Chat.ID, msg.MessageID, "Ошибка VK-поиска: "+clipText(err.Error(), 240), false)
@@ -1728,7 +1879,7 @@ func main() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			tracks, err := vkMusicClient.SearchTracks(ctx, query, 5)
+			tracks, err := vkMusicClient.SearchTracks(ctx, query, 10)
 			cancel()
 			if err != nil {
 				log.Printf("vk music search failed: %v", err)
@@ -1744,6 +1895,24 @@ func main() {
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
+			}
+			if envBool("VK_AUDIO_INTERACTIVE", true) {
+				maxResults := 10
+				if len(tracks) > maxResults {
+					tracks = tracks[:maxResults]
+				}
+				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
+				m.ReplyMarkup = buildVKPickKeyboard(msg, tr, tracks)
+				if replyTo > 0 {
+					m.ReplyToMessageID = replyTo
+					m.AllowSendingWithoutReply = true
+				}
+				if _, err := bot.Send(m); err != nil {
+					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки списка VK", err)
+					continue
+				}
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				continue
 			}
 			var sendErr error
 			sent := false
@@ -1776,6 +1945,7 @@ func main() {
 				sent = true
 				break
 			}
+
 			if !sent {
 				if sendErr != nil {
 					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио VK", sendErr)
@@ -1973,6 +2143,9 @@ func sendAudioFromURL(bot *tgbotapi.BotAPI, chatID int64, replyTo int, audioURL,
 	}
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
+	if caption := buildAudioCaption(tmpPath); caption != "" {
+		m.Caption = caption
+	}
 	sent, err := bot.Send(m)
 	if err != nil {
 		return err
@@ -1983,6 +2156,75 @@ func sendAudioFromURL(bot *tgbotapi.BotAPI, chatID int64, replyTo int, audioURL,
 	return nil
 }
 
+func buildAudioCaption(path string) string {
+	stats, ok := probeAudioStats(path)
+	if !ok || stats.SizeBytes <= 0 {
+		return ""
+	}
+	sizeMB := float64(stats.SizeBytes) / 1_000_000.0
+	dur := formatDuration(stats.DurationSec)
+	bitrateKbps := stats.BitrateKbps
+	if bitrateKbps <= 0 && stats.DurationSec > 0 {
+		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
+	}
+	if dur == "" || bitrateKbps <= 0 {
+		return fmt.Sprintf("🎧 %.2f MB", sizeMB)
+	}
+	return fmt.Sprintf("🎧 %s | %.2fMB | %dKbps", dur, sizeMB, bitrateKbps)
+}
+
+type audioStats struct {
+	SizeBytes   int64
+	DurationSec float64
+	BitrateKbps int64
+}
+
+func probeAudioStats(path string) (audioStats, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return audioStats{}, false
+	}
+	stats := audioStats{SizeBytes: info.Size()}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return stats, true
+	}
+	out, err := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration,bit_rate",
+		"-of", "default=nw=1:nk=1",
+		path,
+	).Output()
+	if err != nil {
+		return stats, true
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(lines[0]), 64); err == nil && v > 0 {
+			stats.DurationSec = v
+		}
+	}
+	if len(lines) > 1 {
+		if v, err := strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64); err == nil && v > 0 {
+			stats.BitrateKbps = v / 1000
+		}
+	}
+	return stats, true
+}
+
+func formatDuration(sec float64) string {
+	if sec <= 0 {
+		return ""
+	}
+	total := int64(sec + 0.5)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
+}
+
 func downloadAudioToTempFile(audioURL string) (string, error) {
 	tmp, err := os.CreateTemp("", "vk-audio-*.mp3")
 	if err != nil {
@@ -1990,6 +2232,7 @@ func downloadAudioToTempFile(audioURL string) (string, error) {
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
+	tmpSrcPath := ""
 	maxMB := envInt("VK_AUDIO_MAX_MB", 60)
 	if maxMB < 5 {
 		maxMB = 5
@@ -2006,11 +2249,33 @@ func downloadAudioToTempFile(audioURL string) (string, error) {
 	if retries < 1 {
 		retries = 1
 	}
+	dlThreads := envInt("VK_AUDIO_DL_THREADS", 1)
+	if dlThreads < 1 {
+		dlThreads = 1
+	}
+	useMultiDownload := dlThreads > 1 && !strings.Contains(strings.ToLower(audioURL), ".m3u8")
 	var runErr error
 	for attempt := 1; attempt <= retries; attempt++ {
 		_ = os.Remove(tmpPath)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(ffmpegTimeout)*time.Second)
-		err := runFFmpegAudioDownload(ctx, audioURL, tmpPath, ua)
+		var err error
+		if useMultiDownload {
+			if tmpSrcPath == "" {
+				if f, ferr := os.CreateTemp("", "vk-audio-src-*.bin"); ferr == nil {
+					tmpSrcPath = f.Name()
+					_ = f.Close()
+				}
+			}
+			if tmpSrcPath != "" {
+				_ = os.Remove(tmpSrcPath)
+			}
+			err = downloadAudioMultiPart(ctx, audioURL, tmpSrcPath, dlThreads, ua)
+			if err == nil {
+				err = runFFmpegAudioDownloadFromFile(ctx, tmpSrcPath, tmpPath)
+			}
+		} else {
+			err = runFFmpegAudioDownload(ctx, audioURL, tmpPath, ua)
+		}
 		cancel()
 		if err == nil {
 			runErr = nil
@@ -2024,22 +2289,37 @@ func downloadAudioToTempFile(audioURL string) (string, error) {
 	}
 	if runErr != nil {
 		_ = os.Remove(tmpPath)
+		if tmpSrcPath != "" {
+			_ = os.Remove(tmpSrcPath)
+		}
 		return "", runErr
 	}
 	st, err := os.Stat(tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
+		if tmpSrcPath != "" {
+			_ = os.Remove(tmpSrcPath)
+		}
 		return "", err
 	}
 	size := st.Size()
 	limit := int64(maxMB) << 20
 	if size <= 0 {
 		_ = os.Remove(tmpPath)
+		if tmpSrcPath != "" {
+			_ = os.Remove(tmpSrcPath)
+		}
 		return "", errors.New("ffmpeg produced empty audio file")
 	}
 	if size > limit {
 		_ = os.Remove(tmpPath)
+		if tmpSrcPath != "" {
+			_ = os.Remove(tmpSrcPath)
+		}
 		return "", fmt.Errorf("audio too large: %d bytes (limit %d MB)", size, maxMB)
+	}
+	if tmpSrcPath != "" {
+		_ = os.Remove(tmpSrcPath)
 	}
 	return tmpPath, nil
 }
@@ -2160,6 +2440,76 @@ func runFFmpegAudioDownloadDirect(ctx context.Context, audioURL, outPath, userAg
 			return fmt.Errorf("ffmpeg timeout")
 		}
 		return fmt.Errorf("ffmpeg failed: %s", clipText(msg, 400))
+	}
+	return nil
+}
+
+func runFFmpegAudioDownloadFromFile(ctx context.Context, inPath, outPath string) error {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx,
+		"ffmpeg",
+		"-nostdin",
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-i", inPath,
+		"-vn",
+		"-acodec", "libmp3lame",
+		"-b:a", "192k",
+		outPath,
+	)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ffmpeg timeout")
+		}
+		return fmt.Errorf("ffmpeg file transcode failed: %s", clipText(msg, 400))
+	}
+	return nil
+}
+
+func downloadAudioMultiPart(ctx context.Context, audioURL, outPath string, threads int, userAgent string) error {
+	if strings.TrimSpace(outPath) == "" {
+		return errors.New("empty temp path for multipart download")
+	}
+	if threads < 2 {
+		return errors.New("multipart download requires threads >= 2")
+	}
+	if _, err := exec.LookPath("aria2c"); err != nil {
+		return fmt.Errorf("aria2c not found")
+	}
+	headerUA := "User-Agent: " + userAgent
+	args := []string{
+		"-c",
+		"-x", strconv.Itoa(threads),
+		"-s", strconv.Itoa(threads),
+		"-k", "1M",
+		"--max-tries=3",
+		"--retry-wait=1",
+		"--timeout=15",
+		"--connect-timeout=10",
+		"--file-allocation=none",
+		"--header", headerUA,
+		"-o", filepath.Base(outPath),
+		"-d", filepath.Dir(outPath),
+		audioURL,
+	}
+	cmd := exec.CommandContext(ctx, "aria2c", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("aria2c timeout")
+		}
+		return fmt.Errorf("aria2c failed: %s", clipText(msg, 400))
 	}
 	return nil
 }

@@ -1,10 +1,25 @@
-function triggerApp(){ return {}; }
+function triggerApp(){
+  return {
+    handleImportSubmit,
+    updateImportFileName,
+    openNew,
+    submitTriggerForm,
+    syncSwitch,
+    wrapResponseSelection,
+    insertResponseLink,
+    insertTgEmojiSnippet,
+    showTelegramHtmlHelp,
+    insertTemplateTagFromPicker,
+    cloneCurrentTrigger,
+  };
+}
 
 let __triggerPageInitialized = false;
 let triggerSortable = null;
 const rowActionBusy = new Set();
 let editLoadInFlight = false;
 let reorderSaving = false;
+let responseEditorReady = false;
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -12,6 +27,8 @@ async function initTriggerPage(){
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
   applyTokenToForms();
   applyMatchTypeUI();
+  bindMiniToolbarFallback();
+  ensureResponseEditor();
   await loadTriggerList();
   initTriggerDragAndDrop();
 }
@@ -30,6 +47,48 @@ function escapeHtml(v){
     .replace(/'/g, '&#39;');
 }
 
+function ensureResponseEditor(){
+  if(responseEditorReady){ return; }
+  if(typeof window.initResponseEditor !== 'function'){ return; }
+  const editor = window.initResponseEditor('f_response_text', 'response_editor');
+  if(editor){
+    const ta = document.getElementById('f_response_text');
+    if(ta){ ta.classList.add('d-none'); }
+    responseEditorReady = true;
+  }
+}
+
+function getEditorView(){
+  if(typeof window.getResponseEditor === 'function'){
+    return window.getResponseEditor();
+  }
+  return null;
+}
+
+function setResponseValue(val){
+  const editor = getEditorView();
+  const text = String(val ?? '');
+  if(editor){
+    const docLen = editor.state.doc.length;
+    editor.dispatch({changes: {from: 0, to: docLen, insert: text}});
+    return;
+  }
+  const ta = document.getElementById('f_response_text');
+  if(ta){ ta.value = text; }
+}
+
+function getResponseValue(){
+  const editor = getEditorView();
+  if(editor){ return editor.state.doc.toString(); }
+  const ta = document.getElementById('f_response_text');
+  return ta ? ta.value : '';
+}
+
+function syncResponseToTextarea(){
+  const ta = document.getElementById('f_response_text');
+  if(ta){ ta.value = getResponseValue(); }
+}
+
 function formatRegexBenchMS(us){
   const n = Number(us || 0);
   if(!Number.isFinite(n) || n <= 0){ return '—'; }
@@ -37,7 +96,7 @@ function formatRegexBenchMS(us){
 }
 
 function statusIcon(enabled){
-  return enabled ? 'bi-eye-fill' : 'bi-eye-slash-fill';
+  return enabled ? 'bi-eye' : 'bi-eye-slash';
 }
 
 function normalizeMatchType(v){
@@ -50,7 +109,8 @@ function triggerRowHTML(t){
   const matchText = escapeHtml(t.match_text ?? t.MatchText ?? '');
   const matchType = normalizeMatchType(t.match_type ?? t.MatchType ?? 'full');
   const actionType = escapeHtml(t.action_type ?? t.ActionType ?? 'send');
-  const adminMode = escapeHtml(t.admin_mode ?? t.AdminMode ?? 'anybody');
+  const adminModeRaw = String(t.admin_mode ?? t.AdminMode ?? '');
+  const adminMode = escapeHtml(adminModeRaw);
   const enabled = !!(t.enabled ?? t.Enabled);
   const regexError = String(t.regex_error ?? t.RegexError ?? '').trim();
   const regexBenchUS = Number(t.regex_bench_us ?? t.RegexBenchUS ?? 0);
@@ -74,9 +134,9 @@ function triggerRowHTML(t){
     ${regexWarn}
     <small>${regexBench}(${escapeHtml(matchType)})</small>
   </td>
-  <td><small>${actionType} / ${adminMode}</small></td>
+  <td><small>${adminModeRaw === 'anybody' ? actionType : `${actionType} / ${adminMode}`}</small></td>
   <td class="text-nowrap">
-    <form class="d-inline" method="post" action="${withToken('/trigger_bot/toggle')}" onsubmit="return handleRowFormSubmit(event, this)">
+    <form class="d-inline" method="post" action="${withToken('/trigger_bot/toggle')}" onsubmit="handleToggleSubmit(event, this); return false;">
       <input type="hidden" name="id" value="${id}">
       <button class="btn btn-sm action-mini ${toggleClass}" type="submit" title="Переключить статус" aria-label="Переключить статус">
         <i class="bi ${statusIcon(enabled)}"></i>
@@ -164,6 +224,61 @@ function handleRowFormSubmit(event, form){
   return true;
 }
 
+async function handleToggleSubmit(event, form){
+  if(event){ event.preventDefault(); }
+  const id = triggerIdFromForm(form);
+  if(id > 0 && rowActionBusy.has(id)){ return false; }
+  const btn = form ? form.querySelector('button[type="submit"]') : null;
+  lockButton(btn);
+  if(id > 0){ rowActionBusy.add(id); }
+  try{
+    const baseUrl = form.getAttribute('action') || withToken('/trigger_bot/toggle');
+    const url = new URL(baseUrl, window.location.origin);
+    if(id > 0){ url.searchParams.set('id', String(id)); }
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      body: new FormData(form),
+      headers: {
+        'Accept': 'application/json'
+      },
+      credentials: 'same-origin'
+    });
+    if(!res.ok){
+      const txt = await res.text();
+      alert('Не удалось переключить: ' + (txt || res.status));
+      return;
+    }
+    let nextEnabled = null;
+    try {
+      const data = await res.json();
+      if(data && typeof data.enabled === 'boolean'){
+        nextEnabled = data.enabled;
+      }
+    } catch (_) {}
+    const icon = btn ? btn.querySelector('i') : null;
+    const isEnabled = icon
+      ? (icon.classList.contains('bi-eye') || icon.classList.contains('bi-eye-fill'))
+      : false;
+    if(nextEnabled === null){
+      nextEnabled = !isEnabled;
+    }
+    if(btn){
+      btn.classList.toggle('btn-outline-success', nextEnabled);
+      btn.classList.toggle('btn-outline-secondary', !nextEnabled);
+    }
+    if(icon){
+      icon.classList.remove('bi-eye-fill', 'bi-eye-slash-fill', 'bi-eye', 'bi-eye-slash');
+      icon.classList.add(nextEnabled ? 'bi-eye' : 'bi-eye-slash');
+    }
+  } catch(err){
+    alert('Не удалось переключить: ' + (err && err.message ? err.message : err));
+    return;
+  } finally {
+    unlockButton(btn);
+    if(id > 0){ rowActionBusy.delete(id); }
+  }
+}
+
 function handleDeleteSubmit(event, form){
   if(!confirm('Удалить?')){
     if(event){ event.preventDefault(); }
@@ -196,6 +311,7 @@ async function submitTriggerForm(event){
   if(event){ event.preventDefault(); }
   const form = document.getElementById('trigger_form');
   if(!form){ return false; }
+  syncResponseToTextarea();
   syncSwitch('f_enabled');
   syncSwitch('f_case_sensitive');
   syncSwitch('f_reply');
@@ -208,6 +324,8 @@ async function submitTriggerForm(event){
   const replyEl = document.getElementById('f_reply');
   if(isNew && enabledEl && !String(enabledEl.value || '').trim()){ enabledEl.value = '1'; }
   if(isNew && replyEl && !String(replyEl.value || '').trim()){ replyEl.value = '1'; }
+  const inp = document.getElementById('f_match_text');
+  if(inp){ inp.value = getMatchTextValue(); }
 
   setSaveBusy(true);
   try{
@@ -239,6 +357,18 @@ function getResponseTextArea(){
 }
 
 function replaceTextAreaSelection(el, before, after){
+  const editor = getEditorView();
+  if(editor){
+    const sel = editor.state.selection.main;
+    const selected = editor.state.sliceDoc(sel.from, sel.to) || 'текст';
+    const insert = String(before) + selected + String(after);
+    editor.dispatch({
+      changes: {from: sel.from, to: sel.to, insert},
+      selection: {anchor: sel.from + insert.length}
+    });
+    editor.focus();
+    return;
+  }
   if(!el){ return; }
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
@@ -252,6 +382,16 @@ function replaceTextAreaSelection(el, before, after){
 }
 
 function insertTextAtCursor(el, text){
+  const editor = getEditorView();
+  if(editor){
+    const sel = editor.state.selection.main;
+    editor.dispatch({
+      changes: {from: sel.from, to: sel.to, insert: text},
+      selection: {anchor: sel.from + String(text).length}
+    });
+    editor.focus();
+    return;
+  }
   if(!el){ return; }
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
@@ -306,10 +446,46 @@ function insertTemplateTagFromPicker(sel){
   sel.value = '';
 }
 
+function bindMiniToolbarFallback(){
+  if(document.body.dataset.toolbarBound === '1'){ return; }
+  document.body.dataset.toolbarBound = '1';
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
+    if(!btn){ return; }
+    const action = btn.getAttribute('data-action');
+    if(action === 'wrap'){
+      const before = btn.getAttribute('data-before') || '';
+      const after = btn.getAttribute('data-after') || '';
+      wrapResponseSelection(before, after);
+      return;
+    }
+    if(action === 'link'){
+      insertResponseLink();
+      return;
+    }
+    if(action === 'emoji'){
+      insertTgEmojiSnippet();
+      return;
+    }
+    if(action === 'help'){
+      showTelegramHtmlHelp();
+      return;
+    }
+  });
+
+  document.addEventListener('change', (ev) => {
+    const target = ev.target;
+    if(!target || target.id !== 'f_template_tag_picker'){ return; }
+    insertTemplateTagFromPicker(target);
+  });
+}
+
 function applyMatchTypeUI(){
   const mt = document.getElementById('f_match_type');
   const lbl = document.getElementById('f_match_text_label');
   const inp = document.getElementById('f_match_text');
+  const area = document.getElementById('f_match_text_area');
+  const toggle = document.querySelector('.match-text-toggle');
   const cs = document.getElementById('f_case_sensitive_switch');
   const csHidden = document.getElementById('f_case_sensitive');
   if(!mt || !lbl || !inp){ return; }
@@ -319,6 +495,8 @@ function applyMatchTypeUI(){
     inp.min = '1';
     inp.step = '1';
     inp.placeholder = 'например, 120';
+    if(area){ area.classList.add('d-none'); }
+    if(toggle){ toggle.disabled = true; }
     if(cs){ cs.disabled = true; cs.checked = false; }
     if(csHidden){ csHidden.value = '0'; }
   } else {
@@ -327,8 +505,65 @@ function applyMatchTypeUI(){
     inp.removeAttribute('min');
     inp.removeAttribute('step');
     inp.placeholder = 'Текст триггера';
+    if(toggle){ toggle.disabled = false; }
     if(cs){ cs.disabled = false; }
   }
+}
+
+function toggleMatchTextArea(){
+  const inp = document.getElementById('f_match_text');
+  const area = document.getElementById('f_match_text_area');
+  const textCol = document.getElementById('match_text_col');
+  const typeCol = document.getElementById('match_type_col');
+  if(!inp || !area){ return; }
+  if(area.classList.contains('d-none')){
+    area.value = inp.value || '';
+    area.classList.remove('d-none');
+    inp.classList.add('d-none');
+    area.name = 'match_text';
+    inp.removeAttribute('name');
+    area.focus();
+    if(textCol){
+      textCol.classList.remove('col-md-6');
+      textCol.classList.add('col-md-12');
+    }
+    if(typeCol){
+      typeCol.classList.remove('col-md-6');
+      typeCol.classList.add('col-md-12');
+    }
+  } else {
+    inp.value = area.value || '';
+    inp.classList.remove('d-none');
+    area.classList.add('d-none');
+    inp.name = 'match_text';
+    area.removeAttribute('name');
+    inp.focus();
+    if(textCol){
+      textCol.classList.remove('col-md-12');
+      textCol.classList.add('col-md-6');
+    }
+    if(typeCol){
+      typeCol.classList.remove('col-md-12');
+      typeCol.classList.add('col-md-6');
+    }
+  }
+}
+
+function getMatchTextValue(){
+  const inp = document.getElementById('f_match_text');
+  const area = document.getElementById('f_match_text_area');
+  if(area && !area.classList.contains('d-none')){ return area.value || ''; }
+  return inp ? inp.value || '' : '';
+}
+
+function setMatchTextValue(val){
+  const inp = document.getElementById('f_match_text');
+  const area = document.getElementById('f_match_text_area');
+  if(area && !area.classList.contains('d-none')){
+    area.value = val || '';
+    return;
+  }
+  if(inp){ inp.value = val || ''; }
 }
 
 function syncSwitch(id){
@@ -426,13 +661,13 @@ function fillForm(t){
   document.getElementById('f_id').value=pick(t,'id','ID','');
   document.getElementById('f_uid').value=pick(t,'uid','UID','');
   document.getElementById('f_title').value=pick(t,'title','Title','');
-  document.getElementById('f_response_text').value=pick(t,'response_text','ResponseText','');
+  setResponseValue(pick(t,'response_text','ResponseText',''));
   document.getElementById('f_chance').value=pick(t,'chance','Chance',100);
   setSel('f_trigger_mode', pick(t,'trigger_mode','TriggerMode','all'));
   setSel('f_admin_mode', pick(t,'admin_mode','AdminMode','anybody'));
   setSel('f_match_type', pick(t,'match_type','MatchType','full'));
   applyMatchTypeUI();
-  document.getElementById('f_match_text').value=pick(t,'match_text','MatchText','');
+  setMatchTextValue(pick(t,'match_text','MatchText',''));
   setSel('f_action_type', pick(t,'action_type','ActionType','send'));
   setBool('f_enabled', !!pick(t,'enabled','Enabled',true));
   setBool('f_case_sensitive', !!pick(t,'case_sensitive','CaseSensitive',false));
@@ -459,6 +694,7 @@ async function openNew(){
     delete_source: false,
     chance: 100
   });
+  ensureResponseEditor();
   openModal();
 }
 
@@ -474,6 +710,7 @@ async function openEdit(id, btn){
     }
     const t=await r.json();
     fillForm(t);
+    ensureResponseEditor();
     openModal();
   } catch(err){
     alert('Не удалось загрузить триггер: ' + (err && err.message ? err.message : err));
@@ -496,6 +733,9 @@ function cloneCurrentTrigger(){
 }
 
 document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
+window.addEventListener('codemirror-ready', () => {
+  ensureResponseEditor();
+});
 if(!window.Alpine){
   initTriggerPage();
 }

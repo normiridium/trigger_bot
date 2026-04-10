@@ -448,20 +448,31 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	return err
 }
 
-func (s *Store) ToggleTrigger(id int64) error {
+func (s *Store) ToggleTrigger(id int64) (bool, error) {
 	if s != nil && s.mg != nil {
-		if err := s.mg.toggleTrigger(id); err == nil {
-			s.invalidateCache()
-		} else {
-			return err
+		next, err := s.mg.toggleTrigger(id)
+		if err != nil {
+			return false, err
 		}
-		return nil
-	}
-	_, err := s.db.Exec(`UPDATE triggers SET enabled=CASE WHEN enabled=1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?`, time.Now().Unix(), id)
-	if err == nil {
 		s.invalidateCache()
+		return next, nil
 	}
-	return err
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+	var cur int
+	if err := s.db.QueryRow(`SELECT enabled FROM triggers WHERE id=?`, id).Scan(&cur); err != nil {
+		return false, err
+	}
+	next := 1
+	if cur == 1 {
+		next = 0
+	}
+	if _, err := s.db.Exec(`UPDATE triggers SET enabled=?, updated_at=? WHERE id=?`, next, time.Now().Unix(), id); err != nil {
+		return false, err
+	}
+	s.invalidateCache()
+	return next == 1, nil
 }
 
 func (s *Store) DeleteTrigger(id int64) error {
