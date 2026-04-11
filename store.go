@@ -26,7 +26,7 @@ type Trigger struct {
 	TriggerMode   string // all
 	AdminMode     string // anybody|admins
 	MatchText     string
-	MatchType     string // full|partial|regex|starts|ends|idle
+	MatchType     string // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
 	ActionType    string // send|delete|gpt_prompt|gpt_image|search_image|vk_music_audio
 	ResponseText  []ResponseTextItem `json:"response_text"`
@@ -291,6 +291,8 @@ func normalizeMatchType(v string) string {
 		return "ends"
 	case "idle":
 		return "idle"
+	case "new_member", "new member", "newmember", "новый участник", "новый_участник":
+		return "new_member"
 	default:
 		return "full"
 	}
@@ -596,6 +598,9 @@ func TriggerMatches(t Trigger, incoming string) bool {
 func TriggerMatchCapture(t Trigger, incoming string) (bool, string) {
 	needle := strings.TrimSpace(t.MatchText)
 	hay := strings.TrimSpace(incoming)
+	if normalizeMatchType(t.MatchType) == "new_member" {
+		return false, ""
+	}
 	if hay == "" {
 		return false, ""
 	}

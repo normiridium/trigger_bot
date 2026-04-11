@@ -31,6 +31,11 @@ async function initTriggerPage(){
   applyMatchTypeUI();
   bindMiniToolbarFallback();
   ensureResponseEditor();
+  const form = document.getElementById('trigger_form');
+  if(form && !form.dataset.boundSubmit){
+    form.addEventListener('submit', submitTriggerForm);
+    form.dataset.boundSubmit = '1';
+  }
   renderVariantControls();
   await loadTriggerList();
   initTriggerDragAndDrop();
@@ -261,12 +266,9 @@ function triggerRowHTML(t){
   </td>
   <td><small>${adminModeRaw === 'anybody' ? actionType : `${actionType} / ${adminMode}`}</small></td>
   <td class="text-nowrap">
-    <form class="d-inline" method="post" action="${withToken('/trigger_bot/toggle')}" onsubmit="handleToggleSubmit(event, this); return false;">
-      <input type="hidden" name="id" value="${id}">
-      <button class="btn btn-sm action-mini ${toggleClass}" type="submit" title="Переключить статус" aria-label="Переключить статус">
-        <i class="bi ${statusIcon(enabled)}"></i>
-      </button>
-    </form>
+    <button class="btn btn-sm action-mini ${toggleClass}" type="button" data-id="${id}" title="Переключить статус" aria-label="Переключить статус" onclick="handleToggleClick(event, this)">
+      <i class="bi ${statusIcon(enabled)}"></i>
+    </button>
     <button class="btn btn-sm action-mini btn-outline-primary ms-1" type="button" onclick="openEdit(${id}, this)" title="Редактировать" aria-label="Редактировать">
       <i class="bi bi-pencil"></i>
     </button>
@@ -349,23 +351,21 @@ function handleRowFormSubmit(event, form){
   return true;
 }
 
-async function handleToggleSubmit(event, form){
+async function handleToggleClick(event, btn){
   if(event){ event.preventDefault(); }
-  const id = triggerIdFromForm(form);
+  const id = Number(btn && btn.getAttribute('data-id') ? btn.getAttribute('data-id') : 0);
   if(id > 0 && rowActionBusy.has(id)){ return false; }
-  const btn = form ? form.querySelector('button[type="submit"]') : null;
   lockButton(btn);
   if(id > 0){ rowActionBusy.add(id); }
   try{
-    const baseUrl = form.getAttribute('action') || withToken('/trigger_bot/toggle');
-    const url = new URL(baseUrl, window.location.origin);
-    if(id > 0){ url.searchParams.set('id', String(id)); }
-    const res = await fetch(url.toString(), {
+    const url = withToken('/trigger_bot/toggle');
+    const res = await fetch(url, {
       method: 'POST',
-      body: new FormData(form),
       headers: {
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
       },
+      body: JSON.stringify({id}),
       credentials: 'same-origin'
     });
     if(!res.ok){
@@ -458,9 +458,27 @@ async function submitTriggerForm(event){
   try{
     const controller = new AbortController();
     const timeout = setTimeout(()=>controller.abort(), 15000);
+    const payload = {
+      id: Number(document.getElementById('f_id')?.value || 0),
+      uid: String(document.getElementById('f_uid')?.value || ''),
+      title: String(document.getElementById('f_title')?.value || ''),
+      trigger_mode: String(document.getElementById('f_trigger_mode')?.value || 'all'),
+      admin_mode: String(document.getElementById('f_admin_mode')?.value || 'anybody'),
+      match_text: String(document.getElementById('f_match_text')?.value || ''),
+      match_type: String(document.getElementById('f_match_type')?.value || 'full'),
+      action_type: String(document.getElementById('f_action_type')?.value || 'send'),
+      chance: Number(document.getElementById('f_chance')?.value || 100),
+      enabled: document.getElementById('f_enabled')?.value === '1',
+      case_sensitive: document.getElementById('f_case_sensitive')?.value === '1',
+      reply: document.getElementById('f_reply')?.value === '1',
+      preview: document.getElementById('f_preview')?.value === '1',
+      delete_source: document.getElementById('f_delete_source')?.value === '1',
+      response_text: responseVariants.map((it) => ({text: String(it.text ?? '')})),
+    };
     const res = await fetch(form.getAttribute('action') || withToken('/trigger_bot/save'), {
       method: 'POST',
-      body: new FormData(form),
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify(payload),
       signal: controller.signal,
       credentials: 'same-origin'
     });
@@ -543,7 +561,7 @@ function insertResponseLink(){
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
   const val = el.value ?? '';
-  const selected = val.slice(start, end) || 'ссылка';
+  const selected = val.slice(start, end) || '\u2060';
   const linked = `<a href="${url}">${selected}</a>`;
   el.value = val.slice(0, start) + linked + val.slice(end);
   const caret = start + linked.length;
@@ -628,6 +646,18 @@ function applyMatchTypeUI(){
     if(toggle){ toggle.disabled = true; }
     if(cs){ cs.disabled = true; cs.checked = false; }
     if(csHidden){ csHidden.value = '0'; }
+    inp.disabled = false;
+  } else if(mt.value === 'new_member'){
+    lbl.textContent = 'Текст триггера';
+    inp.type = 'text';
+    inp.removeAttribute('min');
+    inp.removeAttribute('step');
+    inp.placeholder = 'не используется';
+    if(area){ area.classList.add('d-none'); }
+    if(toggle){ toggle.disabled = true; }
+    if(cs){ cs.disabled = true; cs.checked = false; }
+    if(csHidden){ csHidden.value = '0'; }
+    inp.disabled = true;
   } else {
     lbl.textContent = 'Текст триггера';
     inp.type = 'text';
@@ -636,6 +666,7 @@ function applyMatchTypeUI(){
     inp.placeholder = 'Текст триггера';
     if(toggle){ toggle.disabled = false; }
     if(cs){ cs.disabled = false; }
+    inp.disabled = false;
   }
 }
 
