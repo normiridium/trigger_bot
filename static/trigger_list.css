@@ -97,6 +97,22 @@ tr.dragging-row {
 .cm-wrap .cm-content {
   caret-color: #f9fafb;
 }
+.response-variant-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  align-items: center;
+}
+.response-variant-label {
+  color: #9ca3af;
+  font-size: .85rem;
+  margin-right: .35rem;
+}
+.response-variant-controls .btn {
+  padding: .15rem .45rem;
+  line-height: 1.1;
+  font-size: .85rem;
+}
 .match-text-wrap {
   display: flex;
   align-items: stretch;
