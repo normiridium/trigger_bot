@@ -117,66 +117,145 @@ func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	// Save is submitted from JS as multipart/form-data (FormData),
-	// and sometimes as regular form-urlencoded. Support both robustly.
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		if err := r.ParseForm(); err != nil {
+	isJSON := strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
+	var t Trigger
+	if isJSON {
+		var payload struct {
+			ID            int64               `json:"id"`
+			UID           string              `json:"uid"`
+			Title         string              `json:"title"`
+			Enabled       bool                `json:"enabled"`
+			TriggerMode   string              `json:"trigger_mode"`
+			AdminMode     string              `json:"admin_mode"`
+			MatchText     string              `json:"match_text"`
+			MatchType     string              `json:"match_type"`
+			CaseSensitive bool                `json:"case_sensitive"`
+			ActionType    string              `json:"action_type"`
+			ResponseText  []ResponseTextItem  `json:"response_text"`
+			Reply         bool                `json:"reply"`
+			Preview       bool                `json:"preview"`
+			DeleteSource  bool                `json:"delete_source"`
+			Chance        int                 `json:"chance"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
 		}
-	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
-	chance, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("chance")))
-	enabledRaw := strings.TrimSpace(r.FormValue("enabled"))
-	enabled := enabledRaw == "1"
-	if id <= 0 && enabledRaw == "" {
-		enabled = true
-	}
-	replyRaw := strings.TrimSpace(r.FormValue("reply"))
-	reply := replyRaw == "1"
-	if id <= 0 && replyRaw == "" {
-		reply = true
-	}
-	deleteSourceRaw := strings.TrimSpace(r.FormValue("delete_source"))
-	deleteSource := deleteSourceRaw == "1"
-	var responseItems []ResponseTextItem
-	responseRaw := strings.TrimSpace(r.FormValue("response_text"))
-	if responseRaw != "" {
-		if strings.HasPrefix(responseRaw, "[") {
-			_ = json.Unmarshal([]byte(responseRaw), &responseItems)
+		t = Trigger{
+			ID:            payload.ID,
+			UID:           strings.TrimSpace(payload.UID),
+			Title:         payload.Title,
+			Enabled:       payload.Enabled,
+			TriggerMode:   payload.TriggerMode,
+			AdminMode:     payload.AdminMode,
+			MatchText:     payload.MatchText,
+			MatchType:     payload.MatchType,
+			CaseSensitive: payload.CaseSensitive,
+			ActionType:    payload.ActionType,
+			ResponseText:  payload.ResponseText,
+			Reply:         payload.Reply,
+			Preview:       payload.Preview,
+			DeleteSource:  payload.DeleteSource,
+			Chance:        payload.Chance,
 		}
-		if len(responseItems) == 0 {
-			responseItems = []ResponseTextItem{{Text: responseRaw}}
+	} else {
+		// Save is submitted from JS as multipart/form-data (FormData),
+		// and sometimes as regular form-urlencoded. Support both robustly.
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			if err := r.ParseForm(); err != nil {
+				http.Error(rw, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
-	}
-	t := Trigger{
-		ID:            id,
-		UID:           strings.TrimSpace(r.FormValue("uid")),
-		Title:         r.FormValue("title"),
-		Enabled:       enabled,
-		TriggerMode:   r.FormValue("trigger_mode"),
-		AdminMode:     r.FormValue("admin_mode"),
-		MatchText:     r.FormValue("match_text"),
-		MatchType:     r.FormValue("match_type"),
-		CaseSensitive: r.FormValue("case_sensitive") == "1",
-		ActionType:    r.FormValue("action_type"),
-		ResponseText:  responseItems,
-		Reply:         reply,
-		Preview:       r.FormValue("preview") == "1",
-		DeleteSource:  deleteSource,
-		Chance:        chance,
+		id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+		chance, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("chance")))
+		enabledRaw := strings.TrimSpace(r.FormValue("enabled"))
+		enabled := enabledRaw == "1"
+		if id <= 0 && enabledRaw == "" {
+			enabled = true
+		}
+		replyRaw := strings.TrimSpace(r.FormValue("reply"))
+		reply := replyRaw == "1"
+		if id <= 0 && replyRaw == "" {
+			reply = true
+		}
+		deleteSourceRaw := strings.TrimSpace(r.FormValue("delete_source"))
+		deleteSource := deleteSourceRaw == "1"
+		var responseItems []ResponseTextItem
+		responseRaw := strings.TrimSpace(r.FormValue("response_text"))
+		if responseRaw != "" {
+			if strings.HasPrefix(responseRaw, "[") {
+				_ = json.Unmarshal([]byte(responseRaw), &responseItems)
+			}
+			if len(responseItems) == 0 {
+				responseItems = []ResponseTextItem{{Text: responseRaw}}
+			}
+		}
+		t = Trigger{
+			ID:            id,
+			UID:           strings.TrimSpace(r.FormValue("uid")),
+			Title:         r.FormValue("title"),
+			Enabled:       enabled,
+			TriggerMode:   r.FormValue("trigger_mode"),
+			AdminMode:     r.FormValue("admin_mode"),
+			MatchText:     r.FormValue("match_text"),
+			MatchType:     r.FormValue("match_type"),
+			CaseSensitive: r.FormValue("case_sensitive") == "1",
+			ActionType:    r.FormValue("action_type"),
+			ResponseText:  responseItems,
+			Reply:         reply,
+			Preview:       r.FormValue("preview") == "1",
+			DeleteSource:  deleteSource,
+			Chance:        chance,
+		}
 	}
 	if err := w.store.SaveTrigger(t); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("web save trigger id=%d title=%q match_type=%s action=%s took=%s", t.ID, clipText(t.Title, 80), t.MatchType, t.ActionType, time.Since(started))
+	variantCount := len(t.ResponseText)
+	primaryLen := 0
+	if variantCount > 0 {
+		primaryLen = len(t.ResponseText[0].Text)
+	}
+	log.Printf(
+		"web save trigger id=%d title=%q match_type=%s action=%s variants=%d first_len=%d took=%s",
+		t.ID,
+		clipText(t.Title, 80),
+		t.MatchType,
+		t.ActionType,
+		variantCount,
+		primaryLen,
+		time.Since(started),
+	)
+	if isJSON {
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(rw).Encode(struct {
+			OK bool `json:"ok"`
+		}{OK: true})
+		return
+	}
 	redirectToListWithToken(rw, r)
 }
 
 func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	idStr := strings.TrimSpace(r.FormValue("id"))
+	idStr := ""
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		var payload struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if payload.ID > 0 {
+			idStr = strconv.FormatInt(payload.ID, 10)
+		}
+	}
+	if idStr == "" {
+		_ = r.ParseForm()
+		idStr = strings.TrimSpace(r.FormValue("id"))
+	}
 	if idStr == "" {
 		idStr = strings.TrimSpace(r.URL.Query().Get("id"))
 	}

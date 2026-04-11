@@ -281,12 +281,43 @@ type rawMessageWithEmoji struct {
 }
 
 type rawUpdateWithEmoji struct {
-	Message *rawMessageWithEmoji `json:"message"`
+	Message    *rawMessageWithEmoji  `json:"message"`
+	ChatMember *rawChatMemberUpdated `json:"chat_member"`
+	MyChatMember *rawChatMemberUpdated `json:"my_chat_member"`
 }
 
 type updateWithEmojiMeta struct {
 	Update     tgbotapi.Update
 	RawMessage *rawMessageWithEmoji
+	RawChatMember *rawChatMemberUpdated
+	RawMyChatMember *rawChatMemberUpdated
+}
+
+type rawChatMemberUpdated struct {
+	Chat *rawChat `json:"chat"`
+	From *rawUser `json:"from"`
+	Date int64    `json:"date"`
+	OldChatMember *rawChatMember `json:"old_chat_member"`
+	NewChatMember *rawChatMember `json:"new_chat_member"`
+}
+
+type rawChat struct {
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
+}
+
+type rawUser struct {
+	ID        int64  `json:"id"`
+	IsBot     bool   `json:"is_bot"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	UserName  string `json:"username"`
+}
+
+type rawChatMember struct {
+	User   *rawUser `json:"user"`
+	Status string   `json:"status"`
 }
 
 type customEmojiHit struct {
@@ -1247,6 +1278,14 @@ func htmlUserLabel(label string, userID int64) string {
 	return html.EscapeString(label) + ` (<code>` + strconv.FormatInt(userID, 10) + `</code>)`
 }
 
+func htmlUserLink(label string, userID int64) string {
+	name := strings.TrimSpace(label)
+	if name == "" {
+		name = "Участник без имени"
+	}
+	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, userID, html.EscapeString(name))
+}
+
 func applyReadonly(bot *tgbotapi.BotAPI, chatID int64, on bool) error {
 	if bot == nil || chatID == 0 {
 		return errors.New("invalid readonly params")
@@ -1305,13 +1344,12 @@ func handleModerationCommand(
 		})
 	}
 
-	actionLabel := map[string]string{
-		"ban":      "Бан",
-		"unban":    "Разбан",
-		"mute":     "Мьют",
-		"unmute":   "Размьют",
-		"kick":     "Кик",
-		"readonly": "Только чтение",
+	actionVerb := map[string]string{
+		"ban":    "забанил(а)",
+		"unban":  "разбанил(а)",
+		"mute":   "замьютил(а)",
+		"unmute": "размьютил(а)",
+		"kick":   "кикнул(а)",
 	}
 
 	if req.Action == "reload_admins" {
@@ -1347,25 +1385,24 @@ func handleModerationCommand(
 			})
 		}
 		if !req.Silent {
-			state := "включен"
+			modLabel := userIndex.Display(msg.Chat.ID, msg.From.ID)
+			modLink := htmlUserLink(modLabel, msg.From.ID)
+			state := "включил(а) режим только чтения"
 			if !turnOn {
-				state = "выключен"
+				state = "выключил(а) режим только чтения"
 			}
 			var b strings.Builder
-			b.WriteString("<b>")
-			b.WriteString(actionLabel["readonly"])
-			b.WriteString("</b>: ")
+			b.WriteString(modLink)
+			b.WriteByte(' ')
 			b.WriteString(state)
 			if req.DurationRaw != "" && turnOn {
-				b.WriteString("\nСрок: ")
+				b.WriteString(" на ")
 				b.WriteString(html.EscapeString(req.DurationRaw))
 			}
 			if req.Reason != "" {
-				b.WriteString("\nПричина: ")
+				b.WriteString(" — ")
 				b.WriteString(html.EscapeString(req.Reason))
 			}
-			b.WriteString("\nМодератор: ")
-			b.WriteString(htmlUserLabel(userIndex.Display(msg.Chat.ID, msg.From.ID), msg.From.ID))
 			sendHTML(bot, msg.Chat.ID, 0, b.String(), false)
 		}
 		return true
@@ -1470,31 +1507,34 @@ func handleModerationCommand(
 	if req.Silent {
 		return true
 	}
-	var b strings.Builder
-	b.WriteString("<b>")
-	b.WriteString(actionLabel[req.Action])
-	b.WriteString("</b>:\n")
+	modLabel := userIndex.Display(msg.Chat.ID, msg.From.ID)
+	modLink := htmlUserLink(modLabel, msg.From.ID)
+	verb := actionVerb[req.Action]
+	if verb == "" {
+		verb = "изменил(а)"
+	}
+	targetLinks := make([]string, 0, len(targets))
 	for i, uid := range targets {
 		lbl := userIndex.Display(msg.Chat.ID, uid)
 		if i < len(targetLabels) && strings.TrimSpace(targetLabels[i]) != "" {
 			lbl = targetLabels[i]
 		}
-		b.WriteString("• ")
-		b.WriteString(htmlUserLabel(lbl, uid))
-		b.WriteByte('\n')
+		targetLinks = append(targetLinks, htmlUserLink(lbl, uid))
 	}
+	var b strings.Builder
+	b.WriteString(modLink)
+	b.WriteByte(' ')
+	b.WriteString(verb)
+	b.WriteByte(' ')
+	b.WriteString(strings.Join(targetLinks, ", "))
 	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
-		b.WriteString("Срок: ")
+		b.WriteString(" на ")
 		b.WriteString(html.EscapeString(req.DurationRaw))
-		b.WriteByte('\n')
 	}
 	if req.Reason != "" {
-		b.WriteString("Причина: ")
+		b.WriteString(" — ")
 		b.WriteString(html.EscapeString(req.Reason))
-		b.WriteByte('\n')
 	}
-	b.WriteString("Модератор: ")
-	b.WriteString(htmlUserLabel(userIndex.Display(msg.Chat.ID, msg.From.ID), msg.From.ID))
 	sendHTML(bot, msg.Chat.ID, 0, strings.TrimSpace(b.String()), false)
 	return true
 }
@@ -1579,10 +1619,17 @@ func main() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
+	u.AllowedUpdates = []string{"message", "callback_query", "chat_member"}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	engine := NewTriggerEngine()
 
 	for update := range updates {
+		if update.RawChatMember != nil {
+			handleNewMemberUpdate(bot, update.RawChatMember, allowedChats, engine, store, adminCache, idleTracker, gptDebouncer, vkMusicClient, chatRecent)
+		}
+		if update.RawMyChatMember != nil {
+			handleNewMemberUpdate(bot, update.RawMyChatMember, allowedChats, engine, store, adminCache, idleTracker, gptDebouncer, vkMusicClient, chatRecent)
+		}
 		if update.Update.CallbackQuery != nil {
 			if handleVKPickCallback(bot, update.Update.CallbackQuery, vkMusicClient) {
 				continue
@@ -1720,17 +1767,20 @@ func main() {
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
 
-		recentBefore := chatRecent.RecentText(msg.Chat.ID, envInt("OLENYAM_CONTEXT_MESSAGES", 4))
-		displayName := strings.TrimSpace(msg.From.FirstName)
-		if displayName == "" {
-			displayName = strings.TrimSpace(msg.From.UserName)
+		recentBefore := ""
+		if text != "" {
+			recentBefore = chatRecent.RecentText(msg.Chat.ID, envInt("OLENYAM_CONTEXT_MESSAGES", 4))
+			displayName := strings.TrimSpace(msg.From.FirstName)
+			if displayName == "" {
+				displayName = strings.TrimSpace(msg.From.UserName)
+			}
+			chatRecent.Add(msg.Chat.ID, recentChatMessage{
+				MessageID: msg.MessageID,
+				UserName:  displayName,
+				Text:      text,
+				At:        time.Now(),
+			})
 		}
-		chatRecent.Add(msg.Chat.ID, recentChatMessage{
-			MessageID: msg.MessageID,
-			UserName:  displayName,
-			Text:      text,
-			At:        time.Now(),
-		})
 
 		if debugTriggerLogEnabled {
 			log.Printf("update chat=%d msg=%d from=%d user=%s text=%q",
@@ -1783,6 +1833,7 @@ func main() {
 			}
 			continue
 		}
+		msgForTrigger := msg
 		if debugTriggerLogEnabled {
 			log.Printf("pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 		}
@@ -1811,7 +1862,7 @@ func main() {
 				gptDebouncer.Schedule(msg.Chat.ID, gptPromptTask{
 					Bot:           bot,
 					Trigger:       *tr,
-					Msg:           msg,
+					Msg:           msgForTrigger,
 					RecentContext: ctx,
 					IdleTracker:   idleTracker,
 					ChatID:        msg.Chat.ID,
@@ -1824,13 +1875,13 @@ func main() {
 			executeGPTPromptTask(gptPromptTask{
 				Bot:           bot,
 				Trigger:       *tr,
-				Msg:           msg,
+				Msg:           msgForTrigger,
 				RecentContext: ctx,
 				IdleTracker:   idleTracker,
 				ChatID:        msg.Chat.ID,
 			})
 		case "gpt_image":
-			img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+			img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
 			if err != nil {
 				log.Printf("gpt image failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -1848,7 +1899,7 @@ func main() {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "search_image":
-			query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+			query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
 			img, err := searchImageInSerpAPI(query)
 			if err != nil {
 				log.Printf("search image failed: %v", err)
@@ -1871,7 +1922,7 @@ func main() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
 				continue
 			}
-			query := buildVKMusicQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+			query := buildVKMusicQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
 			if query == "" {
 				query = strings.TrimSpace(msg.Text)
 			}
@@ -1962,7 +2013,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+			out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
 			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				deleteTriggerSourceMessage(bot, msg, tr)
@@ -2781,17 +2832,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		return ""
 	}
 	buildDisplayName := func(u *tgbotapi.User) string {
-		if u == nil {
-			return ""
-		}
-		full := strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName))
-		if full != "" {
-			return full
-		}
-		if strings.TrimSpace(u.UserName) != "" {
-			return "@" + strings.TrimSpace(u.UserName)
-		}
-		return strconv.FormatInt(u.ID, 10)
+		return buildUserDisplayName(u)
 	}
 
 	userText := strings.TrimSpace(msg.Text)
@@ -2799,6 +2840,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		userText = strings.TrimSpace(msg.Caption)
 	}
 	userDisplayName := buildDisplayName(msg.From)
+	userUsername := strings.TrimSpace(msg.From.UserName)
 	userLabel := extractLabel(userDisplayName)
 	senderTag := ""
 	if bot != nil && msg.From != nil {
@@ -2844,10 +2886,11 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{user_text}}":          userText,
 		"{{user_id}}":            strconv.FormatInt(msg.From.ID, 10),
 		"{{user_first_name}}":    strings.TrimSpace(msg.From.FirstName),
-		"{{user_username}}":      strings.TrimSpace(msg.From.UserName),
+		"{{user_username}}":      userUsername,
 		"{{user_display_name}}":  userDisplayName,
 		"{{user_label}}":         userLabel,
 		"{{sender_tag}}":         senderTagDisplay,
+		"{{user_link}}":          buildUserLink(msg.From),
 		"{{chat_id}}":            strconv.FormatInt(msg.Chat.ID, 10),
 		"{{chat_title}}":         chatTitle,
 		"{{reply_text}}":         replyText,
@@ -2857,6 +2900,236 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{reply_display_name}}": replyDisplayName,
 		"{{reply_label}}":        replyLabel,
 		"{{reply_sender_tag}}":   replySenderTagDisplay,
+	}
+}
+
+func buildUserDisplayName(u *tgbotapi.User) string {
+	if u == nil {
+		return ""
+	}
+	full := strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName))
+	if full != "" {
+		return full
+	}
+	if strings.TrimSpace(u.UserName) != "" {
+		return "@" + strings.TrimSpace(u.UserName)
+	}
+	return strconv.FormatInt(u.ID, 10)
+}
+
+func buildUserLink(u *tgbotapi.User) string {
+	if u == nil {
+		return "Участник без имени"
+	}
+	name := strings.TrimSpace(u.FirstName)
+	if name == "" {
+		name = strings.TrimSpace(u.UserName)
+	}
+	if name == "" {
+		name = "Участник без имени"
+	}
+	return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", u.ID, name)
+}
+
+func extractNewMemberDisplayNames(msg *tgbotapi.Message) []string {
+	if msg == nil {
+		return nil
+	}
+	seen := make(map[int64]struct{})
+	out := make([]string, 0, 4)
+	add := func(u *tgbotapi.User) {
+		if u == nil {
+			return
+		}
+		if _, ok := seen[u.ID]; ok {
+			return
+		}
+		seen[u.ID] = struct{}{}
+		name := strings.TrimSpace(buildUserDisplayName(u))
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	if len(msg.NewChatMembers) > 0 {
+		for i := range msg.NewChatMembers {
+			u := &msg.NewChatMembers[i]
+			add(u)
+		}
+	}
+	return out
+}
+
+func handleNewMemberUpdate(
+	bot *tgbotapi.BotAPI,
+	upd *rawChatMemberUpdated,
+	allowed chatAllowList,
+	engine *TriggerEngine,
+	store *Store,
+	adminCache *adminStatusCache,
+	idleTracker *chatIdleTracker,
+	gptDebouncer *gptPromptDebouncer,
+	vkMusicClient *vkmusic.Client,
+	chatRecent *chatRecentStore,
+) {
+	if upd == nil || upd.Chat == nil || upd.NewChatMember == nil || upd.NewChatMember.User == nil {
+		return
+	}
+	// Trigger only on join events.
+	if upd.NewChatMember.Status != "member" {
+		return
+	}
+	oldStatus := ""
+	if upd.OldChatMember != nil {
+		oldStatus = upd.OldChatMember.Status
+	}
+	if oldStatus == "member" || oldStatus == "administrator" || oldStatus == "creator" {
+		return
+	}
+	chatID := upd.Chat.ID
+	if !allowed.Allows(chatID) {
+		return
+	}
+	if upd.NewChatMember.User.IsBot {
+		return
+	}
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: chatID, Title: upd.Chat.Title},
+		From: &tgbotapi.User{
+			ID:        upd.NewChatMember.User.ID,
+			UserName:  upd.NewChatMember.User.UserName,
+			FirstName: upd.NewChatMember.User.FirstName,
+			LastName:  upd.NewChatMember.User.LastName,
+			IsBot:     upd.NewChatMember.User.IsBot,
+		},
+	}
+	if adminCache != nil {
+		_, _ = adminCache.EnsureChatAdminsFresh(bot, chatID)
+	}
+	items, err := store.ListTriggersCached()
+	if err != nil {
+		log.Printf("list triggers failed: %v", err)
+		return
+	}
+	tr := engine.SelectNewMember(bot, msg, items, func() bool {
+		return adminCache.IsChatAdmin(bot, chatID, msg.From.ID)
+	})
+	if tr == nil {
+		return
+	}
+	tr.CapturingText = ""
+	handleTriggerActionForMessage(bot, msg, tr, "", idleTracker, gptDebouncer, vkMusicClient)
+	if chatRecent != nil {
+		chatRecent.Add(chatID, recentChatMessage{
+			MessageID: 0,
+			UserName:  buildUserDisplayName(msg.From),
+			Text:      "",
+			At:        time.Now(),
+		})
+	}
+}
+
+func handleTriggerActionForMessage(
+	bot *tgbotapi.BotAPI,
+	msg *tgbotapi.Message,
+	tr *Trigger,
+	recentBefore string,
+	idleTracker *chatIdleTracker,
+	gptDebouncer *gptPromptDebouncer,
+	vkMusicClient *vkmusic.Client,
+) {
+	if msg == nil || tr == nil {
+		return
+	}
+	switch tr.ActionType {
+	case "delete":
+		if msg.MessageID == 0 {
+			return
+		}
+		cfg := tgbotapi.DeleteMessageConfig{
+			ChatID:    msg.Chat.ID,
+			MessageID: msg.MessageID,
+		}
+		if _, err := bot.Request(cfg); err != nil {
+			log.Printf("delete message failed: %v", err)
+			reportChatFailure(bot, msg.Chat.ID, "ошибка удаления сообщения", err)
+		} else if idleTracker != nil {
+			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+		}
+	case "gpt_prompt":
+		ctx := ""
+		if isOlenyamTrigger(tr) {
+			ctx = recentBefore
+		}
+		if gptDebouncer != nil {
+			gptDebouncer.Schedule(msg.Chat.ID, gptPromptTask{
+				Bot:           bot,
+				Trigger:       *tr,
+				Msg:           msg,
+				RecentContext: ctx,
+				IdleTracker:   idleTracker,
+				ChatID:        msg.Chat.ID,
+			})
+			if debugTriggerLogEnabled {
+				log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
+			}
+			return
+		}
+		executeGPTPromptTask(gptPromptTask{
+			Bot:           bot,
+			Trigger:       *tr,
+			Msg:           msg,
+			RecentContext: ctx,
+			IdleTracker:   idleTracker,
+			ChatID:        msg.Chat.ID,
+		})
+	case "gpt_image":
+		img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		if err != nil {
+			log.Printf("gpt image failed: %v", err)
+			reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "CW: сгенерено нейросетью", true); ok && idleTracker != nil {
+			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(bot, msg, tr)
+		}
+	case "search_image":
+		query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		img, err := searchImageInSerpAPI(query)
+		if err != nil {
+			log.Printf("search image failed: %v", err)
+			reportChatFailure(bot, msg.Chat.ID, "ошибка поиска картинки", err)
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		if ok := sendPhoto(bot, msg.Chat.ID, replyTo, img, "", false); ok && idleTracker != nil {
+			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(bot, msg, tr)
+		}
+	case "vk_music_audio":
+		if vkMusicClient == nil {
+			reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+		} else {
+			reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK музыка не поддерживается для события входа"))
+		}
+		return
+	default:
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok && idleTracker != nil {
+			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(bot, msg, tr)
+		}
 	}
 }
 
@@ -2907,6 +3180,8 @@ func getUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig)
 		out = append(out, updateWithEmojiMeta{
 			Update:     upd,
 			RawMessage: rawUpd.Message,
+			RawChatMember: rawUpd.ChatMember,
+			RawMyChatMember: rawUpd.MyChatMember,
 		})
 	}
 	return out, nil
