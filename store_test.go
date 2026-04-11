@@ -117,7 +117,7 @@ func TestSaveTriggerInvalidRegexDisablesAndMarksError(t *testing.T) {
 		MatchText:    "([",
 		MatchType:    "regex",
 		ActionType:   "send",
-		ResponseText: "ok",
+		ResponseText: []ResponseTextItem{{Text: "ok"}},
 		Reply:        true,
 		Preview:      false,
 		Chance:       100,
@@ -157,7 +157,7 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 		MatchText:    "(?i)кац",
 		MatchType:    "regex",
 		ActionType:   "send",
-		ResponseText: "ok",
+		ResponseText: []ResponseTextItem{{Text: "ok"}},
 		Reply:        true,
 		Preview:      false,
 		Chance:       100,
@@ -203,7 +203,7 @@ func TestSaveTriggerAssignsUID(t *testing.T) {
 		MatchText:    "тест",
 		MatchType:    "partial",
 		ActionType:   "send",
-		ResponseText: "ok",
+		ResponseText: []ResponseTextItem{{Text: "ok"}},
 		Reply:        true,
 		Chance:       100,
 	}); err != nil {
@@ -239,7 +239,7 @@ func TestSaveTriggerPreservesResponseTextVerbatim(t *testing.T) {
 		MatchText:    "тест",
 		MatchType:    "partial",
 		ActionType:   "send",
-		ResponseText: want,
+		ResponseText: []ResponseTextItem{{Text: want}},
 		Reply:        true,
 		Chance:       100,
 	}); err != nil {
@@ -253,8 +253,8 @@ func TestSaveTriggerPreservesResponseTextVerbatim(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 trigger, got %d", len(items))
 	}
-	if items[0].ResponseText != want {
-		t.Fatalf("response text changed on save, got=%q want=%q", items[0].ResponseText, want)
+	if len(items[0].ResponseText) != 1 || items[0].ResponseText[0].Text != want {
+		t.Fatalf("response text changed on save, got=%#v want=%q", items[0].ResponseText, want)
 	}
 }
 
@@ -276,7 +276,7 @@ func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
 		MatchText:    "старое",
 		MatchType:    "partial",
 		ActionType:   "send",
-		ResponseText: "старый ответ",
+		ResponseText: []ResponseTextItem{{Text: "старый ответ"}},
 		Reply:        true,
 		Chance:       100,
 	}); err != nil {
@@ -318,7 +318,7 @@ func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
 	if updated == nil {
 		t.Fatalf("updated trigger by uid not found")
 	}
-	if updated.Title != "new title" || updated.MatchText != "новое" || updated.ResponseText != "новый ответ" {
+	if updated.Title != "new title" || updated.MatchText != "новое" || len(updated.ResponseText) != 1 || updated.ResponseText[0].Text != "новый ответ" {
 		t.Fatalf("uid-based update not applied: %#v", *updated)
 	}
 	if partial == nil {
@@ -430,7 +430,7 @@ func TestReorderTriggersByIDsChangesPriorityOrder(t *testing.T) {
 			MatchText:    "найди",
 			MatchType:    "partial",
 			ActionType:   "send",
-			ResponseText: title,
+			ResponseText: []ResponseTextItem{{Text: title}},
 			Reply:        true,
 			Chance:       100,
 		}); err != nil {
@@ -513,7 +513,7 @@ func TestSaveTriggerRegexCaseSensitiveStripsInlineFlagAndStaysCaseSensitive(t *t
 		MatchType:     "regex",
 		CaseSensitive: true,
 		ActionType:    "send",
-		ResponseText:  "ok",
+		ResponseText:  []ResponseTextItem{{Text: "ok"}},
 		Reply:         true,
 		Chance:        100,
 	}); err != nil {

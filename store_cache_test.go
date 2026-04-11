@@ -21,7 +21,7 @@ func TestStoreListTriggersCachedInvalidatesOnSave(t *testing.T) {
 		MatchText:    "one",
 		MatchType:    "full",
 		ActionType:   "send",
-		ResponseText: "ok",
+		ResponseText: []ResponseTextItem{{Text: "ok"}},
 		Reply:        true,
 		Preview:      false,
 		Chance:       100,
@@ -45,7 +45,7 @@ func TestStoreListTriggersCachedInvalidatesOnSave(t *testing.T) {
 		MatchText:    "two",
 		MatchType:    "full",
 		ActionType:   "send",
-		ResponseText: "ok",
+		ResponseText: []ResponseTextItem{{Text: "ok"}},
 		Reply:        true,
 		Preview:      false,
 		Chance:       100,
@@ -61,4 +61,3 @@ func TestStoreListTriggersCachedInvalidatesOnSave(t *testing.T) {
 		t.Fatalf("expected 2 triggers after invalidation, got %d", len(b))
 	}
 }
-
