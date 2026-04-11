@@ -29,7 +29,7 @@ type Trigger struct {
 	MatchType     string // full|partial|regex|starts|ends|idle
 	CaseSensitive bool
 	ActionType    string // send|delete|gpt_prompt|gpt_image|search_image|vk_music_audio
-	ResponseText  string
+	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
 	DeleteSource  bool
@@ -38,6 +38,10 @@ type Trigger struct {
 	UpdatedAt     int64
 	RegexError    string
 	CapturingText string `json:"-"`
+}
+
+type ResponseTextItem struct {
+	Text string `json:"text" bson:"text"`
 }
 
 type Store struct {
@@ -49,6 +53,56 @@ type Store struct {
 	cacheUntil   time.Time
 	cacheTTL     time.Duration
 	compiledRegs sync.Map // map[string]*regexp.Regexp
+}
+
+func decodeResponseText(raw string) []ResponseTextItem {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var items []ResponseTextItem
+		if err := json.Unmarshal([]byte(raw), &items); err == nil && len(items) > 0 {
+			return items
+		}
+	}
+	return []ResponseTextItem{{Text: raw}}
+}
+
+func encodeResponseText(items []ResponseTextItem) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func parseResponseTextRaw(raw json.RawMessage) []ResponseTextItem {
+	if len(raw) == 0 {
+		return nil
+	}
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 {
+		return nil
+	}
+	if raw[0] == '[' {
+		var items []ResponseTextItem
+		if err := json.Unmarshal(raw, &items); err == nil {
+			return items
+		}
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		return []ResponseTextItem{{Text: s}}
+	}
+	return nil
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -319,8 +373,13 @@ func (s *Store) ListTriggers() ([]Trigger, error) {
 	for rows.Next() {
 		var t Trigger
 		var enabled, cs, reply, preview, deleteSource int
-		if err := rows.Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
+		var responseRaw string
+		if err := rows.Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &responseRaw, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError); err != nil {
 			return nil, err
+		}
+		t.ResponseText = decodeResponseText(responseRaw)
+		if trimmed := strings.TrimSpace(responseRaw); trimmed != "" && !strings.HasPrefix(trimmed, "[") {
+			_, _ = s.db.Exec(`UPDATE triggers SET response_text=? WHERE id=?`, encodeResponseText(t.ResponseText), t.ID)
 		}
 		t.Enabled = i2b(enabled)
 		t.TriggerMode = normalizeTriggerMode(t.TriggerMode)
@@ -343,13 +402,18 @@ func (s *Store) GetTrigger(id int64) (*Trigger, error) {
 	}
 	var t Trigger
 	var enabled, cs, reply, preview, deleteSource int
+	var responseRaw string
 	err := s.db.QueryRow(`SELECT id,uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error FROM triggers WHERE id=?`, id).
-		Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &t.ResponseText, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
+		Scan(&t.ID, &t.UID, &t.Priority, &t.RegexBenchUS, &t.Title, &enabled, &t.TriggerMode, &t.AdminMode, &t.MatchText, &t.MatchType, &cs, &t.ActionType, &responseRaw, &reply, &preview, &deleteSource, &t.Chance, &t.CreatedAt, &t.UpdatedAt, &t.RegexError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	t.ResponseText = decodeResponseText(responseRaw)
+	if trimmed := strings.TrimSpace(responseRaw); trimmed != "" && !strings.HasPrefix(trimmed, "[") {
+		_, _ = s.db.Exec(`UPDATE triggers SET response_text=? WHERE id=?`, encodeResponseText(t.ResponseText), t.ID)
 	}
 	t.Enabled = i2b(enabled)
 	t.TriggerMode = normalizeTriggerMode(t.TriggerMode)
@@ -426,8 +490,8 @@ func (s *Store) SaveTrigger(t Trigger) error {
 			}
 			return nil
 		}
-		_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, now, t.RegexError)
+	_, err := s.db.Exec(`INSERT INTO triggers(uid,priority,regex_bench_us,title,enabled,trigger_mode,admin_mode,match_text,match_type,case_sensitive,action_type,response_text,send_as_reply,preview_first_link,delete_source_message,chance,created_at,updated_at,regex_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.UID, t.Priority, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, encodeResponseText(t.ResponseText), b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, now, t.RegexError)
 		if err == nil {
 			s.invalidateCache()
 		}
@@ -441,7 +505,7 @@ func (s *Store) SaveTrigger(t Trigger) error {
 		return nil
 	}
 	_, err := s.db.Exec(`UPDATE triggers SET uid=?,regex_bench_us=?,title=?,enabled=?,trigger_mode=?,admin_mode=?,match_text=?,match_type=?,case_sensitive=?,action_type=?,response_text=?,send_as_reply=?,preview_first_link=?,delete_source_message=?,chance=?,updated_at=?,regex_error=? WHERE id=?`,
-		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, t.ResponseText, b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, t.RegexError, t.ID)
+		t.UID, t.RegexBenchUS, t.Title, b2i(t.Enabled), t.TriggerMode, t.AdminMode, t.MatchText, t.MatchType, b2i(t.CaseSensitive), t.ActionType, encodeResponseText(t.ResponseText), b2i(t.Reply), b2i(t.Preview), b2i(t.DeleteSource), t.Chance, now, t.RegexError, t.ID)
 	if err == nil {
 		s.invalidateCache()
 	}
@@ -693,7 +757,7 @@ type exportTriggerRow struct {
 	MatchType        string `json:"match_type"`
 	CaseSensitive    bool   `json:"case_sensitive"`
 	ActionType       string `json:"action_type"`
-	ResponseText     string `json:"response_text"`
+	ResponseText     []ResponseTextItem `json:"response_text"`
 	SendAsReply      bool   `json:"send_as_reply"`
 	PreviewFirstLink bool   `json:"preview_first_link"`
 	DeleteSourceMsg  bool   `json:"delete_source_message"`
@@ -712,7 +776,7 @@ type importTriggerRow struct {
 	MatchType        string `json:"match_type"`
 	CaseSensitive    *bool  `json:"case_sensitive"`
 	ActionType       string `json:"action_type"`
-	ResponseText     string `json:"response_text"`
+	ResponseText     json.RawMessage `json:"response_text"`
 	SendAsReply      *bool  `json:"send_as_reply"`
 	PreviewFirstLink *bool  `json:"preview_first_link"`
 	DeleteSourceMsg  *bool  `json:"delete_source_message"`
@@ -809,7 +873,12 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 		if strings.TrimSpace(it.ActionType) != "" {
 			actionType = strings.TrimSpace(it.ActionType)
 		}
-		responseText := strings.TrimSpace(it.ResponseText)
+		responseItems := parseResponseTextRaw(it.ResponseText)
+		if len(responseItems) == 0 && i < len(rawItems) {
+			if raw, ok := rawItems[i]["response_text"]; ok {
+				responseItems = parseResponseTextRaw(raw)
+			}
+		}
 		reply := true
 		if it.SendAsReply != nil {
 			reply = *it.SendAsReply
@@ -837,7 +906,7 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			MatchType:     matchType,
 			CaseSensitive: caseSensitive,
 			ActionType:    actionType,
-			ResponseText:  responseText,
+			ResponseText:  responseItems,
 			Reply:         reply,
 			Preview:       preview,
 			DeleteSource:  deleteSource,

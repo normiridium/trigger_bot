@@ -534,7 +534,7 @@ func executeGPTPromptTask(task gptPromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
-	out, err := generateChatGPTReply(task.Bot, task.Trigger.ResponseText, task.Msg, task.RecentContext, task.Trigger.CapturingText)
+			out, err := generateChatGPTReply(task.Bot, pickResponseVariantText(task.Trigger.ResponseText), task.Msg, task.RecentContext, task.Trigger.CapturingText)
 	if err != nil {
 		log.Printf("gpt prompt failed: %v", err)
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
@@ -1830,7 +1830,7 @@ func main() {
 				ChatID:        msg.Chat.ID,
 			})
 		case "gpt_image":
-			img, err := generateChatGPTImage(bot, tr.ResponseText, msg, tr.CapturingText)
+			img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
 			if err != nil {
 				log.Printf("gpt image failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -1848,7 +1848,7 @@ func main() {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "search_image":
-			query := buildImageSearchQueryFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
+			query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
 			img, err := searchImageInSerpAPI(query)
 			if err != nil {
 				log.Printf("search image failed: %v", err)
@@ -1871,7 +1871,7 @@ func main() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
 				continue
 			}
-			query := buildVKMusicQueryFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
+			query := buildVKMusicQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
 			if query == "" {
 				query = strings.TrimSpace(msg.Text)
 			}
@@ -1962,7 +1962,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			out := buildResponseFromMessage(bot, tr.ResponseText, msg, tr.CapturingText)
+			out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
 			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				deleteTriggerSourceMessage(bot, msg, tr)
@@ -2694,6 +2694,23 @@ func applyCapturingTemplate(s, capture string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, "{{capturing_text}}", strings.TrimSpace(capture))
+}
+
+func pickResponseVariantText(items []ResponseTextItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	nonEmpty := make([]string, 0, len(items))
+	for _, it := range items {
+		val := strings.TrimSpace(it.Text)
+		if val != "" {
+			nonEmpty = append(nonEmpty, val)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+	return nonEmpty[rand.Intn(len(nonEmpty))]
 }
 
 func renderTemplateWithMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture string) string {
