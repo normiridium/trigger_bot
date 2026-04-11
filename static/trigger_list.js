@@ -20,6 +20,8 @@ const rowActionBusy = new Set();
 let editLoadInFlight = false;
 let reorderSaving = false;
 let responseEditorReady = false;
+let responseVariants = [{text: ''}];
+let activeResponseVariant = 0;
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -29,6 +31,7 @@ async function initTriggerPage(){
   applyMatchTypeUI();
   bindMiniToolbarFallback();
   ensureResponseEditor();
+  renderVariantControls();
   await loadTriggerList();
   initTriggerDragAndDrop();
 }
@@ -55,6 +58,9 @@ function ensureResponseEditor(){
     const ta = document.getElementById('f_response_text');
     if(ta){ ta.classList.add('d-none'); }
     responseEditorReady = true;
+    if(responseVariants.length > 0){
+      setResponseValue(responseVariants[activeResponseVariant]?.text || '');
+    }
   }
 }
 
@@ -84,9 +90,128 @@ function getResponseValue(){
   return ta ? ta.value : '';
 }
 
+function normalizeResponseItems(raw){
+  if(raw == null){ return [{text: ''}]; }
+  if(Array.isArray(raw)){
+    const out = [];
+    raw.forEach((it)=>{
+      if(it == null){ return; }
+      if(typeof it === 'string'){
+        out.push({text: it});
+        return;
+      }
+      if(typeof it === 'object'){
+        if(Object.prototype.hasOwnProperty.call(it, 'text')){
+          out.push({text: String(it.text ?? '')});
+          return;
+        }
+        if(Object.prototype.hasOwnProperty.call(it, 'Text')){
+          out.push({text: String(it.Text ?? '')});
+          return;
+        }
+      }
+    });
+    return out.length > 0 ? out : [{text: ''}];
+  }
+  if(typeof raw === 'string'){
+    return [{text: raw}];
+  }
+  return [{text: ''}];
+}
+
+function commitActiveVariant(){
+  if(!responseVariants.length){ responseVariants = [{text: ''}]; }
+  if(activeResponseVariant < 0){ activeResponseVariant = 0; }
+  if(activeResponseVariant >= responseVariants.length){
+    activeResponseVariant = responseVariants.length - 1;
+  }
+  if(!responseVariants[activeResponseVariant]){
+    responseVariants[activeResponseVariant] = {text: ''};
+  }
+  responseVariants[activeResponseVariant].text = getResponseValue();
+}
+
+function setActiveVariant(idx){
+  commitActiveVariant();
+  const next = Number(idx);
+  if(!Number.isFinite(next)){ return; }
+  if(next < 0 || next >= responseVariants.length){ return; }
+  activeResponseVariant = next;
+  setResponseValue(responseVariants[activeResponseVariant].text || '');
+  renderVariantControls();
+}
+
+function addResponseVariant(){
+  commitActiveVariant();
+  responseVariants.push({text: ''});
+  activeResponseVariant = responseVariants.length - 1;
+  setResponseValue('');
+  renderVariantControls();
+}
+
+function removeResponseVariant(){
+  if(responseVariants.length <= 1){ return; }
+  commitActiveVariant();
+  responseVariants.pop();
+  if(activeResponseVariant >= responseVariants.length){
+    activeResponseVariant = responseVariants.length - 1;
+  }
+  setResponseValue(responseVariants[activeResponseVariant].text || '');
+  renderVariantControls();
+}
+
+function renderVariantControls(){
+  const wrap = document.getElementById('response_variant_controls');
+  if(!wrap){ return; }
+  wrap.innerHTML = '';
+  const label = document.createElement('span');
+  label.className = 'response-variant-label';
+  label.textContent = 'Варианты ответа:';
+  wrap.appendChild(label);
+  const total = responseVariants.length || 1;
+  for(let i = 0; i < total; i++){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-outline-secondary btn-sm';
+    if(i === activeResponseVariant){
+      btn.classList.add('btn-outline-success');
+    }
+    btn.textContent = String(i + 1);
+    btn.title = 'Вариант ' + String(i + 1);
+    btn.addEventListener('click', () => setActiveVariant(i));
+    wrap.appendChild(btn);
+  }
+  const plus = document.createElement('button');
+  plus.type = 'button';
+  plus.className = 'btn btn-outline-info btn-sm';
+  plus.textContent = '+';
+  plus.title = 'Добавить вариант';
+  plus.addEventListener('click', addResponseVariant);
+  wrap.appendChild(plus);
+
+  const minus = document.createElement('button');
+  minus.type = 'button';
+  minus.className = 'btn btn-outline-danger btn-sm';
+  minus.textContent = '-';
+  minus.disabled = total <= 1;
+  minus.title = 'Удалить последний вариант';
+  minus.addEventListener('click', removeResponseVariant);
+  wrap.appendChild(minus);
+}
+
+function setResponseVariantsFromRaw(raw){
+  responseVariants = normalizeResponseItems(raw);
+  activeResponseVariant = 0;
+  setResponseValue(responseVariants[0].text || '');
+  renderVariantControls();
+}
+
 function syncResponseToTextarea(){
+  commitActiveVariant();
   const ta = document.getElementById('f_response_text');
-  if(ta){ ta.value = getResponseValue(); }
+  if(!ta){ return; }
+  const payload = responseVariants.map((it) => ({text: String(it.text ?? '')}));
+  ta.value = JSON.stringify(payload);
 }
 
 function formatRegexBenchMS(us){
@@ -311,6 +436,8 @@ async function submitTriggerForm(event){
   if(event){ event.preventDefault(); }
   const form = document.getElementById('trigger_form');
   if(!form){ return false; }
+  commitActiveVariant();
+  const prevResponseText = getResponseValue();
   syncResponseToTextarea();
   syncSwitch('f_enabled');
   syncSwitch('f_case_sensitive');
@@ -341,12 +468,14 @@ async function submitTriggerForm(event){
     if(!res.ok){
       const txt = await res.text();
       alert('Ошибка сохранения: ' + (txt || res.status));
+      setResponseValue(prevResponseText);
       setSaveBusy(false);
       return false;
     }
     window.location.href = withToken('/trigger_bot');
   }catch(err){
     alert('Сохранение не удалось: ' + (err && err.message ? err.message : err));
+    setResponseValue(prevResponseText);
     setSaveBusy(false);
   }
   return false;
@@ -661,7 +790,7 @@ function fillForm(t){
   document.getElementById('f_id').value=pick(t,'id','ID','');
   document.getElementById('f_uid').value=pick(t,'uid','UID','');
   document.getElementById('f_title').value=pick(t,'title','Title','');
-  setResponseValue(pick(t,'response_text','ResponseText',''));
+  setResponseVariantsFromRaw(pick(t,'response_text','ResponseText',''));
   document.getElementById('f_chance').value=pick(t,'chance','Chance',100);
   setSel('f_trigger_mode', pick(t,'trigger_mode','TriggerMode','all'));
   setSel('f_admin_mode', pick(t,'admin_mode','AdminMode','anybody'));
