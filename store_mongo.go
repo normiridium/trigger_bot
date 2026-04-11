@@ -36,7 +36,6 @@ type mongoTriggerDoc struct {
 	MatchType     string `bson:"match_type"`
 	CaseSensitive bool   `bson:"case_sensitive"`
 	ActionType    string `bson:"action_type"`
-	ResponseText  string `bson:"response_text"`
 	Reply         bool   `bson:"send_as_reply"`
 	Preview       bool   `bson:"preview_first_link"`
 	DeleteSource  bool   `bson:"delete_source_message"`
@@ -62,6 +61,96 @@ type mongoAdminSyncDoc struct {
 type mongoCounterDoc struct {
 	ID  string `bson:"_id"`
 	Seq int64  `bson:"seq"`
+}
+
+func responseItemsFromRaw(v interface{}) ([]ResponseTextItem, bool) {
+	if v == nil {
+		return nil, false
+	}
+	needsMigration := false
+	items := make([]ResponseTextItem, 0, 4)
+	switch vv := v.(type) {
+	case string:
+		val := strings.TrimSpace(vv)
+		if val != "" {
+			items = append(items, ResponseTextItem{Text: val})
+		}
+		needsMigration = true
+	case []interface{}:
+		for _, item := range vv {
+			switch it := item.(type) {
+			case string:
+				val := strings.TrimSpace(it)
+				if val != "" {
+					items = append(items, ResponseTextItem{Text: val})
+				}
+				needsMigration = true
+			case bson.M:
+				if text, ok := it["text"].(string); ok && strings.TrimSpace(text) != "" {
+					items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+				}
+			case bson.D:
+				for _, pair := range it {
+					if pair.Key == "text" {
+						if text, ok := pair.Value.(string); ok && strings.TrimSpace(text) != "" {
+							items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+						}
+						break
+					}
+				}
+			case map[string]interface{}:
+				if text, ok := it["text"].(string); ok && strings.TrimSpace(text) != "" {
+					items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+				}
+			}
+		}
+	case bson.A:
+		for _, item := range vv {
+			switch it := item.(type) {
+			case string:
+				val := strings.TrimSpace(it)
+				if val != "" {
+					items = append(items, ResponseTextItem{Text: val})
+				}
+				needsMigration = true
+			case bson.M:
+				if text, ok := it["text"].(string); ok && strings.TrimSpace(text) != "" {
+					items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+				}
+			case bson.D:
+				for _, pair := range it {
+					if pair.Key == "text" {
+						if text, ok := pair.Value.(string); ok && strings.TrimSpace(text) != "" {
+							items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+						}
+						break
+					}
+				}
+			case map[string]interface{}:
+				if text, ok := it["text"].(string); ok && strings.TrimSpace(text) != "" {
+					items = append(items, ResponseTextItem{Text: strings.TrimSpace(text)})
+				}
+			}
+		}
+	}
+	return items, needsMigration
+}
+
+func normalizeResponseItems(items []ResponseTextItem) []ResponseTextItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]ResponseTextItem, 0, len(items))
+	for _, it := range items {
+		val := strings.TrimSpace(it.Text)
+		if val != "" {
+			out = append(out, ResponseTextItem{Text: val})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func isMongoURI(v string) bool {
@@ -168,54 +257,64 @@ func (m *mongoBackend) ensureIndexes() error {
 	return err
 }
 
-func triggerToDoc(t Trigger) mongoTriggerDoc {
-	return mongoTriggerDoc{
-		ID:            t.ID,
-		UID:           strings.TrimSpace(t.UID),
-		Priority:      t.Priority,
-		RegexBenchUS:  t.RegexBenchUS,
-		Title:         t.Title,
-		Enabled:       t.Enabled,
-		TriggerMode:   normalizeTriggerMode(t.TriggerMode),
-		AdminMode:     normalizeAdminMode(t.AdminMode),
-		MatchText:     t.MatchText,
-		MatchType:     normalizeMatchType(t.MatchType),
-		CaseSensitive: t.CaseSensitive,
-		ActionType:    normalizeActionType(t.ActionType),
-		ResponseText:  t.ResponseText,
-		Reply:         t.Reply,
-		Preview:       t.Preview,
-		DeleteSource:  t.DeleteSource,
-		Chance:        sanitizeChance(t.Chance),
-		CreatedAt:     t.CreatedAt,
-		UpdatedAt:     t.UpdatedAt,
-		RegexError:    t.RegexError,
+func triggerToDocMap(t Trigger) bson.M {
+	return bson.M{
+		"id":                    t.ID,
+		"uid":                   strings.TrimSpace(t.UID),
+		"priority":              t.Priority,
+		"regex_bench_us":        t.RegexBenchUS,
+		"title":                 t.Title,
+		"enabled":               t.Enabled,
+		"trigger_mode":          normalizeTriggerMode(t.TriggerMode),
+		"admin_mode":            normalizeAdminMode(t.AdminMode),
+		"match_text":            t.MatchText,
+		"match_type":            normalizeMatchType(t.MatchType),
+		"case_sensitive":        t.CaseSensitive,
+		"action_type":           normalizeActionType(t.ActionType),
+		"response_text":         normalizeResponseItems(t.ResponseText),
+		"send_as_reply":         t.Reply,
+		"preview_first_link":    t.Preview,
+		"delete_source_message": t.DeleteSource,
+		"chance":                sanitizeChance(t.Chance),
+		"created_at":            t.CreatedAt,
+		"updated_at":            t.UpdatedAt,
+		"regex_error":           t.RegexError,
 	}
 }
 
-func docToTrigger(d mongoTriggerDoc) Trigger {
-	return Trigger{
-		ID:            d.ID,
-		UID:           strings.TrimSpace(d.UID),
-		Priority:      d.Priority,
-		RegexBenchUS:  d.RegexBenchUS,
-		Title:         d.Title,
-		Enabled:       d.Enabled,
-		TriggerMode:   normalizeTriggerMode(d.TriggerMode),
-		AdminMode:     normalizeAdminMode(d.AdminMode),
-		MatchText:     d.MatchText,
-		MatchType:     normalizeMatchType(d.MatchType),
-		CaseSensitive: d.CaseSensitive,
-		ActionType:    normalizeActionType(d.ActionType),
-		ResponseText:  d.ResponseText,
-		Reply:         d.Reply,
-		Preview:       d.Preview,
-		DeleteSource:  d.DeleteSource,
-		Chance:        sanitizeChance(d.Chance),
-		CreatedAt:     d.CreatedAt,
-		UpdatedAt:     d.UpdatedAt,
-		RegexError:    d.RegexError,
+func docToTriggerFromRaw(raw bson.M) (Trigger, bool, error) {
+	var base mongoTriggerDoc
+	b, err := bson.Marshal(raw)
+	if err != nil {
+		return Trigger{}, false, err
 	}
+	if err := bson.Unmarshal(b, &base); err != nil {
+		return Trigger{}, false, err
+	}
+	items, needsMigration := responseItemsFromRaw(raw["response_text"])
+	t := Trigger{
+		ID:            base.ID,
+		UID:           strings.TrimSpace(base.UID),
+		Priority:      base.Priority,
+		RegexBenchUS:  base.RegexBenchUS,
+		Title:         base.Title,
+		Enabled:       base.Enabled,
+		TriggerMode:   normalizeTriggerMode(base.TriggerMode),
+		AdminMode:     normalizeAdminMode(base.AdminMode),
+		MatchText:     base.MatchText,
+		MatchType:     normalizeMatchType(base.MatchType),
+		CaseSensitive: base.CaseSensitive,
+		ActionType:    normalizeActionType(base.ActionType),
+		ResponseText:  items,
+		Reply:         base.Reply,
+		Preview:       base.Preview,
+		DeleteSource:  base.DeleteSource,
+		Chance:        sanitizeChance(base.Chance),
+		CreatedAt:     base.CreatedAt,
+		UpdatedAt:     base.UpdatedAt,
+		RegexError:    base.RegexError,
+	}
+	return t, needsMigration, nil
 }
 
 func (m *mongoBackend) listTriggers() ([]Trigger, error) {
@@ -228,11 +327,18 @@ func (m *mongoBackend) listTriggers() ([]Trigger, error) {
 	defer cur.Close(ctx)
 	out := make([]Trigger, 0, 64)
 	for cur.Next(ctx) {
-		var d mongoTriggerDoc
-		if err := cur.Decode(&d); err != nil {
+		var raw bson.M
+		if err := cur.Decode(&raw); err != nil {
 			return nil, err
 		}
-		out = append(out, docToTrigger(d))
+		t, needsMigration, err := docToTriggerFromRaw(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+		if needsMigration {
+			_, _ = m.triggers.UpdateOne(ctx, bson.M{"id": t.ID}, bson.M{"$set": bson.M{"response_text": normalizeResponseItems(t.ResponseText)}})
+		}
 	}
 	return out, cur.Err()
 }
@@ -240,15 +346,21 @@ func (m *mongoBackend) listTriggers() ([]Trigger, error) {
 func (m *mongoBackend) getTrigger(id int64) (*Trigger, error) {
 	ctx, cancel := mongoCtx()
 	defer cancel()
-	var d mongoTriggerDoc
-	err := m.triggers.FindOne(ctx, bson.M{"id": id}).Decode(&d)
+	var raw bson.M
+	err := m.triggers.FindOne(ctx, bson.M{"id": id}).Decode(&raw)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	t := docToTrigger(d)
+	t, needsMigration, err := docToTriggerFromRaw(raw)
+	if err != nil {
+		return nil, err
+	}
+	if needsMigration {
+		_, _ = m.triggers.UpdateOne(ctx, bson.M{"id": t.ID}, bson.M{"$set": bson.M{"response_text": normalizeResponseItems(t.ResponseText)}})
+	}
 	return &t, nil
 }
 
@@ -288,7 +400,7 @@ func (m *mongoBackend) insertTrigger(t Trigger, now int64) error {
 	}
 	t.CreatedAt = now
 	t.UpdatedAt = now
-	_, err := m.triggers.InsertOne(context.Background(), triggerToDoc(t))
+	_, err := m.triggers.InsertOne(context.Background(), triggerToDocMap(t))
 	return err
 }
 
@@ -307,7 +419,7 @@ func (m *mongoBackend) updateTrigger(t Trigger, now int64) error {
 		"match_type":            normalizeMatchType(t.MatchType),
 		"case_sensitive":        t.CaseSensitive,
 		"action_type":           normalizeActionType(t.ActionType),
-		"response_text":         t.ResponseText,
+		"response_text":         normalizeResponseItems(t.ResponseText),
 		"send_as_reply":         t.Reply,
 		"preview_first_link":    t.Preview,
 		"delete_source_message": t.DeleteSource,

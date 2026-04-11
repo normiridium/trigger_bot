@@ -139,6 +139,16 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	}
 	deleteSourceRaw := strings.TrimSpace(r.FormValue("delete_source"))
 	deleteSource := deleteSourceRaw == "1"
+	var responseItems []ResponseTextItem
+	responseRaw := strings.TrimSpace(r.FormValue("response_text"))
+	if responseRaw != "" {
+		if strings.HasPrefix(responseRaw, "[") {
+			_ = json.Unmarshal([]byte(responseRaw), &responseItems)
+		}
+		if len(responseItems) == 0 {
+			responseItems = []ResponseTextItem{{Text: responseRaw}}
+		}
+	}
 	t := Trigger{
 		ID:            id,
 		UID:           strings.TrimSpace(r.FormValue("uid")),
@@ -150,7 +160,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		MatchType:     r.FormValue("match_type"),
 		CaseSensitive: r.FormValue("case_sensitive") == "1",
 		ActionType:    r.FormValue("action_type"),
-		ResponseText:  r.FormValue("response_text"),
+		ResponseText:  responseItems,
 		Reply:         reply,
 		Preview:       r.FormValue("preview") == "1",
 		DeleteSource:  deleteSource,
