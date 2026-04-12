@@ -13,6 +13,7 @@
   - удалить
   - импорт/экспорт JSON (триггеры + шаблоны в одном файле)
   - вкладка шаблонов ответов (MongoDB)
+  - вставка шаблонов в ответы через `{{template "key"}}`
 - Тип действия `search_image`: найти картинку через SerpAPI (Google Images) и отправить в чат
 - Ограничение по чатам через whitelist (`ALLOWED_CHAT_IDS`)
 - Учёт админов чата с автопрогревом:
@@ -53,6 +54,8 @@ JSON-файл со связкой триггеров и шаблонов:
 }
 ```
 
+Важно: старые форматы импорта не поддерживаются. Импорт — только этот bundle.
+
 ## System dependencies
 
 Debian/Ubuntu:
@@ -83,6 +86,27 @@ set -a; source .env; set +a
 Админка по умолчанию: `http://<host>:8090/trigger_bot`
 
 Если задан `ADMIN_TOKEN`, передавай его в URL: `?token=...`
+
+## Вкладки админки
+
+- `Триггеры` — список, редактирование и управление триггерами.
+- `Шаблоны` — список шаблонов (MongoDB). Шаблон вставляется в тексты ответов как `{{template "key"}}`.
+- `Настройки` — импорт/экспорт JSON (один файл, включает триггеры и шаблоны).
+
+## HTTP API (JSON-only)
+
+Все POST‑эндпоинты принимают **только JSON**.
+
+- `POST /trigger_bot/save` — сохранить триггер.
+- `POST /trigger_bot/delete` — удалить триггер.
+- `POST /trigger_bot/toggle` — переключить триггер.
+- `POST /trigger_bot/reorder` — сортировка (список `ids`).
+- `POST /trigger_bot/template_save` — сохранить шаблон.
+- `POST /trigger_bot/template_delete` — удалить шаблон (вернёт `409`, если используется в триггере).
+- `POST /trigger_bot/import` — импорт bundle (JSON: `{"raw":"<string>"}`).
+
+Экспорт:
+- `GET /trigger_bot/export` — скачать bundle `trigger_bot_export.json`.
 
 ## ENV-переменные
 

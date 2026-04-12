@@ -62,7 +62,7 @@
     <div class="tab-pane fade" id="tab-settings-pane" role="tabpanel" aria-labelledby="tab-settings">
       <div class="p-3 rounded border border-secondary-subtle settings-panel">
         <h6 class="mb-3">Импорт/экспорт (триггеры + шаблоны)</h6>
-        <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex flex-column gap-2 import-actions" data-submit-btn="import_submit_btn" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
+        <form method="post" action="/trigger_bot/import" class="d-flex flex-column gap-2 import-actions" data-submit-btn="import_submit_btn" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
           <div class="import-file-wrap">
             <input class="d-none" type="file" name="file" id="import_file" accept="application/json" data-output="import_file_name" x-on:change="updateImportFileName($event.target)">
             <label class="import-file-btn" for="import_file">Выберите файл</label>
@@ -205,11 +205,11 @@
                 <button class="btn btn-outline-secondary btn-sm" type="button" data-action="link" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;tg-spoiler&gt;" data-after="&lt;/tg-spoiler&gt;" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
                 <button class="btn btn-outline-secondary btn-sm" type="button" data-action="emoji" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
-                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker">
-                  <option value="">Вставить тег сообщения…</option>
-                </select>
                 <select class="form-select form-select-sm bg-black text-light border-secondary template-insert-picker" id="f_template_picker">
                   <option value="">Вставить шаблон…</option>
+                </select>
+                <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker">
+                  <option value="">Вставить тег сообщения…</option>
                 </select>
               </div>
               <div id="response_editor" class="cm-wrap mb-2"></div>

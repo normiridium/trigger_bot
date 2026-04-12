@@ -82,6 +82,10 @@ tr.dragging-row {
 .template-tag-picker {
   max-width: 320px;
 }
+.template-insert-picker {
+  max-width: 300px;
+  min-width: 200px;
+}
 .templates-table .col-action {
   width: 1%;
   white-space: nowrap;
@@ -269,8 +273,7 @@ tr.dragging-row {
     display: none;
   }
   .templates-table .col-key,
-  .templates-table .col-text,
-  .template-insert-btn {
+  .templates-table .col-text {
     display: none !important;
   }
   .templates-table .col-action {

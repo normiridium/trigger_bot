@@ -45,6 +45,11 @@ async function initTriggerPage(){
     form.addEventListener('submit', submitTriggerForm);
     form.dataset.boundSubmit = '1';
   }
+  const tplForm = document.getElementById('template_form');
+  if(tplForm && !tplForm.dataset.boundSubmit){
+    tplForm.addEventListener('submit', submitTemplateForm);
+    tplForm.dataset.boundSubmit = '1';
+  }
   const cloneBtn = document.getElementById('f_clone_btn');
   if(cloneBtn && !cloneBtn.dataset.boundClick){
     cloneBtn.addEventListener('click', () => cloneCurrentTrigger());
@@ -141,11 +146,11 @@ function renderTemplatesTable(){
   }
   tbody.innerHTML = '';
   templatesCache.forEach((tpl) => {
-    const id = String(tpl?.id ?? '').trim();
+    const id = String(pick(tpl, 'id', 'ID', '') ?? '').trim();
     const key = String(tpl?.key ?? '').trim();
     const title = String(tpl?.title ?? '').trim();
     const text = String(tpl?.text ?? '').trim();
-    const preview = clipTemplatePreview(text, 120);
+    const preview = clipTemplatePreview(text, 80);
     const tr = document.createElement('tr');
     const insertDisabled = key ? '' : 'disabled';
     tr.innerHTML = `
@@ -154,13 +159,10 @@ function renderTemplatesTable(){
       <td class="text-wrap col-text" title="${escapeHtml(text)}">${escapeHtml(preview)}</td>
       <td class="text-nowrap col-action">
         <div class="template-actions d-flex gap-2 flex-wrap">
-          <button type="button" class="btn btn-outline-secondary btn-sm template-insert-btn" data-template-key="${escapeHtml(key)}" ${insertDisabled}>
-            <i class="bi bi-clipboard-plus"></i> Вставить тег
-          </button>
           <button type="button" class="btn btn-outline-info btn-sm" data-template-edit="${escapeHtml(id)}">
             <i class="bi bi-pencil"></i>
           </button>
-          <button type="button" class="btn btn-outline-danger btn-sm" data-template-delete="${escapeHtml(id)}" onclick="deleteTemplate('${escapeHtml(id)}')">
+          <button type="button" class="btn btn-outline-danger btn-sm" data-template-delete="${escapeHtml(id)}" data-template-key="${escapeHtml(key)}">
             <i class="bi bi-trash"></i>
           </button>
         </div>
@@ -218,8 +220,17 @@ async function openTemplateEdit(id){
 async function submitTemplateForm(ev){
   ev.preventDefault();
   const form = ev.currentTarget;
-  const fd = new FormData(form);
-  const r = await fetch(withToken('/trigger_bot/template_save'), {method: 'POST', body: fd});
+  const payload = {
+    id: Number(document.getElementById('tpl_id')?.value || 0),
+    key: String(document.getElementById('tpl_key')?.value || ''),
+    title: String(document.getElementById('tpl_title')?.value || ''),
+    text: String(document.getElementById('tpl_text')?.value || ''),
+  };
+  const r = await fetch(withToken('/trigger_bot/template_save'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    body: JSON.stringify(payload),
+  });
   if(!r.ok){
     const txt = await r.text();
     alert('Ошибка сохранения шаблона: ' + (txt || r.status));
@@ -230,13 +241,30 @@ async function submitTemplateForm(ev){
   return false;
 }
 
-async function deleteTemplate(id){
-  if(!id){ return; }
+async function deleteTemplate(id, key){
+  id = String(id || '').trim();
+  key = String(key || '').trim();
+  if(!id && !key){ return; }
   if(!confirm('Удалить шаблон?')){ return; }
-  const fd = new FormData();
-  fd.append('id', id);
-  const r = await fetch(withToken('/trigger_bot/template_delete'), {method: 'POST', body: fd});
+  const payload = {};
+  if(id){ payload.id = Number(id); }
+  if(key){ payload.key = key; }
+  const r = await fetch(withToken('/trigger_bot/template_delete'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    body: JSON.stringify(payload),
+  });
   if(!r.ok){
+    if(r.status === 409){
+      try{
+        const data = await r.json();
+        const list = Array.isArray(data?.triggers) ? data.triggers : [];
+        const names = list.map(t => t && t.title ? t.title : t && t.id ? `#${t.id}` : '').filter(Boolean);
+        const suffix = names.length ? `\\nИспользуется в: ${names.join(', ')}` : '';
+        alert((data && data.message ? data.message : 'Шаблон используется в триггерах') + suffix);
+        return;
+      }catch(_){}
+    }
     const txt = await r.text();
     alert('Ошибка удаления шаблона: ' + (txt || r.status));
     return;
@@ -563,12 +591,9 @@ function triggerRowHTML(t){
     <button class="btn btn-sm action-mini btn-outline-info ms-1" type="button" onclick="openEdit(${id}, this)" title="Редактировать" aria-label="Редактировать">
       <i class="bi bi-pencil"></i>
     </button>
-    <form class="d-inline ms-1" method="post" action="${withToken('/trigger_bot/delete')}" onsubmit="return handleDeleteSubmit(event, this)">
-      <input type="hidden" name="id" value="${id}">
-      <button class="btn btn-sm action-mini btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить">
-        <i class="bi bi-trash"></i>
-      </button>
-    </form>
+    <button class="btn btn-sm action-mini btn-outline-danger ms-1" type="button" data-trigger-delete="${id}" title="Удалить" aria-label="Удалить">
+      <i class="bi bi-trash"></i>
+    </button>
   </td>
 </tr>`;
 }
@@ -697,22 +722,64 @@ async function handleToggleClick(event, btn){
 }
 
 function handleDeleteSubmit(event, form){
-  if(!confirm('Удалить?')){
-    if(event){ event.preventDefault(); }
-    return false;
+  if(event){ event.preventDefault(); }
+  return false;
+}
+
+async function deleteTrigger(id, btn){
+  id = Number(id || 0);
+  if(id <= 0){ return; }
+  if(!confirm('Удалить?')){ return; }
+  const locked = lockButton(btn);
+  try{
+    const res = await fetch(withToken('/trigger_bot/delete'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify({id}),
+    });
+    if(!res.ok){
+      const txt = await res.text();
+      alert('Ошибка удаления: ' + (txt || res.status));
+      return;
+    }
+    await loadTriggerList();
+  } finally {
+    unlockButton(locked);
   }
-  return handleRowFormSubmit(event, form);
 }
 
 function handleImportSubmit(event, form){
+  if(event){ event.preventDefault(); }
   const btnId = form && form.dataset ? form.dataset.submitBtn : '';
   const btn = document.getElementById(btnId || 'import_submit_btn');
   if(btn && btn.dataset.locked === '1'){
-    if(event){ event.preventDefault(); }
+    return false;
+  }
+  const input = form ? form.querySelector('input[type=\"file\"]') : null;
+  const file = input && input.files ? input.files[0] : null;
+  if(!file){
+    alert('Выберите файл для импорта');
     return false;
   }
   lockButton(btn);
-  return true;
+  file.text().then((raw) => {
+    return fetch(form.getAttribute('action') || withToken('/trigger_bot/import'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify({raw}),
+    });
+  }).then(async (res) => {
+    if(!res.ok){
+      const txt = await res.text();
+      throw new Error(txt || res.status);
+    }
+    window.location.href = withToken('/trigger_bot');
+  }).catch((err) => {
+    alert('Ошибка импорта: ' + (err && err.message ? err.message : err));
+  }).finally(() => {
+    unlockButton(btn);
+  });
+  return false;
 }
 
 function setSaveBusy(busy){
@@ -913,13 +980,6 @@ function bindMiniToolbarFallback(){
     }
   });
 
-  document.addEventListener('click', (e) => {
-    const btn = e.target && e.target.closest ? e.target.closest('button[data-template-key]') : null;
-    if(!btn){ return; }
-    const key = String(btn.getAttribute('data-template-key') || '');
-    if(!key){ return; }
-    insertTemplateTag(key, btn);
-  });
 
   document.addEventListener('click', (e) => {
     const btn = e.target && e.target.closest ? e.target.closest('button[data-template-edit]') : null;
@@ -933,8 +993,17 @@ function bindMiniToolbarFallback(){
     const btn = e.target && e.target.closest ? e.target.closest('button[data-template-delete]') : null;
     if(!btn){ return; }
     const id = String(btn.getAttribute('data-template-delete') || '');
+    const key = String(btn.getAttribute('data-template-key') || '');
+    if(!id && !key){ return; }
+    deleteTemplate(id, key);
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-trigger-delete]') : null;
+    if(!btn){ return; }
+    const id = Number(btn.getAttribute('data-trigger-delete') || 0);
     if(!id){ return; }
-    deleteTemplate(id);
+    deleteTrigger(id, btn);
   });
 
   document.addEventListener('change', (ev) => {
@@ -950,37 +1019,6 @@ function bindMiniToolbarFallback(){
     insertTextAtCursor(getResponseTextArea(), `{{template \"${String(target.value)}\"}}`);
     target.value = '';
   });
-}
-
-function insertTemplateTag(key, btn){
-  const tag = `{{template \"${key}\"}}`;
-  const editor = getEditorView();
-  const el = getResponseTextArea();
-  if(editor || el){
-    insertTextAtCursor(el, tag);
-    return;
-  }
-  if(navigator && navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(tag).then(() => {
-      flashButtonLabel(btn, 'Скопировано');
-    }).catch(() => {
-      flashButtonLabel(btn, 'Скопировать не удалось');
-    });
-  }
-}
-
-function flashButtonLabel(btn, label){
-  if(!btn){ return; }
-  const prev = btn.dataset.labelPrev || btn.innerHTML;
-  if(!btn.dataset.labelPrev){
-    btn.dataset.labelPrev = prev;
-  }
-  btn.textContent = label;
-  setTimeout(() => {
-    if(btn.dataset.labelPrev){
-      btn.innerHTML = btn.dataset.labelPrev;
-    }
-  }, 1200);
 }
 
 function applyMatchTypeUI(){

@@ -209,16 +209,30 @@ func (w *WebAdmin) templateGetJSON(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) templateSavePost(rw http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
+	var payload struct {
+		ID    int64  `json:"id"`
+		Key   string `json:"key"`
+		Title string `json:"title"`
+		Text  string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
 		return
 	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	id := payload.ID
+	key := strings.TrimSpace(payload.Key)
+	title := strings.TrimSpace(payload.Title)
+	text := strings.TrimSpace(payload.Text)
+	if key == "" && id > 0 {
+		if existing, err := w.store.GetTemplate(id); err == nil && existing != nil {
+			key = strings.TrimSpace(existing.Key)
+		}
+	}
 	t := ResponseTemplate{
 		ID:    id,
-		Key:   strings.TrimSpace(r.FormValue("key")),
-		Title: strings.TrimSpace(r.FormValue("title")),
-		Text:  strings.TrimSpace(r.FormValue("text")),
+		Key:   key,
+		Title: title,
+		Text:  text,
 	}
 	if err := w.store.SaveTemplate(t); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -231,14 +245,66 @@ func (w *WebAdmin) templateSavePost(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
+	var payload struct {
+		ID  int64  `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
 		return
 	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	id := payload.ID
+	key := strings.TrimSpace(payload.Key)
+	var tpl *ResponseTemplate
+	var err error
+	if id > 0 {
+		tpl, err = w.store.GetTemplate(id)
+	} else if key != "" {
+		tpl, err = w.store.getTemplateByKey(key)
+		if tpl != nil {
+			id = tpl.ID
+		}
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if id <= 0 {
 		http.Error(rw, "id required", http.StatusBadRequest)
 		return
+	}
+	if tpl == nil {
+		http.Error(rw, "template not found", http.StatusNotFound)
+		return
+	}
+	if tpl != nil && strings.TrimSpace(tpl.Key) != "" {
+		usedBy, err := w.store.findTemplateUsageByKey(tpl.Key)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(usedBy) > 0 {
+			type ref struct {
+				ID    int64  `json:"id"`
+				Title string `json:"title"`
+			}
+			refs := make([]ref, 0, len(usedBy))
+			for _, tr := range usedBy {
+				refs = append(refs, ref{ID: tr.ID, Title: tr.Title})
+			}
+			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+			rw.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(rw).Encode(struct {
+				OK       bool  `json:"ok"`
+				Message  string `json:"message"`
+				Triggers []ref  `json:"triggers"`
+			}{
+				OK:       false,
+				Message:  "Шаблон используется в триггерах",
+				Triggers: refs,
+			})
+			return
+		}
 	}
 	if err := w.store.DeleteTemplate(id); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -350,97 +416,44 @@ func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	isJSON := strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
 	var t Trigger
-	if isJSON {
-		var payload struct {
-			ID            int64              `json:"id"`
-			UID           string             `json:"uid"`
-			Title         string             `json:"title"`
-			Enabled       bool               `json:"enabled"`
-			TriggerMode   string             `json:"trigger_mode"`
-			AdminMode     string             `json:"admin_mode"`
-			MatchText     string             `json:"match_text"`
-			MatchType     string             `json:"match_type"`
-			CaseSensitive bool               `json:"case_sensitive"`
-			ActionType    string             `json:"action_type"`
-			ResponseText  []ResponseTextItem `json:"response_text"`
-			Reply         bool               `json:"reply"`
-			Preview       bool               `json:"preview"`
-			DeleteSource  bool               `json:"delete_source"`
-			Chance        int                `json:"chance"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(rw, err.Error(), http.StatusBadRequest)
-			return
-		}
-		t = Trigger{
-			ID:            payload.ID,
-			UID:           strings.TrimSpace(payload.UID),
-			Title:         payload.Title,
-			Enabled:       payload.Enabled,
-			TriggerMode:   normalizeTriggerMode(payload.TriggerMode),
-			AdminMode:     normalizeAdminMode(payload.AdminMode),
-			MatchText:     payload.MatchText,
-			MatchType:     match.NormalizeMatchType(payload.MatchType),
-			CaseSensitive: payload.CaseSensitive,
-			ActionType:    normalizeActionType(payload.ActionType),
-			ResponseText:  payload.ResponseText,
-			Reply:         payload.Reply,
-			Preview:       payload.Preview,
-			DeleteSource:  payload.DeleteSource,
-			Chance:        payload.Chance,
-		}
-	} else {
-		// Save is submitted from JS as multipart/form-data (FormData),
-		// and sometimes as regular form-urlencoded. Support both robustly.
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
-			if err := r.ParseForm(); err != nil {
-				http.Error(rw, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-		id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
-		chance, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("chance")))
-		enabledRaw := strings.TrimSpace(r.FormValue("enabled"))
-		enabled := enabledRaw == "1"
-		if id <= 0 && enabledRaw == "" {
-			enabled = true
-		}
-		replyRaw := strings.TrimSpace(r.FormValue("reply"))
-		reply := replyRaw == "1"
-		if id <= 0 && replyRaw == "" {
-			reply = true
-		}
-		deleteSourceRaw := strings.TrimSpace(r.FormValue("delete_source"))
-		deleteSource := deleteSourceRaw == "1"
-		var responseItems []ResponseTextItem
-		responseRaw := strings.TrimSpace(r.FormValue("response_text"))
-		if responseRaw != "" {
-			if strings.HasPrefix(responseRaw, "[") {
-				_ = json.Unmarshal([]byte(responseRaw), &responseItems)
-			}
-			if len(responseItems) == 0 {
-				responseItems = []ResponseTextItem{{Text: responseRaw}}
-			}
-		}
-		t = Trigger{
-			ID:            id,
-			UID:           strings.TrimSpace(r.FormValue("uid")),
-			Title:         r.FormValue("title"),
-			Enabled:       enabled,
-			TriggerMode:   normalizeTriggerMode(r.FormValue("trigger_mode")),
-			AdminMode:     normalizeAdminMode(r.FormValue("admin_mode")),
-			MatchText:     r.FormValue("match_text"),
-			MatchType:     match.NormalizeMatchType(r.FormValue("match_type")),
-			CaseSensitive: r.FormValue("case_sensitive") == "1",
-			ActionType:    normalizeActionType(r.FormValue("action_type")),
-			ResponseText:  responseItems,
-			Reply:         reply,
-			Preview:       r.FormValue("preview") == "1",
-			DeleteSource:  deleteSource,
-			Chance:        chance,
-		}
+	var payload struct {
+		ID            int64              `json:"id"`
+		UID           string             `json:"uid"`
+		Title         string             `json:"title"`
+		Enabled       bool               `json:"enabled"`
+		TriggerMode   string             `json:"trigger_mode"`
+		AdminMode     string             `json:"admin_mode"`
+		MatchText     string             `json:"match_text"`
+		MatchType     string             `json:"match_type"`
+		CaseSensitive bool               `json:"case_sensitive"`
+		ActionType    string             `json:"action_type"`
+		ResponseText  []ResponseTextItem `json:"response_text"`
+		Reply         bool               `json:"reply"`
+		Preview       bool               `json:"preview"`
+		DeleteSource  bool               `json:"delete_source"`
+		Chance        int                `json:"chance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
+		return
+	}
+	t = Trigger{
+		ID:            payload.ID,
+		UID:           strings.TrimSpace(payload.UID),
+		Title:         payload.Title,
+		Enabled:       payload.Enabled,
+		TriggerMode:   normalizeTriggerMode(payload.TriggerMode),
+		AdminMode:     normalizeAdminMode(payload.AdminMode),
+		MatchText:     payload.MatchText,
+		MatchType:     match.NormalizeMatchType(payload.MatchType),
+		CaseSensitive: payload.CaseSensitive,
+		ActionType:    normalizeActionType(payload.ActionType),
+		ResponseText:  payload.ResponseText,
+		Reply:         payload.Reply,
+		Preview:       payload.Preview,
+		DeleteSource:  payload.DeleteSource,
+		Chance:        payload.Chance,
 	}
 	if err := w.store.SaveTrigger(t); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -461,38 +474,21 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		primaryLen,
 		time.Since(started),
 	)
-	if isJSON {
-		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(rw).Encode(struct {
-			OK bool `json:"ok"`
-		}{OK: true})
-		return
-	}
-	redirectToListWithToken(rw, r)
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
 }
 
 func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
-	idStr := ""
-	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
-		var payload struct {
-			ID int64 `json:"id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(rw, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if payload.ID > 0 {
-			idStr = strconv.FormatInt(payload.ID, 10)
-		}
+	var payload struct {
+		ID int64 `json:"id"`
 	}
-	if idStr == "" {
-		_ = r.ParseForm()
-		idStr = strings.TrimSpace(r.FormValue("id"))
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
+		return
 	}
-	if idStr == "" {
-		idStr = strings.TrimSpace(r.URL.Query().Get("id"))
-	}
-	id, _ := strconv.ParseInt(idStr, 10, 64)
+	id := payload.ID
 	if id <= 0 {
 		http.Error(rw, "id required", http.StatusBadRequest)
 		return
@@ -502,13 +498,8 @@ func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	accept := r.Header.Get("Accept")
-	if strings.Contains(accept, "application/json") || r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = rw.Write([]byte(fmt.Sprintf(`{"ok":true,"id":%d,"enabled":%v}`, id, enabled)))
-		return
-	}
-	redirectToListWithToken(rw, r)
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = rw.Write([]byte(fmt.Sprintf(`{"ok":true,"id":%d,"enabled":%v}`, id, enabled)))
 }
 
 func (w *WebAdmin) reorderPost(rw http.ResponseWriter, r *http.Request) {
@@ -532,15 +523,25 @@ func (w *WebAdmin) reorderPost(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
+	var payload struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
 		return
 	}
-	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
-	if id > 0 {
-		_ = w.store.DeleteTrigger(id)
+	if payload.ID <= 0 {
+		http.Error(rw, "id required", http.StatusBadRequest)
+		return
 	}
-	redirectToListWithToken(rw, r)
+	if err := w.store.DeleteTrigger(payload.ID); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
 }
 
 func redirectToListWithToken(rw http.ResponseWriter, r *http.Request) {
@@ -568,17 +569,15 @@ func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		_ = r.ParseForm()
-	}
 	var raw string
-	if file, _, err := r.FormFile("file"); err == nil {
-		defer file.Close()
-		body, _ := io.ReadAll(file)
-		raw = string(body)
+	var payload struct {
+		Raw string `json:"raw"`
 	}
-	if strings.TrimSpace(raw) == "" {
-		raw = r.FormValue("raw")
+	body, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Raw) != "" {
+		raw = payload.Raw
+	} else {
+		raw = string(body)
 	}
 	added, err := w.store.ImportJSON([]byte(raw))
 	if err != nil {
@@ -586,7 +585,11 @@ func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("web import added=%d took=%s", added, time.Since(started))
-	redirectToListWithToken(rw, r)
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK    bool  `json:"ok"`
+		Added int   `json:"added"`
+	}{OK: true, Added: added})
 }
 
 func (w *WebAdmin) renderTemplate(name string, data interface{}) ([]byte, error) {
