@@ -263,13 +263,14 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
-	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger)
+	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
 		log.Printf("gpt prompt failed: %v", err)
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
 		return
 	}
+	out = expandTemplateCalls(out, task.TemplateLookup)
 	replyTo := 0
 	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
 		replyTo = task.Msg.MessageID
@@ -347,6 +348,7 @@ func deleteTriggerSourceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr 
 var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P<id>\d+)"?\s*>"?(?P<fallback>.*?)"?</tg-emoji>"?`)
 var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
+var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
 
 func canonicalizeTGEmojiTags(s string) string {
 	if strings.TrimSpace(s) == "" {
@@ -456,6 +458,76 @@ func markdownToTelegramHTMLLite(s string) string {
 		return `<tg-spoiler>` + html.EscapeString(sub[1]) + `</tg-spoiler>`
 	})
 	return s
+}
+
+func buildTemplateLookup(store *Store) func(string) string {
+	var mu sync.Mutex
+	cache := map[string]string{}
+	var lastLoad time.Time
+	load := func() {
+		items, err := store.ListTemplates()
+		if err != nil {
+			return
+		}
+		next := map[string]string{}
+		for _, it := range items {
+			k := strings.TrimSpace(it.Key)
+			if k == "" {
+				continue
+			}
+			next[k] = it.Text
+		}
+		cache = next
+		lastLoad = time.Now()
+	}
+	return func(key string) string {
+		key = strings.TrimSpace(key)
+		if key == "" || store == nil {
+			return ""
+		}
+		mu.Lock()
+		if lastLoad.IsZero() || time.Since(lastLoad) > 10*time.Second {
+			load()
+		}
+		val := cache[key]
+		if val == "" {
+			load()
+			val = cache[key]
+		}
+		mu.Unlock()
+		return val
+	}
+}
+
+func expandTemplateCalls(input string, lookup func(string) string) string {
+	if strings.TrimSpace(input) == "" || lookup == nil {
+		return input
+	}
+	const maxDepth = 3
+	out := input
+	for i := 0; i < maxDepth; i++ {
+		changed := false
+		out = templateCallPattern.ReplaceAllStringFunc(out, func(m string) string {
+			sub := templateCallPattern.FindStringSubmatch(m)
+			if len(sub) < 2 {
+				return m
+			}
+			key := strings.TrimSpace(sub[1])
+			if key == "" {
+				return ""
+			}
+			val := lookup(key)
+			if val == "" {
+				return ""
+			}
+			changed = true
+			return val
+		})
+		if !changed {
+			break
+		}
+	}
+	return out
 }
 
 func newAdminStatusCache(ttl time.Duration, store *Store) *adminStatusCache {
@@ -1264,12 +1336,14 @@ func main() {
 	u.AllowedUpdates = []string{"message", "callback_query", "chat_member"}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
+	templateLookup := buildTemplateLookup(store)
 	handlerDeps := triggerHandlerDeps{
 		triggerActionDeps: triggerActionDeps{
-			Bot:          bot,
-			IdleTracker:  idleTracker,
-			GPTDebouncer: gptDebouncer,
-			VKMusic:      vkMusicClient,
+			Bot:            bot,
+			IdleTracker:    idleTracker,
+			GPTDebouncer:   gptDebouncer,
+			VKMusic:        vkMusicClient,
+			TemplateLookup: templateLookup,
 		},
 		Allowed:    allowedChats,
 		Engine:     triggerEngine,
@@ -1490,11 +1564,16 @@ func main() {
 					if isOlenyamTrigger(autoTr) {
 						ctx = recentBefore
 					}
+					rawTemplate := pickResponseVariantText(autoTr.ResponseText)
+					resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
+					trCopy := *autoTr
+					trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 					task := gpt.PromptTask{
-						Bot:           bot,
-						Trigger:       *autoTr,
-						Msg:           msg,
-						RecentContext: ctx,
+						Bot:            bot,
+						Trigger:        trCopy,
+						Msg:            msg,
+						RecentContext:  ctx,
+						TemplateLookup: templateLookup,
 						IdleMarkActivity: func(chatID int64, now time.Time) {
 							if idleTracker != nil {
 								idleTracker.MarkActivity(chatID, now)
@@ -1516,7 +1595,9 @@ func main() {
 			continue
 		}
 		msgForTrigger := msg
-		tmplCtx := newTemplateContext(bot, msgForTrigger, tr)
+		rawTemplate := pickResponseVariantText(tr.ResponseText)
+		resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
+		tmplCtx := newTemplateContext(bot, msgForTrigger, tr, templateLookup)
 		if debugTriggerLogEnabled {
 			log.Printf("pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 		}
@@ -1542,11 +1623,14 @@ func main() {
 				ctx = recentBefore
 			}
 			if gptDebouncer != nil {
+				trCopy := *tr
+				trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 				gptDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
-					Bot:           bot,
-					Trigger:       *tr,
-					Msg:           msgForTrigger,
-					RecentContext: ctx,
+					Bot:            bot,
+					Trigger:        trCopy,
+					Msg:            msgForTrigger,
+					RecentContext:  ctx,
+					TemplateLookup: templateLookup,
 					IdleMarkActivity: func(chatID int64, now time.Time) {
 						if idleTracker != nil {
 							idleTracker.MarkActivity(chatID, now)
@@ -1559,11 +1643,14 @@ func main() {
 				}
 				continue
 			}
+			trCopy := *tr
+			trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 			executeGPTPromptTask(gpt.PromptTask{
-				Bot:           bot,
-				Trigger:       *tr,
-				Msg:           msgForTrigger,
-				RecentContext: ctx,
+				Bot:            bot,
+				Trigger:        trCopy,
+				Msg:            msgForTrigger,
+				RecentContext:  ctx,
+				TemplateLookup: templateLookup,
 				IdleMarkActivity: func(chatID int64, now time.Time) {
 					if idleTracker != nil {
 						idleTracker.MarkActivity(chatID, now)
@@ -1572,7 +1659,7 @@ func main() {
 				ChatID: msg.Chat.ID,
 			})
 		case "gpt_image":
-			img, err := generateChatGPTImage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+			img, err := generateChatGPTImage(tmplCtx, resolvedTemplate)
 			if err != nil {
 				log.Printf("gpt image failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -1591,7 +1678,7 @@ func main() {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "search_image":
-			query := buildImageSearchQueryFromMessage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+			query := buildImageSearchQueryFromMessage(tmplCtx, resolvedTemplate)
 			img, err := searchImageInSerpAPI(query)
 			if err != nil {
 				log.Printf("search image failed: %v", err)
@@ -1615,7 +1702,7 @@ func main() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
 				continue
 			}
-			query := buildVKMusicQueryFromMessage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+			query := buildVKMusicQueryFromMessage(tmplCtx, resolvedTemplate)
 			if query == "" {
 				query = strings.TrimSpace(msg.Text)
 			}
@@ -1706,7 +1793,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			out := buildResponseFromMessage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+			out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
 			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
 			if ok := sendHTML(sendCtx, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
@@ -2393,23 +2480,25 @@ func fetchChatAdminStatus(bot *tgbotapi.BotAPI, chatID int64, userID int64) bool
 }
 
 type templateContext struct {
-	Bot           *tgbotapi.BotAPI
-	Msg           *tgbotapi.Message
-	CapturingText string
-	MatchText     string
-	CaseSensitive bool
+	Bot            *tgbotapi.BotAPI
+	Msg            *tgbotapi.Message
+	CapturingText  string
+	MatchText      string
+	CaseSensitive  bool
+	TemplateLookup func(string) string
 }
 
-func newTemplateContext(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger) templateContext {
+func newTemplateContext(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger, lookup func(string) string) templateContext {
 	if tr == nil {
-		return templateContext{Bot: bot, Msg: msg}
+		return templateContext{Bot: bot, Msg: msg, TemplateLookup: lookup}
 	}
 	return templateContext{
-		Bot:           bot,
-		Msg:           msg,
-		CapturingText: tr.CapturingText,
-		MatchText:     tr.MatchText,
-		CaseSensitive: tr.CaseSensitive,
+		Bot:            bot,
+		Msg:            msg,
+		CapturingText:  tr.CapturingText,
+		MatchText:      tr.MatchText,
+		CaseSensitive:  tr.CaseSensitive,
+		TemplateLookup: lookup,
 	}
 }
 
@@ -2885,6 +2974,10 @@ func pickResponseVariantText(items []ResponseTextItem) string {
 }
 
 func renderTemplateWithMessage(ctx templateContext, template string) string {
+	if strings.TrimSpace(template) == "" {
+		return template
+	}
+	template = expandTemplateCalls(template, ctx.TemplateLookup)
 	vars := buildTemplateVars(ctx)
 	out := applyTemplatePipes(template, vars)
 	for key, val := range vars {
@@ -3100,10 +3193,11 @@ func extractNewMemberDisplayNames(msg *tgbotapi.Message) []string {
 }
 
 type triggerActionDeps struct {
-	Bot          *tgbotapi.BotAPI
-	IdleTracker  *trigger.IdleTracker
-	GPTDebouncer *gpt.Debouncer
-	VKMusic      *vkmusic.Client
+	Bot            *tgbotapi.BotAPI
+	IdleTracker    *trigger.IdleTracker
+	GPTDebouncer   *gpt.Debouncer
+	VKMusic        *vkmusic.Client
+	TemplateLookup func(string) string
 }
 
 type triggerHandlerDeps struct {
@@ -3185,6 +3279,8 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	if msg == nil || tr == nil {
 		return
 	}
+	rawTemplate := pickResponseVariantText(tr.ResponseText)
+	resolvedTemplate := expandTemplateCalls(rawTemplate, deps.TemplateLookup)
 	switch tr.ActionType {
 	case "delete":
 		if msg.MessageID == 0 {
@@ -3206,11 +3302,14 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			ctx = recentBefore
 		}
 		if deps.GPTDebouncer != nil {
+			trCopy := *tr
+			trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 			deps.GPTDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
-				Bot:           deps.Bot,
-				Trigger:       *tr,
-				Msg:           msg,
-				RecentContext: ctx,
+				Bot:            deps.Bot,
+				Trigger:        trCopy,
+				Msg:            msg,
+				RecentContext:  ctx,
+				TemplateLookup: deps.TemplateLookup,
 				IdleMarkActivity: func(chatID int64, now time.Time) {
 					if deps.IdleTracker != nil {
 						deps.IdleTracker.MarkActivity(chatID, now)
@@ -3223,11 +3322,14 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			}
 			return
 		}
+		trCopy := *tr
+		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 		executeGPTPromptTask(gpt.PromptTask{
-			Bot:           deps.Bot,
-			Trigger:       *tr,
-			Msg:           msg,
-			RecentContext: ctx,
+			Bot:            deps.Bot,
+			Trigger:        trCopy,
+			Msg:            msg,
+			RecentContext:  ctx,
+			TemplateLookup: deps.TemplateLookup,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
 				if deps.IdleTracker != nil {
 					deps.IdleTracker.MarkActivity(chatID, now)
@@ -3236,8 +3338,8 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			ChatID: msg.Chat.ID,
 		})
 	case "gpt_image":
-		tmplCtx := newTemplateContext(deps.Bot, msg, tr)
-		img, err := generateChatGPTImage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		img, err := generateChatGPTImage(tmplCtx, resolvedTemplate)
 		if err != nil {
 			log.Printf("gpt image failed: %v", err)
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -3253,8 +3355,8 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
 	case "search_image":
-		tmplCtx := newTemplateContext(deps.Bot, msg, tr)
-		query := buildImageSearchQueryFromMessage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		query := buildImageSearchQueryFromMessage(tmplCtx, resolvedTemplate)
 		img, err := searchImageInSerpAPI(query)
 		if err != nil {
 			log.Printf("search image failed: %v", err)
@@ -3282,8 +3384,8 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if tr.Reply || tr.TriggerMode == "command_reply" {
 			replyTo = msg.MessageID
 		}
-		tmplCtx := newTemplateContext(deps.Bot, msg, tr)
-		out := buildResponseFromMessage(tmplCtx, pickResponseVariantText(tr.ResponseText))
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
 		if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())

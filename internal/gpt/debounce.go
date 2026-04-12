@@ -14,6 +14,7 @@ type PromptTask struct {
 	Trigger          model.Trigger
 	Msg              *tgbotapi.Message
 	RecentContext    string
+	TemplateLookup   func(string) string
 	IdleMarkActivity func(chatID int64, now time.Time)
 	ChatID           int64
 }

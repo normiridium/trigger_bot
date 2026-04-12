@@ -28,6 +28,15 @@ type ResponseTextItem struct {
 	Text string `json:"text" bson:"text"`
 }
 
+type ResponseTemplate struct {
+	ID        int64  `json:"id"`
+	Key       string `json:"key"`
+	Title     string `json:"title"`
+	Text      string `json:"text"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 type TriggerMode string
 
 const (

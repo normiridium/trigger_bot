@@ -11,27 +11,70 @@
 </head>
 <body class="text-light">
 <div class="container-fluid py-4 app" x-data="triggerApp()" x-init="initTriggerPage()">
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3 trigger-toolbar">
-    <h3 class="m-0 me-2">Триггеры</h3>
-    <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 me-auto import-actions" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
-      <div class="import-file-wrap">
-        <input class="d-none" type="file" name="file" id="import_file" accept="application/json" x-on:change="updateImportFileName($event.target)">
-        <label class="import-file-btn" for="import_file">Выберите файл</label>
-        <span class="import-file-name" id="import_file_name">Файл не выбран</span>
-      </div>
-      <button class="btn btn-secondary" type="submit" id="import_submit_btn"><i class="bi bi-upload"></i> Импорт JSON</button>
-    </form>
-    <button class="btn btn-success" type="button" x-on:click="openNew()"><i class="bi bi-plus-lg"></i> Новый</button>
-    <a class="btn btn-primary" id="export_link" href="/trigger_bot/export"><i class="bi bi-download"></i> Экспорт</a>
-  </div>
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3 trigger-toolbar"></div>
 
-  <div class="table-responsive rounded border border-secondary-subtle">
-    <table class="table table-dark table-striped table-hover align-middle mb-0 trigger-table">
-      <thead>
-        <tr><th></th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
-      </thead>
-      <tbody id="triggers_tbody"></tbody>
-    </table>
+  <ul class="nav nav-tabs mb-3" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="tab-triggers" data-bs-toggle="tab" data-bs-target="#tab-triggers-pane" type="button" role="tab" aria-controls="tab-triggers-pane" aria-selected="true">Триггеры</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-templates" data-bs-toggle="tab" data-bs-target="#tab-templates-pane" type="button" role="tab" aria-controls="tab-templates-pane" aria-selected="false">Шаблоны</button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="tab-settings" data-bs-toggle="tab" data-bs-target="#tab-settings-pane" type="button" role="tab" aria-controls="tab-settings-pane" aria-selected="false">Настройки</button>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+    <div class="tab-pane fade show active" id="tab-triggers-pane" role="tabpanel" aria-labelledby="tab-triggers">
+      <div class="d-flex align-items-center justify-content-end mb-2">
+        <button class="btn btn-success btn-sm" type="button" x-on:click="openNew()"><i class="bi bi-plus-lg"></i> Новый триггер</button>
+      </div>
+      <div class="table-responsive rounded border border-secondary-subtle">
+        <table class="table table-dark table-striped table-hover align-middle mb-0 trigger-table">
+          <thead>
+            <tr><th></th><th>Название</th><th>Условие</th><th>Режим</th><th class="text-nowrap">Управление</th></tr>
+          </thead>
+          <tbody id="triggers_tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="tab-pane fade" id="tab-templates-pane" role="tabpanel" aria-labelledby="tab-templates">
+      <div class="d-flex align-items-center justify-content-end mb-2">
+        <button class="btn btn-success btn-sm" type="button" x-on:click="openTemplateNew()"><i class="bi bi-plus-lg"></i> Новый шаблон</button>
+      </div>
+      <div class="table-responsive rounded border border-secondary-subtle">
+        <table class="table table-dark table-striped table-hover align-middle mb-0 templates-table">
+          <thead>
+            <tr>
+              <th class="col-key">Идентификатор</th>
+              <th class="col-title">Название</th>
+              <th class="col-text">Шаблон</th>
+              <th class="text-nowrap col-action">Действие</th>
+            </tr>
+          </thead>
+          <tbody id="templates_tbody">
+            <tr><td colspan="4" class="text-center text-secondary py-4">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="tab-pane fade" id="tab-settings-pane" role="tabpanel" aria-labelledby="tab-settings">
+      <div class="p-3 rounded border border-secondary-subtle settings-panel">
+        <h6 class="mb-3">Импорт/экспорт (триггеры + шаблоны)</h6>
+        <form method="post" action="/trigger_bot/import" enctype="multipart/form-data" class="d-flex flex-column gap-2 import-actions" data-submit-btn="import_submit_btn" x-on:submit="handleImportSubmit($event, $event.currentTarget)">
+          <div class="import-file-wrap">
+            <input class="d-none" type="file" name="file" id="import_file" accept="application/json" data-output="import_file_name" x-on:change="updateImportFileName($event.target)">
+            <label class="import-file-btn" for="import_file">Выберите файл</label>
+            <span class="import-file-name" id="import_file_name">Файл не выбран</span>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-secondary" type="submit" id="import_submit_btn"><i class="bi bi-upload"></i> Импорт JSON</button>
+            <a class="btn btn-primary" id="export_link" href="/trigger_bot/export"><i class="bi bi-download"></i> Экспорт JSON</a>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -165,6 +208,9 @@
                 <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker">
                   <option value="">Вставить тег сообщения…</option>
                 </select>
+                <select class="form-select form-select-sm bg-black text-light border-secondary template-insert-picker" id="f_template_picker">
+                  <option value="">Вставить шаблон…</option>
+                </select>
               </div>
               <div id="response_editor" class="cm-wrap mb-2"></div>
               <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text" placeholder="Текст ответа / промпт"></textarea>
@@ -177,6 +223,38 @@
           <button class="btn btn-outline-info" type="button" id="f_clone_btn" x-on:click="cloneCurrentTrigger()"><i class="bi bi-copy"></i> Клонировать</button>
           <button class="btn btn-outline-light" type="button" data-bs-dismiss="modal">Закрыть</button>
         </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="templateModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-fullscreen-md-down">
+    <div class="modal-content bg-dark text-light border-secondary">
+      <form method="post" action="/trigger_bot/template_save" id="template_form" x-on:submit="submitTemplateForm($event)">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title">Шаблон</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" name="id" id="tpl_id">
+        <div class="mb-3">
+          <label class="form-label">Идентификатор</label>
+          <input class="form-control bg-black text-light border-secondary" type="text" name="key" id="tpl_key" placeholder="welcome_short">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Название</label>
+          <input class="form-control bg-black text-light border-secondary" type="text" name="title" id="tpl_title" placeholder="Приветствие (кратко)">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Текст шаблона</label>
+          <textarea class="form-control bg-black text-light border-secondary" rows="8" name="text" id="tpl_text" placeholder="Текст ответа..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer border-secondary">
+        <button class="btn btn-success" type="submit"><i class="bi bi-save"></i> Сохранить</button>
+        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Закрыть</button>
+      </div>
       </form>
     </div>
   </div>

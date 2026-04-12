@@ -5,6 +5,7 @@ import "trigger-admin-bot/internal/model"
 type Trigger = model.Trigger
 
 type ResponseTextItem = model.ResponseTextItem
+type ResponseTemplate = model.ResponseTemplate
 
 type TriggerMode = model.TriggerMode
 

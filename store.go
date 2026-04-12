@@ -368,14 +368,30 @@ type importTriggerRow struct {
 	Chance           *int            `json:"chance"`
 }
 
+type exportTemplateRow struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Text  string `json:"text"`
+}
+
+type exportBundle struct {
+	Triggers  []exportTriggerRow  `json:"triggers"`
+	Templates []exportTemplateRow `json:"templates"`
+}
+
+type importBundle struct {
+	Triggers  []importTriggerRow  `json:"triggers"`
+	Templates []exportTemplateRow `json:"templates"`
+}
+
 func (s *Store) ExportJSON() ([]byte, error) {
 	items, err := s.ListTriggers()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]exportTriggerRow, 0, len(items))
+	triggers := make([]exportTriggerRow, 0, len(items))
 	for _, t := range items {
-		out = append(out, exportTriggerRow{
+		triggers = append(triggers, exportTriggerRow{
 			UID:              t.UID,
 			Priority:         t.Priority,
 			RegexBenchUS:     t.RegexBenchUS,
@@ -394,7 +410,22 @@ func (s *Store) ExportJSON() ([]byte, error) {
 			Chance:           t.Chance,
 		})
 	}
-	return json.MarshalIndent(out, "", "  ")
+	tpls, err := s.ListTemplates()
+	if err != nil {
+		return nil, err
+	}
+	templates := make([]exportTemplateRow, 0, len(tpls))
+	for _, t := range tpls {
+		templates = append(templates, exportTemplateRow{
+			Key:   t.Key,
+			Title: t.Title,
+			Text:  t.Text,
+		})
+	}
+	return json.MarshalIndent(exportBundle{
+		Triggers:  triggers,
+		Templates: templates,
+	}, "", "  ")
 }
 
 func (s *Store) ImportJSON(raw []byte) (int, error) {
@@ -402,32 +433,15 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 	if len(raw) == 0 {
 		return 0, nil
 	}
-	var rawItems []map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &rawItems); err != nil {
+	var payload importBundle
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return 0, err
 	}
-	if len(rawItems) == 0 {
+	if len(payload.Triggers) == 0 && len(payload.Templates) == 0 {
 		return 0, nil
 	}
-	supportedRows := 0
-	for _, row := range rawItems {
-		if hasNewImportKeys(row) {
-			supportedRows++
-		}
-	}
-	if supportedRows == 0 {
-		return 0, errors.New("unsupported import format: expected column-style fields")
-	}
-
-	var items []importTriggerRow
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return 0, err
-	}
 	added := 0
-	for i, it := range items {
-		if i >= len(rawItems) || !hasNewImportKeys(rawItems[i]) {
-			continue
-		}
+	for _, it := range payload.Triggers {
 		title := strings.TrimSpace(it.Title)
 		if title == "" {
 			title = "Импортированный триггер"
@@ -459,11 +473,6 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			actionType = strings.TrimSpace(it.ActionType)
 		}
 		responseItems := parseResponseTextRaw(it.ResponseText)
-		if len(responseItems) == 0 && i < len(rawItems) {
-			if raw, ok := rawItems[i]["response_text"]; ok {
-				responseItems = parseResponseTextRaw(raw)
-			}
-		}
 		reply := true
 		if it.SendAsReply != nil {
 			reply = *it.SendAsReply
@@ -516,40 +525,37 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 		}
 		added++
 	}
+	for _, it := range payload.Templates {
+		key := strings.TrimSpace(it.Key)
+		if key == "" {
+			return added, errors.New("template key is required")
+		}
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			title = key
+		}
+		text := strings.TrimSpace(it.Text)
+		tpl := ResponseTemplate{
+			Key:   key,
+			Title: title,
+			Text:  text,
+		}
+		existing, err := s.getTemplateByKey(key)
+		if err != nil {
+			return added, err
+		}
+		if existing != nil {
+			tpl.ID = existing.ID
+		}
+		if err := s.SaveTemplate(tpl); err != nil {
+			return added, err
+		}
+		added++
+	}
 	if added > 0 {
 		s.invalidateCache()
 	}
 	return added, nil
-}
-
-func hasNewImportKeys(m map[string]json.RawMessage) bool {
-	if len(m) == 0 {
-		return false
-	}
-	keys := []string{
-		"uid",
-		"priority",
-		"regex_bench_us",
-		"title",
-		"enabled",
-		"trigger_mode",
-		"admin_mode",
-		"match_text",
-		"match_type",
-		"case_sensitive",
-		"action_type",
-		"response_text",
-		"send_as_reply",
-		"preview_first_link",
-		"delete_source_message",
-		"chance",
-	}
-	for _, k := range keys {
-		if _, ok := m[k]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Store) nextInsertPriority() (int, error) {
@@ -621,6 +627,58 @@ func (s *Store) getIDByUID(uid string) (int64, error) {
 		return 0, errors.New("mongo backend not initialized")
 	}
 	return s.mg.getIDByUID(uid)
+}
+
+func (s *Store) ListTemplates() ([]ResponseTemplate, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.listTemplates()
+}
+
+func (s *Store) GetTemplate(id int64) (*ResponseTemplate, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.getTemplate(id)
+}
+
+func (s *Store) getTemplateByKey(key string) (*ResponseTemplate, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.getTemplateByKey(key)
+}
+
+func (s *Store) SaveTemplate(t ResponseTemplate) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	now := time.Now().Unix()
+	t.Key = strings.TrimSpace(t.Key)
+	t.Title = strings.TrimSpace(t.Title)
+	t.Text = strings.TrimSpace(t.Text)
+	if t.Key == "" {
+		return errors.New("template key is required")
+	}
+	if t.Title == "" {
+		t.Title = t.Key
+	}
+	if t.ID <= 0 {
+		return s.mg.insertTemplate(t, now)
+	}
+	return s.mg.updateTemplate(t, now)
+}
+
+func (s *Store) DeleteTemplate(id int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteTemplate(id)
 }
 
 func newUUID4() (string, error) {

@@ -20,6 +20,7 @@ type mongoBackend struct {
 	client    *mongo.Client
 	db        *mongo.Database
 	triggers  *mongo.Collection
+	templates *mongo.Collection
 	admins    *mongo.Collection
 	adminSync *mongo.Collection
 	counters  *mongo.Collection
@@ -63,6 +64,15 @@ type mongoAdminSyncDoc struct {
 type mongoCounterDoc struct {
 	ID  string `bson:"_id"`
 	Seq int64  `bson:"seq"`
+}
+
+type mongoTemplateDoc struct {
+	ID        int64  `bson:"id"`
+	Key       string `bson:"key"`
+	Title     string `bson:"title"`
+	Text      string `bson:"text"`
+	CreatedAt int64  `bson:"created_at"`
+	UpdatedAt int64  `bson:"updated_at"`
 }
 
 func responseItemsFromRaw(v interface{}) ([]ResponseTextItem, bool) {
@@ -194,6 +204,7 @@ func openMongoStore(uri string) (*Store, error) {
 		client:    client,
 		db:        db,
 		triggers:  db.Collection("triggers"),
+		templates: db.Collection("response_templates"),
 		admins:    db.Collection("chat_admin_cache"),
 		adminSync: db.Collection("chat_admin_sync"),
 		counters:  db.Collection("counters"),
@@ -233,6 +244,19 @@ func (m *mongoBackend) ensureIndexes() error {
 		},
 		{
 			Keys: bson.D{{Key: "priority", Value: -1}, {Key: "id", Value: 1}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = m.templates.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys:    bson.D{{Key: "key", Value: 1}},
+			Options: options.Index().SetUnique(true),
 		},
 	})
 	if err != nil {
@@ -392,6 +416,18 @@ func (m *mongoBackend) nextTriggerID() (int64, error) {
 	return out.Seq, nil
 }
 
+func (m *mongoBackend) nextTemplateID() (int64, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
+	var out mongoCounterDoc
+	err := m.counters.FindOneAndUpdate(ctx, bson.M{"_id": "response_templates"}, bson.M{"$inc": bson.M{"seq": 1}}, opts).Decode(&out)
+	if err != nil {
+		return 0, err
+	}
+	return out.Seq, nil
+}
+
 func (m *mongoBackend) insertTrigger(t Trigger, now int64) error {
 	if t.ID <= 0 {
 		id, err := m.nextTriggerID()
@@ -505,6 +541,128 @@ func (m *mongoBackend) getIDByUID(uid string) (int64, error) {
 		return 0, nil
 	}
 	return d.ID, err
+}
+
+func (m *mongoBackend) listTemplates() ([]ResponseTemplate, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	cur, err := m.templates.Find(ctx, bson.M{}, options.Find().SetSort(bson.D{{Key: "id", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := make([]ResponseTemplate, 0, 32)
+	for cur.Next(ctx) {
+		var d mongoTemplateDoc
+		if err := cur.Decode(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, ResponseTemplate{
+			ID:        d.ID,
+			Key:       strings.TrimSpace(d.Key),
+			Title:     d.Title,
+			Text:      d.Text,
+			CreatedAt: d.CreatedAt,
+			UpdatedAt: d.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (m *mongoBackend) getTemplate(id int64) (*ResponseTemplate, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoTemplateDoc
+	err := m.templates.FindOne(ctx, bson.M{"id": id}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t := ResponseTemplate{
+		ID:        d.ID,
+		Key:       strings.TrimSpace(d.Key),
+		Title:     d.Title,
+		Text:      d.Text,
+		CreatedAt: d.CreatedAt,
+		UpdatedAt: d.UpdatedAt,
+	}
+	return &t, nil
+}
+
+func (m *mongoBackend) getTemplateByKey(key string) (*ResponseTemplate, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoTemplateDoc
+	err := m.templates.FindOne(ctx, bson.M{"key": key}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t := ResponseTemplate{
+		ID:        d.ID,
+		Key:       strings.TrimSpace(d.Key),
+		Title:     d.Title,
+		Text:      d.Text,
+		CreatedAt: d.CreatedAt,
+		UpdatedAt: d.UpdatedAt,
+	}
+	return &t, nil
+}
+
+func (m *mongoBackend) insertTemplate(t ResponseTemplate, now int64) error {
+	if t.ID <= 0 {
+		id, err := m.nextTemplateID()
+		if err != nil {
+			return err
+		}
+		t.ID = id
+	}
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	_, err := m.templates.InsertOne(context.Background(), bson.M{
+		"id":         t.ID,
+		"key":        strings.TrimSpace(t.Key),
+		"title":      t.Title,
+		"text":       t.Text,
+		"created_at": t.CreatedAt,
+		"updated_at": t.UpdatedAt,
+	})
+	return err
+}
+
+func (m *mongoBackend) updateTemplate(t ResponseTemplate, now int64) error {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	t.UpdatedAt = now
+	set := bson.M{
+		"key":        strings.TrimSpace(t.Key),
+		"title":      t.Title,
+		"text":       t.Text,
+		"updated_at": now,
+	}
+	res, err := m.templates.UpdateOne(ctx, bson.M{"id": t.ID}, bson.M{"$set": set})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("template id=%d not found", t.ID)
+	}
+	return nil
+}
+
+func (m *mongoBackend) deleteTemplate(id int64) error {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.templates.DeleteOne(ctx, bson.M{"id": id})
+	return err
 }
 
 func (m *mongoBackend) getChatAdminCache(chatID, userID int64) (bool, int64, bool, error) {
