@@ -39,6 +39,34 @@ const (
 	TriggerModeCommandReply      TriggerMode = "command_reply"
 )
 
+var TriggerModeValues = []TriggerMode{
+	TriggerModeAll,
+	TriggerModeOnlyReplies,
+	TriggerModeOnlyRepliesToBot,
+	TriggerModeOnlyRepliesToSelf,
+	TriggerModeNeverOnReplies,
+	TriggerModeCommandReply,
+}
+
+func (m TriggerMode) String() string {
+	switch m {
+	case TriggerModeAll:
+		return "Все сообщения"
+	case TriggerModeOnlyReplies:
+		return "Только реплаи"
+	case TriggerModeOnlyRepliesToBot:
+		return "Только реплаи на любого бота"
+	case TriggerModeOnlyRepliesToSelf:
+		return "Реплай к боту триггера"
+	case TriggerModeNeverOnReplies:
+		return "Не срабатывать на реплаи"
+	case TriggerModeCommandReply:
+		return "Режим команд (действие в ответ)"
+	default:
+		return string(m)
+	}
+}
+
 type AdminMode string
 
 const (
@@ -46,6 +74,25 @@ const (
 	AdminModeAdmins   AdminMode = "admins"
 	AdminModeNotAdmin AdminMode = "not_admins"
 )
+
+var AdminModeValues = []AdminMode{
+	AdminModeAnybody,
+	AdminModeAdmins,
+	AdminModeNotAdmin,
+}
+
+func (m AdminMode) String() string {
+	switch m {
+	case AdminModeAnybody:
+		return "Любой участник"
+	case AdminModeAdmins:
+		return "Только админы"
+	case AdminModeNotAdmin:
+		return "Кроме админов"
+	default:
+		return string(m)
+	}
+}
 
 type MatchType string
 
@@ -59,6 +106,37 @@ const (
 	MatchTypeNewMember MatchType = "new_member"
 )
 
+var MatchTypeValues = []MatchType{
+	MatchTypeIdle,
+	MatchTypeFull,
+	MatchTypePartial,
+	MatchTypeRegex,
+	MatchTypeStarts,
+	MatchTypeEnds,
+	MatchTypeNewMember,
+}
+
+func (m MatchType) String() string {
+	switch m {
+	case MatchTypeIdle:
+		return "Простой вызова бота"
+	case MatchTypeFull:
+		return "Полное совпадение"
+	case MatchTypePartial:
+		return "Частичное совпадение"
+	case MatchTypeRegex:
+		return "Регулярное выражение"
+	case MatchTypeStarts:
+		return "Начинается с"
+	case MatchTypeEnds:
+		return "Заканчивается на"
+	case MatchTypeNewMember:
+		return "Новый участник"
+	default:
+		return string(m)
+	}
+}
+
 type ActionType string
 
 const (
@@ -69,3 +147,31 @@ const (
 	ActionTypeSearchImage ActionType = "search_image"
 	ActionTypeVKMusic     ActionType = "vk_music_audio"
 )
+
+var ActionTypeValues = []ActionType{
+	ActionTypeSend,
+	ActionTypeDelete,
+	ActionTypeGPTPrompt,
+	ActionTypeGPTImage,
+	ActionTypeSearchImage,
+	ActionTypeVKMusic,
+}
+
+func (m ActionType) String() string {
+	switch m {
+	case ActionTypeSend:
+		return "Отправить сообщение"
+	case ActionTypeDelete:
+		return "Удалить сообщение"
+	case ActionTypeGPTPrompt:
+		return "Промпт в ChatGPT"
+	case ActionTypeGPTImage:
+		return "Сгенерировать картинку (ChatGPT)"
+	case ActionTypeSearchImage:
+		return "Найти картинку (по запросу)"
+	case ActionTypeVKMusic:
+		return "VK музыка (аудио-вложение)"
+	default:
+		return string(m)
+	}
+}

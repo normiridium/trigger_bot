@@ -28,6 +28,7 @@ async function initTriggerPage(){
   __triggerPageInitialized = true;
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
   applyTokenToForms();
+  await loadEnums();
   applyMatchTypeUI();
   bindMiniToolbarFallback();
   ensureResponseEditor();
@@ -39,6 +40,40 @@ async function initTriggerPage(){
   renderVariantControls();
   await loadTriggerList();
   initTriggerDragAndDrop();
+}
+
+async function loadEnums(){
+  try{
+    const r = await fetch(withToken('/trigger_bot/enums'));
+    if(!r.ok){
+      return;
+    }
+    const data = await r.json();
+    applyEnumOptions('f_trigger_mode', data.trigger_modes, 'all');
+    applyEnumOptions('f_admin_mode', data.admin_modes, 'anybody');
+    applyEnumOptions('f_match_type', data.match_types, 'full');
+    applyEnumOptions('f_action_type', data.action_types, 'send');
+  } catch(err){
+    // Keep static options as fallback.
+  }
+}
+
+function applyEnumOptions(id, items, fallback){
+  const el = document.getElementById(id);
+  if(!el || !Array.isArray(items) || items.length === 0){
+    return;
+  }
+  const prev = String(el.value || fallback || '');
+  el.innerHTML = '';
+  items.forEach(it => {
+    const opt = document.createElement('option');
+    opt.value = String(it && it.value != null ? it.value : '');
+    opt.textContent = String(it && it.label != null ? it.label : opt.value);
+    el.appendChild(opt);
+  });
+  if(prev){
+    el.value = prev;
+  }
 }
 
 function setSel(id,val){

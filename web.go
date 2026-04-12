@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"trigger-admin-bot/internal/match"
+	"trigger-admin-bot/internal/model"
 )
 
 type WebAdmin struct {
@@ -60,6 +61,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot", w.withAuth(w.listPage))
 	mux.HandleFunc("/trigger_bot/list", w.withAuth(w.listJSON))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
+	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
 	mux.HandleFunc("/trigger_bot/toggle", w.withAuth(w.togglePost))
@@ -99,6 +101,38 @@ func (w *WebAdmin) listJSON(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (w *WebAdmin) enumsJSON(rw http.ResponseWriter, r *http.Request) {
+	type enumItem struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+	}
+	out := struct {
+		TriggerModes []enumItem `json:"trigger_modes"`
+		AdminModes   []enumItem `json:"admin_modes"`
+		MatchTypes   []enumItem `json:"match_types"`
+		ActionTypes  []enumItem `json:"action_types"`
+	}{
+		TriggerModes: make([]enumItem, 0, len(model.TriggerModeValues)),
+		AdminModes:   make([]enumItem, 0, len(model.AdminModeValues)),
+		MatchTypes:   make([]enumItem, 0, len(model.MatchTypeValues)),
+		ActionTypes:  make([]enumItem, 0, len(model.ActionTypeValues)),
+	}
+	for _, v := range model.TriggerModeValues {
+		out.TriggerModes = append(out.TriggerModes, enumItem{Value: string(v), Label: v.String()})
+	}
+	for _, v := range model.AdminModeValues {
+		out.AdminModes = append(out.AdminModes, enumItem{Value: string(v), Label: v.String()})
+	}
+	for _, v := range model.MatchTypeValues {
+		out.MatchTypes = append(out.MatchTypes, enumItem{Value: string(v), Label: v.String()})
+	}
+	for _, v := range model.ActionTypeValues {
+		out.ActionTypes = append(out.ActionTypes, enumItem{Value: string(v), Label: v.String()})
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(out)
+}
+
 func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("id")), 10, 64)
 	var item *Trigger
@@ -111,7 +145,15 @@ func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if item == nil {
-		item = &Trigger{Enabled: true, TriggerMode: "all", AdminMode: "anybody", MatchType: "full", ActionType: "send", Chance: 100, Reply: true}
+		item = &Trigger{
+			Enabled:     true,
+			TriggerMode: TriggerModeAll,
+			AdminMode:   AdminModeAnybody,
+			MatchType:   MatchTypeFull,
+			ActionType:  ActionTypeSend,
+			Chance:      100,
+			Reply:       true,
+		}
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(item)
