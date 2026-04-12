@@ -10,15 +10,47 @@ import (
 )
 
 func TestApplyCapturingTemplate(t *testing.T) {
-	got := applyCapturingTemplate("доброе фото {{capturing_text}}", "  навальный  ")
+	got := applyCapturingTemplate("доброе фото {{capturing_text}}", "  навальный  ", "", false)
 	if got != "доброе фото навальный" {
 		t.Fatalf("unexpected template result: %q", got)
 	}
-	if applyCapturingTemplate("", "x") != "" {
+	if applyCapturingTemplate("", "x", "", false) != "" {
 		t.Fatalf("empty template must stay empty")
 	}
-	if applyCapturingTemplate("без плейсхолдера", "x") != "без плейсхолдера" {
+	if applyCapturingTemplate("без плейсхолдера", "x", "", false) != "без плейсхолдера" {
 		t.Fatalf("template without placeholder must stay unchanged")
+	}
+}
+
+func TestApplyCapturingTemplateChoice(t *testing.T) {
+	pattern := `^\\s*((?:уби|обня|(?:😘 )?поцелова))ть\\s*$`
+	got := applyCapturingTemplate("{{capturing_choice}}", "поцелова", pattern, false)
+	if got != "😘 поцелова" {
+		t.Fatalf("unexpected choice: %q", got)
+	}
+	got = applyCapturingTemplate("{{capturing_option}}", "обня", pattern, false)
+	if got != "обня" {
+		t.Fatalf("unexpected option: %q", got)
+	}
+}
+
+func TestApplyCapturingTemplateChoiceWithEmojiPrefix(t *testing.T) {
+	pattern := `^\\s*((?:☠? ?ᛁ? ?уби|🤗? ?ᛁ? ?обня|😘? ?ᛁ? ?поцелова))ть\\s*$`
+	got := applyCapturingTemplate("{{capturing_choice}}", "обня", pattern, false)
+	if got != "🤗 ᛁ обня" {
+		t.Fatalf("unexpected choice with emoji: %q", got)
+	}
+}
+
+func TestApplyCapturingTemplateChoicePipeSplitIndex(t *testing.T) {
+	pattern := `^\\s*((?:☠? ?ᛁ? ?уби|🤗? ?ᛁ? ?обня|😘? ?ᛁ? ?поцелова))ть\\s*$`
+	got := applyCapturingTemplate("{{capturing_choice | split \"ᛁ\" | index 0}}", "обня", pattern, false)
+	if got != "🤗" {
+		t.Fatalf("unexpected pipe index0: %q", got)
+	}
+	got = applyCapturingTemplate("{{capturing_choice | split \"ᛁ\" | index 1}}", "обня", pattern, false)
+	if got != "обня" {
+		t.Fatalf("unexpected pipe index1: %q", got)
 	}
 }
 
@@ -29,12 +61,12 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 		Text: "покажи кота",
 	}
 
-	gotDefault := buildImageSearchQueryFromMessage(nil, "", msg, "")
+	gotDefault := buildImageSearchQueryFromMessage(nil, "", msg, "", "", false)
 	if gotDefault != "покажи кота" {
 		t.Fatalf("default query mismatch: %q", gotDefault)
 	}
 
-	got := buildImageSearchQueryFromMessage(nil, "доброе фото {{capturing_text}} для {{user_first_name}}", msg, "кац")
+	got := buildImageSearchQueryFromMessage(nil, "доброе фото {{capturing_text}} для {{user_first_name}}", msg, "кац", "", false)
 	if got != "доброе фото кац для Аня" {
 		t.Fatalf("query mismatch: %q", got)
 	}
