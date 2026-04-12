@@ -62,22 +62,23 @@
           <div class="row g-3">
             <div class="col-md-6">
               <label class="form-label">Режим триггера</label>
-              <select class="form-select bg-black text-light border-secondary" name="trigger_mode" id="f_trigger_mode">
-                <option value="all">Все сообщения</option>
-                <option value="only_replies">Только реплаи</option>
-                <option value="only_replies_to_any_bot">Только реплаи на любого бота</option>
-                <option value="only_replies_to_combot">Реплай к боту триггера</option>
-                <option value="never_on_replies">Не срабатывать на реплаи</option>
-                <option value="command_reply">Режим команд (действие в ответ)</option>
-              </select>
+              <div class="dropdown w-100">
+                <input type="hidden" name="trigger_mode" id="f_trigger_mode" value="all">
+                <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="f_trigger_mode_btn" data-bs-toggle="dropdown" aria-expanded="false">
+                  Загрузка...
+                </button>
+                <ul class="dropdown-menu w-100" id="f_trigger_mode_menu"></ul>
+              </div>
             </div>
             <div class="col-md-6">
               <label class="form-label">Режим админов</label>
-              <select class="form-select bg-black text-light border-secondary" name="admin_mode" id="f_admin_mode">
-                <option value="anybody">Любой участник</option>
-                <option value="admins">Только админы</option>
-                <option value="not_admins">Кроме админов</option>
-              </select>
+              <div class="dropdown w-100">
+                <input type="hidden" name="admin_mode" id="f_admin_mode" value="anybody">
+                <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="f_admin_mode_btn" data-bs-toggle="dropdown" aria-expanded="false">
+                  Загрузка...
+                </button>
+                <ul class="dropdown-menu w-100" id="f_admin_mode_menu"></ul>
+              </div>
             </div>
 
             <div class="col-md-6" id="match_text_col">
@@ -92,27 +93,24 @@
             </div>
             <div class="col-md-6" id="match_type_col">
               <label class="form-label">Тип условия</label>
-              <select class="form-select bg-black text-light border-secondary" name="match_type" id="f_match_type">
-                <option value="idle">Простой вызова бота</option>
-                <option value="full">Полное совпадение</option>
-                <option value="partial">Частичное совпадение</option>
-                <option value="regex">Регулярное выражение</option>
-                <option value="starts">Начинается с</option>
-                <option value="ends">Заканчивается на</option>
-                <option value="new_member">Новый участник</option>
-              </select>
+              <div class="dropdown w-100">
+                <input type="hidden" name="match_type" id="f_match_type" value="full">
+                <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="f_match_type_btn" data-bs-toggle="dropdown" aria-expanded="false">
+                  Загрузка...
+                </button>
+                <ul class="dropdown-menu w-100" id="f_match_type_menu"></ul>
+              </div>
             </div>
 
             <div class="col-md-6">
               <label class="form-label">Тип действия</label>
-              <select class="form-select bg-black text-light border-secondary" name="action_type" id="f_action_type">
-                <option value="send">Отправить сообщение</option>
-                <option value="delete">Удалить сообщение</option>
-                <option value="gpt_prompt">Промпт в ChatGPT</option>
-                <option value="gpt_image">Сгенерировать картинку (ChatGPT)</option>
-                <option value="search_image">Найти картинку (по запросу)</option>
-                <option value="vk_music_audio">VK музыка (аудио-вложение)</option>
-              </select>
+              <div class="dropdown w-100">
+                <input type="hidden" name="action_type" id="f_action_type" value="send">
+                <button class="btn btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="f_action_type_btn" data-bs-toggle="dropdown" aria-expanded="false">
+                  Загрузка...
+                </button>
+                <ul class="dropdown-menu w-100" id="f_action_type_menu"></ul>
+              </div>
             </div>
             <div class="col-md-6">
               <label class="form-label">Шанс (1-100)</label>

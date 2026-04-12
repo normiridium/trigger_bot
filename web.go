@@ -105,6 +105,7 @@ func (w *WebAdmin) enumsJSON(rw http.ResponseWriter, r *http.Request) {
 	type enumItem struct {
 		Value string `json:"value"`
 		Label string `json:"label"`
+		Icon  string `json:"icon"`
 	}
 	out := struct {
 		TriggerModes []enumItem `json:"trigger_modes"`
@@ -118,19 +119,91 @@ func (w *WebAdmin) enumsJSON(rw http.ResponseWriter, r *http.Request) {
 		ActionTypes:  make([]enumItem, 0, len(model.ActionTypeValues)),
 	}
 	for _, v := range model.TriggerModeValues {
-		out.TriggerModes = append(out.TriggerModes, enumItem{Value: string(v), Label: v.String()})
+		out.TriggerModes = append(out.TriggerModes, enumItem{Value: string(v), Label: v.String(), Icon: iconForTriggerMode(v)})
 	}
 	for _, v := range model.AdminModeValues {
-		out.AdminModes = append(out.AdminModes, enumItem{Value: string(v), Label: v.String()})
+		out.AdminModes = append(out.AdminModes, enumItem{Value: string(v), Label: v.String(), Icon: iconForAdminMode(v)})
 	}
 	for _, v := range model.MatchTypeValues {
-		out.MatchTypes = append(out.MatchTypes, enumItem{Value: string(v), Label: v.String()})
+		out.MatchTypes = append(out.MatchTypes, enumItem{Value: string(v), Label: v.String(), Icon: iconForMatchType(v)})
 	}
 	for _, v := range model.ActionTypeValues {
-		out.ActionTypes = append(out.ActionTypes, enumItem{Value: string(v), Label: v.String()})
+		out.ActionTypes = append(out.ActionTypes, enumItem{Value: string(v), Label: v.String(), Icon: iconForActionType(v)})
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(out)
+}
+
+func iconForTriggerMode(v model.TriggerMode) string {
+	switch v {
+	case model.TriggerModeAll:
+		return "bi-chat-dots"
+	case model.TriggerModeOnlyReplies:
+		return "bi-reply"
+	case model.TriggerModeOnlyRepliesToBot:
+		return "bi-robot"
+	case model.TriggerModeOnlyRepliesToSelf:
+		return "bi-reply-fill"
+	case model.TriggerModeNeverOnReplies:
+		return "bi-chat"
+	case model.TriggerModeCommandReply:
+		return "bi-terminal"
+	default:
+		return ""
+	}
+}
+
+func iconForAdminMode(v model.AdminMode) string {
+	switch v {
+	case model.AdminModeAnybody:
+		return "bi-people"
+	case model.AdminModeAdmins:
+		return "bi-shield-lock"
+	case model.AdminModeNotAdmin:
+		return "bi-person"
+	default:
+		return ""
+	}
+}
+
+func iconForMatchType(v model.MatchType) string {
+	switch v {
+	case model.MatchTypeIdle:
+		return "bi-clock"
+	case model.MatchTypeFull:
+		return "bi-check2-square"
+	case model.MatchTypePartial:
+		return "bi-intersect"
+	case model.MatchTypeRegex:
+		return "bi-braces"
+	case model.MatchTypeStarts:
+		return "bi-arrow-right"
+	case model.MatchTypeEnds:
+		return "bi-arrow-left"
+	case model.MatchTypeNewMember:
+		return "bi-person-plus"
+	default:
+		return ""
+	}
+}
+
+func iconForActionType(v model.ActionType) string {
+	switch v {
+	case model.ActionTypeSend:
+		return "bi-send"
+	case model.ActionTypeDelete:
+		return "bi-trash"
+	case model.ActionTypeGPTPrompt:
+		return "bi-cpu"
+	case model.ActionTypeGPTImage:
+		return "bi-image"
+	case model.ActionTypeSearchImage:
+		return "bi-search"
+	case model.ActionTypeVKMusic:
+		return "bi-music-note-beamed"
+	default:
+		return ""
+	}
 }
 
 func (w *WebAdmin) getJSON(rw http.ResponseWriter, r *http.Request) {

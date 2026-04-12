@@ -22,6 +22,7 @@ let reorderSaving = false;
 let responseEditorReady = false;
 let responseVariants = [{text: ''}];
 let activeResponseVariant = 0;
+const enumCache = {};
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -59,26 +60,63 @@ async function loadEnums(){
 }
 
 function applyEnumOptions(id, items, fallback){
-  const el = document.getElementById(id);
-  if(!el || !Array.isArray(items) || items.length === 0){
+  const input = document.getElementById(id);
+  const menu = document.getElementById(id + '_menu');
+  const btn = document.getElementById(id + '_btn');
+  if(!input || !menu || !btn || !Array.isArray(items) || items.length === 0){
     return;
   }
-  const prev = String(el.value || fallback || '');
-  el.innerHTML = '';
-  items.forEach(it => {
-    const opt = document.createElement('option');
-    opt.value = String(it && it.value != null ? it.value : '');
-    opt.textContent = String(it && it.label != null ? it.label : opt.value);
-    el.appendChild(opt);
+  const prev = String(input.value || fallback || '');
+  enumCache[id] = items.map(it => ({
+    value: String(it && it.value != null ? it.value : ''),
+    label: String(it && it.label != null ? it.label : ''),
+    icon: String(it && it.icon != null ? it.icon : ''),
+  }));
+  menu.innerHTML = '';
+  enumCache[id].forEach(it => {
+    const li = document.createElement('li');
+    const btnItem = document.createElement('button');
+    btnItem.type = 'button';
+    btnItem.className = 'dropdown-item d-flex align-items-center gap-2';
+    btnItem.dataset.value = it.value;
+    btnItem.dataset.label = it.label;
+    btnItem.dataset.icon = it.icon;
+    if(it.icon){
+      const icon = document.createElement('i');
+      icon.className = `bi ${it.icon}`;
+      btnItem.appendChild(icon);
+    }
+    const span = document.createElement('span');
+    span.textContent = it.label || it.value;
+    btnItem.appendChild(span);
+    btnItem.addEventListener('click', () => setSel(id, it.value));
+    li.appendChild(btnItem);
+    menu.appendChild(li);
   });
-  if(prev){
-    el.value = prev;
-  }
+  input.value = prev || (enumCache[id][0]?.value ?? '');
+  setSel(id, input.value || fallback);
 }
 
 function setSel(id,val){
   const el=document.getElementById(id);
   if(el && val!=null){ el.value=String(val); }
+  const btn = document.getElementById(id + '_btn');
+  if(btn){
+    const info = findEnumInfo(id, String(val ?? ''));
+    const label = info?.label || String(val ?? '');
+    const icon = info?.icon || '';
+    btn.innerHTML = icon
+      ? `<i class=\"bi ${escapeHtml(icon)} me-2\"></i>${escapeHtml(label)}`
+      : escapeHtml(label);
+  }
+}
+
+function findEnumInfo(id, value){
+  const items = enumCache[id];
+  if(!Array.isArray(items)){
+    return null;
+  }
+  return items.find(it => it.value === value) || null;
 }
 
 function escapeHtml(v){
