@@ -565,7 +565,7 @@ func executeGPTPromptTask(task gptPromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
-			out, err := generateChatGPTReply(task.Bot, pickResponseVariantText(task.Trigger.ResponseText), task.Msg, task.RecentContext, task.Trigger.CapturingText)
+	out, err := generateChatGPTReply(task.Bot, pickResponseVariantText(task.Trigger.ResponseText), task.Msg, task.RecentContext, task.Trigger.CapturingText, task.Trigger.MatchText, task.Trigger.CaseSensitive)
 	if err != nil {
 		log.Printf("gpt prompt failed: %v", err)
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
@@ -1677,6 +1677,7 @@ func main() {
 					"{{chat_id}}, {{chat_title}}\n" +
 					"{{reply_text}}\n" +
 					"{{capturing_text}}\n" +
+					"{{capturing_choice}} / {{capturing_option}}\n" +
 					"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
 					"{{reply_display_name}}, {{reply_label}}\n" +
 					"{{reply_sender_tag}}\n\n" +
@@ -1881,7 +1882,7 @@ func main() {
 				ChatID:        msg.Chat.ID,
 			})
 		case "gpt_image":
-			img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
+			img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 			if err != nil {
 				log.Printf("gpt image failed: %v", err)
 				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -1899,7 +1900,7 @@ func main() {
 				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		case "search_image":
-			query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
+			query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 			img, err := searchImageInSerpAPI(query)
 			if err != nil {
 				log.Printf("search image failed: %v", err)
@@ -1922,7 +1923,7 @@ func main() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
 				continue
 			}
-			query := buildVKMusicQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
+			query := buildVKMusicQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 			if query == "" {
 				query = strings.TrimSpace(msg.Text)
 			}
@@ -2013,7 +2014,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText)
+			out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msgForTrigger, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 			if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				deleteTriggerSourceMessage(bot, msg, tr)
@@ -2718,7 +2719,7 @@ func fetchChatAdminStatus(bot *tgbotapi.BotAPI, chatID int64, userID int64) bool
 	return member.Status == "administrator" || member.Status == "creator"
 }
 
-func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message) string {
+func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, capture, matchText string, caseSensitive bool) string {
 	prompt := strings.TrimSpace(promptTemplate)
 	if prompt == "" {
 		prompt = "Ответь коротко и по делу."
@@ -2728,23 +2729,289 @@ func buildPromptFromMessage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tg
 		return prompt
 	}
 
-	replacements := buildMessageTemplateReplacements(bot, msg)
-	for tag, value := range replacements {
-		prompt = strings.ReplaceAll(prompt, tag, value)
-	}
-
 	if strings.Contains(promptTemplate, "{{") {
-		return prompt
+		return renderTemplateWithMessage(bot, prompt, msg, capture, matchText, caseSensitive)
 	}
 
+	replacements := buildMessageTemplateReplacements(bot, msg)
 	return prompt + "\n\nСообщение пользователя:\n" + replacements["{{message}}"]
 }
 
-func applyCapturingTemplate(s, capture string) string {
+var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
+var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
+var templateExprPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
+
+func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) string {
 	if strings.TrimSpace(s) == "" {
 		return s
 	}
-	return strings.ReplaceAll(s, "{{capturing_text}}", strings.TrimSpace(capture))
+	cleanCapture := strings.TrimSpace(capture)
+	choice := deriveCapturingChoice(matchText, cleanCapture, caseSensitive)
+	vars := map[string]string{
+		"capturing_text":   cleanCapture,
+		"capturing_choice": choice,
+		"capturing_option": choice,
+	}
+	out := applyTemplatePipes(s, vars)
+	for key, val := range vars {
+		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
+	}
+	return out
+}
+
+func deriveCapturingChoice(matchText, capture string, caseSensitive bool) string {
+	capture = strings.TrimSpace(capture)
+	if capture == "" || strings.TrimSpace(matchText) == "" {
+		return ""
+	}
+	groups := extractRegexGroups(matchText)
+	for _, g := range groups {
+		if !strings.Contains(g, "|") {
+			continue
+		}
+		g = trimGroupPrefix(g)
+		parts := strings.Split(g, "|")
+		for _, part := range parts {
+			clean := cleanRegexAlt(part)
+			if clean == "" {
+				continue
+			}
+			if containsMatch(clean, capture, caseSensitive) {
+				return clean
+			}
+		}
+	}
+	return ""
+}
+
+func applyTemplatePipes(s string, vars map[string]string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	return templateExprPattern.ReplaceAllStringFunc(s, func(m string) string {
+		expr := strings.TrimSpace(m[2 : len(m)-2])
+		if expr == "" || !strings.Contains(expr, "|") {
+			return m
+		}
+		out, ok := evalTemplatePipe(expr, vars)
+		if !ok {
+			return m
+		}
+		return out
+	})
+}
+
+func evalTemplatePipe(expr string, vars map[string]string) (string, bool) {
+	parts := strings.Split(expr, "|")
+	if len(parts) == 0 {
+		return "", false
+	}
+	base := strings.TrimSpace(parts[0])
+	val, ok := vars[base]
+	if !ok {
+		return "", false
+	}
+	var list []string
+	for _, raw := range parts[1:] {
+		op := strings.TrimSpace(raw)
+		name, argStr := splitPipeOp(op)
+		args := parsePipeArgs(argStr)
+		switch name {
+		case "split":
+			delim := ""
+			if len(args) > 0 {
+				delim = args[0]
+			}
+			if delim == "" {
+				list = []string{val}
+				continue
+			}
+			items := strings.Split(val, delim)
+			for i := range items {
+				items[i] = strings.TrimSpace(items[i])
+			}
+			list = items
+			continue
+		case "index":
+			if len(args) == 0 {
+				return "", true
+			}
+			idx, err := strconv.Atoi(args[0])
+			if err != nil || idx < 0 {
+				return "", true
+			}
+			if list == nil {
+				return "", true
+			}
+			if idx >= len(list) {
+				return "", true
+			}
+			val = list[idx]
+			list = nil
+			continue
+		case "contains":
+			if len(args) == 0 {
+				val = "false"
+				continue
+			}
+			if strings.Contains(val, args[0]) {
+				val = "true"
+			} else {
+				val = "false"
+			}
+			continue
+		case "istrue":
+			if isTruthy(val) {
+				if len(args) > 0 {
+					val = args[0]
+				} else {
+					val = ""
+				}
+			} else {
+				if len(args) > 1 {
+					val = args[1]
+				} else {
+					val = ""
+				}
+			}
+			continue
+		default:
+			continue
+		}
+	}
+	return strings.TrimSpace(val), true
+}
+
+func splitPipeOp(s string) (string, string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	if idx := strings.IndexFunc(s, func(r rune) bool { return r == ' ' || r == '\t' }); idx >= 0 {
+		return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx+1:])
+	}
+	return s, ""
+}
+
+func parsePipeArgs(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	args := make([]string, 0, 2)
+	for len(s) > 0 {
+		s = strings.TrimLeft(s, " \t")
+		if s == "" {
+			break
+		}
+		if s[0] == '"' {
+			end := strings.Index(s[1:], "\"")
+			if end < 0 {
+				args = append(args, s[1:])
+				break
+			}
+			args = append(args, s[1:1+end])
+			s = s[2+end:]
+			continue
+		}
+		next := len(s)
+		for i, r := range s {
+			if r == ' ' || r == '\t' {
+				next = i
+				break
+			}
+		}
+		args = append(args, s[:next])
+		if next >= len(s) {
+			break
+		}
+		s = s[next:]
+	}
+	return args
+}
+
+func isTruthy(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return false
+	}
+	switch v {
+	case "true", "1", "yes", "y", "да", "истина":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsMatch(candidate, capture string, caseSensitive bool) bool {
+	if !caseSensitive {
+		candidate = strings.ToLower(candidate)
+		capture = strings.ToLower(capture)
+	}
+	return strings.Contains(candidate, capture) || strings.Contains(capture, candidate)
+}
+
+func trimGroupPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "?") {
+		if idx := strings.Index(s, ":"); idx >= 0 {
+			s = s[idx+1:]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func extractRegexGroups(pattern string) []string {
+	if pattern == "" {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	var stack []int
+	escaped := false
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '(' {
+			stack = append(stack, i)
+			continue
+		}
+		if ch == ')' && len(stack) > 0 {
+			start := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if start+1 < i {
+				out = append(out, pattern[start+1:i])
+			}
+		}
+	}
+	return out
+}
+
+func cleanRegexAlt(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "(?:", "")
+	s = strings.ReplaceAll(s, "?:", "")
+	s = strings.ReplaceAll(s, "(", "")
+	s = strings.ReplaceAll(s, ")", "")
+	s = strings.ReplaceAll(s, "^", "")
+	s = strings.ReplaceAll(s, "$", "")
+	s = regexSpacePattern.ReplaceAllString(s, " ")
+	s = regexQuantifierPattern.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\\", "")
+	s = strings.ReplaceAll(s, "?", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "+", "")
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.TrimSpace(s)
 }
 
 func pickResponseVariantText(items []ResponseTextItem) string {
@@ -2764,20 +3031,17 @@ func pickResponseVariantText(items []ResponseTextItem) string {
 	return nonEmpty[rand.Intn(len(nonEmpty))]
 }
 
-func renderTemplateWithMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture string) string {
-	out := applyCapturingTemplate(template, capture)
-	if msg == nil {
-		return out
-	}
-	replacements := buildMessageTemplateReplacements(bot, msg)
-	for tag, value := range replacements {
-		out = strings.ReplaceAll(out, tag, value)
+func renderTemplateWithMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture, matchText string, caseSensitive bool) string {
+	vars := buildTemplateVars(bot, msg, capture, matchText, caseSensitive)
+	out := applyTemplatePipes(template, vars)
+	for key, val := range vars {
+		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
 	}
 	return out
 }
 
-func buildResponseFromMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture string) string {
-	return renderTemplateWithMessage(bot, template, msg, capture)
+func buildResponseFromMessage(bot *tgbotapi.BotAPI, template string, msg *tgbotapi.Message, capture, matchText string, caseSensitive bool) string {
+	return renderTemplateWithMessage(bot, template, msg, capture, matchText, caseSensitive)
 }
 
 func isOlenyamTrigger(tr *Trigger) bool {
@@ -2788,8 +3052,28 @@ func isOlenyamTrigger(tr *Trigger) bool {
 	return strings.Contains(title, "оле-ням") || strings.Contains(title, "оленям") || strings.Contains(title, "оле ням")
 }
 
-func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
-	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText))
+func buildTemplateVars(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, capture, matchText string, caseSensitive bool) map[string]string {
+	vars := make(map[string]string, 24)
+	if msg != nil {
+		replacements := buildMessageTemplateReplacements(bot, msg)
+		for tag, value := range replacements {
+			name := strings.TrimSpace(strings.TrimPrefix(tag, "{{"))
+			name = strings.TrimSuffix(name, "}}")
+			if name != "" {
+				vars[name] = value
+			}
+		}
+	}
+	cleanCapture := strings.TrimSpace(capture)
+	choice := deriveCapturingChoice(matchText, cleanCapture, caseSensitive)
+	vars["capturing_text"] = cleanCapture
+	vars["capturing_choice"] = choice
+	vars["capturing_option"] = choice
+	return vars
+}
+
+func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText, matchText string, caseSensitive bool) string {
+	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText, matchText, caseSensitive))
 	if msg == nil {
 		return query
 	}
@@ -2800,8 +3084,8 @@ func buildImageSearchQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string
 	return strings.TrimSpace(query)
 }
 
-func buildVKMusicQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText string) string {
-	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText))
+func buildVKMusicQueryFromMessage(bot *tgbotapi.BotAPI, queryTemplate string, msg *tgbotapi.Message, capturingText, matchText string, caseSensitive bool) string {
+	query := strings.TrimSpace(renderTemplateWithMessage(bot, queryTemplate, msg, capturingText, matchText, caseSensitive))
 	if msg == nil {
 		return query
 	}
@@ -3083,7 +3367,7 @@ func handleTriggerActionForMessage(
 			ChatID:        msg.Chat.ID,
 		})
 	case "gpt_image":
-		img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		img, err := generateChatGPTImage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 		if err != nil {
 			log.Printf("gpt image failed: %v", err)
 			reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
@@ -3098,7 +3382,7 @@ func handleTriggerActionForMessage(
 			deleteTriggerSourceMessage(bot, msg, tr)
 		}
 	case "search_image":
-		query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		query := buildImageSearchQueryFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 		img, err := searchImageInSerpAPI(query)
 		if err != nil {
 			log.Printf("search image failed: %v", err)
@@ -3125,7 +3409,7 @@ func handleTriggerActionForMessage(
 		if tr.Reply || tr.TriggerMode == "command_reply" {
 			replyTo = msg.MessageID
 		}
-		out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText)
+		out := buildResponseFromMessage(bot, pickResponseVariantText(tr.ResponseText), msg, tr.CapturingText, tr.MatchText, tr.CaseSensitive)
 		if ok := sendHTML(bot, msg.Chat.ID, replyTo, out, tr.Preview); ok && idleTracker != nil {
 			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(bot, msg, tr)
@@ -3391,7 +3675,7 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 	return bodyBytes, nil
 }
 
-func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, recentContext string, capturingText string) (string, error) {
+func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, recentContext string, capturingText, matchText string, caseSensitive bool) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return "", errors.New("OPENAI_API_KEY is empty")
@@ -3401,7 +3685,7 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 		model = "gpt-4.1-mini"
 	}
 
-	prompt := buildPromptFromMessage(bot, applyCapturingTemplate(promptTemplate, capturingText), msg)
+	prompt := buildPromptFromMessage(bot, promptTemplate, msg, capturingText, matchText, caseSensitive)
 	if strings.TrimSpace(recentContext) != "" {
 		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
 	}
@@ -3462,7 +3746,7 @@ func generateChatGPTReply(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 	return out, nil
 }
 
-func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, capturingText string) (generatedImage, error) {
+func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbotapi.Message, capturingText, matchText string, caseSensitive bool) (generatedImage, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return generatedImage{}, errors.New("OPENAI_API_KEY is empty")
@@ -3476,7 +3760,7 @@ func generateChatGPTImage(bot *tgbotapi.BotAPI, promptTemplate string, msg *tgbo
 		size = "1024x1024"
 	}
 
-	prompt := buildPromptFromMessage(bot, applyCapturingTemplate(promptTemplate, capturingText), msg)
+	prompt := buildPromptFromMessage(bot, promptTemplate, msg, capturingText, matchText, caseSensitive)
 	if debugGPTLogEnabled {
 		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, clipText(prompt, 1400))
 	}
