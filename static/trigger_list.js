@@ -160,7 +160,7 @@ function renderTemplatesTable(){
           <button type="button" class="btn btn-outline-info btn-sm" data-template-edit="${escapeHtml(id)}">
             <i class="bi bi-pencil"></i>
           </button>
-          <button type="button" class="btn btn-outline-danger btn-sm" data-template-delete="${escapeHtml(id)}">
+          <button type="button" class="btn btn-outline-danger btn-sm" data-template-delete="${escapeHtml(id)}" onclick="deleteTemplate('${escapeHtml(id)}')">
             <i class="bi bi-trash"></i>
           </button>
         </div>

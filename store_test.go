@@ -228,6 +228,118 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 	}
 }
 
+func TestExportImportBundleRoundTrip(t *testing.T) {
+	s1 := openTestStore(t)
+	err := s1.SaveTrigger(Trigger{
+		Title:        "hello",
+		Enabled:      true,
+		TriggerMode:  "all",
+		AdminMode:    "anybody",
+		MatchText:    "hi",
+		MatchType:    "partial",
+		ActionType:   "send",
+		ResponseText: []ResponseTextItem{{Text: "hi there"}},
+		Reply:        true,
+		Preview:      false,
+		Chance:       100,
+	})
+	if err != nil {
+		t.Fatalf("save trigger: %v", err)
+	}
+	if err := s1.SaveTemplate(ResponseTemplate{
+		Key:   "t_base",
+		Title: "Base",
+		Text:  "hello {{message}}",
+	}); err != nil {
+		t.Fatalf("save template: %v", err)
+	}
+
+	raw, err := s1.ExportJSON()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	s2 := openTestStore(t)
+	added, err := s2.ImportJSON(raw)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if added != 2 {
+		t.Fatalf("expected 2 imported items, got %d", added)
+	}
+
+	triggers, err := s2.ListTriggers()
+	if err != nil {
+		t.Fatalf("list triggers: %v", err)
+	}
+	if len(triggers) != 1 {
+		t.Fatalf("expected 1 trigger, got %d", len(triggers))
+	}
+	if triggers[0].Title != "hello" {
+		t.Fatalf("unexpected trigger title: %q", triggers[0].Title)
+	}
+
+	templates, err := s2.ListTemplates()
+	if err != nil {
+		t.Fatalf("list templates: %v", err)
+	}
+	if len(templates) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(templates))
+	}
+	if templates[0].Key != "t_base" || templates[0].Text != "hello {{message}}" {
+		t.Fatalf("unexpected template: %+v", templates[0])
+	}
+}
+
+func TestImportBundleUpdatesTemplateByKey(t *testing.T) {
+	s1 := openTestStore(t)
+	if err := s1.SaveTemplate(ResponseTemplate{
+		Key:   "t_update",
+		Title: "Old",
+		Text:  "old",
+	}); err != nil {
+		t.Fatalf("save template: %v", err)
+	}
+	raw, err := s1.ExportJSON()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	s2 := openTestStore(t)
+	if err := s2.SaveTemplate(ResponseTemplate{
+		Key:   "t_update",
+		Title: "Legacy",
+		Text:  "legacy",
+	}); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	added, err := s2.ImportJSON(raw)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if added != 1 {
+		t.Fatalf("expected 1 imported item, got %d", added)
+	}
+	tpl, err := s2.getTemplateByKey("t_update")
+	if err != nil {
+		t.Fatalf("get template: %v", err)
+	}
+	if tpl == nil {
+		t.Fatalf("template missing after import")
+	}
+	if tpl.Title != "Old" || tpl.Text != "old" {
+		t.Fatalf("template not updated: %+v", tpl)
+	}
+}
+
+func TestImportBundleRejectsLegacyArray(t *testing.T) {
+	s := openTestStore(t)
+	raw := []byte(`[{"title":"legacy","match_text":"x"}]`)
+	if _, err := s.ImportJSON(raw); err == nil {
+		t.Fatalf("expected legacy array import to fail")
+	}
+}
+
 func TestSaveTriggerAssignsUID(t *testing.T) {
 	s := openTestStore(t)
 

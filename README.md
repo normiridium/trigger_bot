@@ -11,7 +11,8 @@
   - список, создание, редактирование
   - включить/выключить
   - удалить
-  - импорт/экспорт JSON
+  - импорт/экспорт JSON (триггеры + шаблоны в одном файле)
+  - вкладка шаблонов ответов (MongoDB)
 - Тип действия `search_image`: найти картинку через SerpAPI (Google Images) и отправить в чат
 - Ограничение по чатам через whitelist (`ALLOWED_CHAT_IDS`)
 - Учёт админов чата с автопрогревом:
@@ -22,10 +23,34 @@
 
 ## Формат импорта/экспорта
 
-Поддержан формат элементов вида:
+JSON-файл со связкой триггеров и шаблонов:
 
 ```json
-{"t":"Список СДВГ","cos":[{"mty":"0","tt":"Список СДВГ","ty":"0"}],"acs":[{"ty":"se","t":"...","sr":"1"}]}
+{
+  "triggers": [
+    {
+      "uid": "some-uid",
+      "priority": 100,
+      "regex_bench_us": 0,
+      "title": "Список СДВГ",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "СДВГ",
+      "match_type": "partial",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [{"text": "..." }],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "chance": 100
+    }
+  ],
+  "templates": [
+    {"key": "olenyam_base", "title": "Оле-ням: база", "text": "..."}
+  ]
+}
 ```
 
 ## System dependencies
@@ -55,7 +80,7 @@ set -a; source .env; set +a
 ./trigger_admin_bot
 ```
 
-Админка по умолчанию: `http://<host>:8090/admin/triggers`
+Админка по умолчанию: `http://<host>:8090/trigger_bot`
 
 Если задан `ADMIN_TOKEN`, передавай его в URL: `?token=...`
 
@@ -67,13 +92,25 @@ set -a; source .env; set +a
 - `ADMIN_CACHE_TTL_SEC` — TTL кэша админов чата (по умолчанию `120` сек)
   - при первом сообщении в чате бот автопрогревает список админов
   - повторный прогрев — после истечения TTL или по `!reload_admins`
+- `USER_INDEX_MAX` — максимум пользователей в индексе чата (по умолчанию `800`)
+- `CHAT_RECENT_MAX_MESSAGES` — сколько последних сообщений хранить для контекста (по умолчанию `8`)
+- `CHAT_RECENT_MAX_AGE_SEC` — TTL контекста сообщений (по умолчанию `1800` сек)
+- `OLENYAM_CONTEXT_MESSAGES` — сколько последних сообщений передавать в GPT-контекст (по умолчанию `4`)
 - `DEBUG_TRIGGER_LOG` и `DEBUG_GPT_LOG` — подробные debug-логи (по умолчанию `false`)
 - `CHAT_ERROR_LOG` — отправка ошибок в чат (`true/false`)
 - `WEB_TEMPLATE_DIR` — каталог HTML-шаблонов админки (по умолчанию `./templates`)
+- `WEB_STATIC_DIR` — каталог статики админки (по умолчанию `./static`)
 - `SERPAPI_KEY` — обязательный ключ для `search_image`
 - `SERPAPI_ENGINE` — движок SerpAPI (по умолчанию `google_images`)
 - `GPT_PROMPT_DEBOUNCE_SEC` — debounce для `gpt_prompt` (если `>0`, бот отвечает только на последнее сообщение в окне времени, per chat)
 - `match_type=idle` — специальный тип условия: в поле `match_text` указывается время простоя в минутах, после которого бот автоответит на первое следующее сообщение (для `gpt_prompt`)
+- `VK_AUDIO_INTERACTIVE` — интерактивный режим выбора трека (по умолчанию `true`)
+- `VK_AUDIO_MAX_MB` — лимит размера аудио (по умолчанию `60`)
+- `VK_AUDIO_FFMPEG_TIMEOUT_SEC` — таймаут ffmpeg (по умолчанию `120`)
+- `VK_AUDIO_RETRY_COUNT` — число ретраев загрузки аудио (по умолчанию `3`)
+- `VK_AUDIO_DL_THREADS` — количество потоков скачивания (по умолчанию `1`)
+- `VK_AUDIO_WORKERS` — количество воркеров очереди аудио (по умолчанию `1`)
+- `VK_AUDIO_QUEUE` — размер очереди аудио (по умолчанию `8`)
 
 ## UI-правки без ребилда
 
