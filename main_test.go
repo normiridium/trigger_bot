@@ -77,6 +77,84 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 	}
 }
 
+func TestBuildVKMusicQueryFromMessage(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+		Text: "найди песню",
+	}
+
+	gotDefault := buildVKMusicQueryFromMessage(templateContext{
+		Msg: msg,
+	}, "")
+	if gotDefault != "найди песню" {
+		t.Fatalf("default query mismatch: %q", gotDefault)
+	}
+
+	got := buildVKMusicQueryFromMessage(templateContext{
+		Msg:           msg,
+		CapturingText: "летов",
+	}, "играй {{capturing_text}}")
+	if got != "играй летов" {
+		t.Fatalf("query mismatch: %q", got)
+	}
+}
+
+func TestBuildPromptFromMessageTemplateAndFallback(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+		Text: "привет",
+	}
+	ctx := templateContext{Msg: msg}
+	withTemplate := buildPromptFromMessage(ctx, "Скажи привет {{user_first_name}}")
+	if withTemplate != "Скажи привет Аня" {
+		t.Fatalf("template prompt mismatch: %q", withTemplate)
+	}
+	noTemplate := buildPromptFromMessage(ctx, "Ответь коротко")
+	if !strings.Contains(noTemplate, "Сообщение пользователя") || !strings.Contains(noTemplate, "привет") {
+		t.Fatalf("prompt fallback missing message: %q", noTemplate)
+	}
+}
+
+func TestBuildResponseFromMessageCapturingChoice(t *testing.T) {
+	pattern := `^\\s*((?:уби|обня|поцелова))ть\\s*$`
+	ctx := templateContext{
+		Msg:           &tgbotapi.Message{Text: "обнять"},
+		CapturingText: "обня",
+		MatchText:     pattern,
+	}
+	got := buildResponseFromMessage(ctx, "{{capturing_choice}}")
+	if got != "обня" {
+		t.Fatalf("capturing choice mismatch: %q", got)
+	}
+}
+
+func TestResolveGenderVariant(t *testing.T) {
+	variants := genderVariants{
+		Male:    "он",
+		Female:  "она",
+		Neuter:  "оно",
+		Plural:  "они",
+		Unknown: "кто-то",
+	}
+	if got := resolveGenderVariant("he", variants); got != "он" {
+		t.Fatalf("male mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("she", variants); got != "она" {
+		t.Fatalf("female mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("it", variants); got != "оно" {
+		t.Fatalf("neuter mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("они", variants); got != "они" {
+		t.Fatalf("plural mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("unknown", variants); got != "кто-то" {
+		t.Fatalf("unknown mismatch: %q", got)
+	}
+}
+
 func TestParseIdleMinutes(t *testing.T) {
 	if v, ok := parseIdleMinutes("120"); !ok || v != 120 {
 		t.Fatalf("expected parsed 120, got v=%d ok=%v", v, ok)
