@@ -102,6 +102,29 @@ tr.dragging-row {
 .settings-panel {
   background: #2b3035;
 }
+.settings-row {
+  gap: .75rem;
+}
+.settings-label {
+  min-width: 240px;
+  font-size: .9rem;
+  color: #d1d5db;
+}
+.settings-input {
+  max-width: 420px;
+}
+@media (max-width: 768px) {
+  .settings-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .settings-label {
+    min-width: 0;
+  }
+  .settings-input {
+    max-width: 100%;
+  }
+}
 .cm-wrap .cm-editor {
   border: 1px solid #4b5563;
   border-radius: .5rem;

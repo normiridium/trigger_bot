@@ -74,6 +74,18 @@
           </div>
         </form>
       </div>
+      <div class="p-3 rounded border border-secondary-subtle settings-panel mt-3">
+        <h6 class="mb-2">Настройки из .env</h6>
+        <div class="text-secondary small mb-3">Пароли и ключи доступа здесь не отображаются. Изменения вступают в силу после перезапуска сервиса.</div>
+        <form id="settings_form" class="d-flex flex-column gap-2">
+          <div id="settings_fields" class="d-flex flex-column gap-2"></div>
+          <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-success btn-sm" type="submit" id="settings_save_btn"><i class="bi bi-floppy"></i> Сохранить настройки</button>
+            <button class="btn btn-danger btn-sm" type="button" id="settings_restart_btn"><i class="bi bi-arrow-clockwise"></i> Перезапуск сервиса</button>
+            <span class="text-secondary small" id="settings_save_hint"></span>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 </div>
@@ -248,6 +260,21 @@
         </div>
         <div class="mb-3">
           <label class="form-label">Текст шаблона</label>
+          <div class="mini-toolbar d-flex flex-wrap gap-1 align-items-center mb-2" data-target="template">
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;b&gt;" data-after="&lt;/b&gt;" title="Жирный"><i class="bi bi-type-bold"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;i&gt;" data-after="&lt;/i&gt;" title="Курсив"><i class="bi bi-type-italic"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;u&gt;" data-after="&lt;/u&gt;" title="Подчеркивание"><i class="bi bi-type-underline"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;s&gt;" data-after="&lt;/s&gt;" title="Зачеркнутый"><i class="bi bi-type-strikethrough"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;code&gt;" data-after="&lt;/code&gt;" title="Код"><i class="bi bi-code-square"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;pre&gt;" data-after="&lt;/pre&gt;" title="Блок кода"><i class="bi bi-braces"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;blockquote&gt;" data-after="&lt;/blockquote&gt;" title="Цитата"><i class="bi bi-blockquote-left"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="link" title="Ссылка"><i class="bi bi-link-45deg"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="wrap" data-before="&lt;tg-spoiler&gt;" data-after="&lt;/tg-spoiler&gt;" title="Спойлер"><i class="bi bi-eye-slash"></i></button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-action="emoji" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
+            <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="tpl_template_tag_picker">
+              <option value="">Вставить тег сообщения…</option>
+            </select>
+          </div>
           <textarea class="form-control bg-black text-light border-secondary" rows="8" name="text" id="tpl_text" placeholder="Текст ответа..."></textarea>
         </div>
       </div>

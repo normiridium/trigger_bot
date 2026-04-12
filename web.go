@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,6 +23,13 @@ import (
 type WebAdmin struct {
 	store      *Store
 	adminToken string
+}
+
+type settingField struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Type        string `json:"type"` // bool|string|int
+	Description string `json:"description,omitempty"`
 }
 
 func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
@@ -67,6 +76,9 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_get", w.withAuth(w.templateGetJSON))
 	mux.HandleFunc("/trigger_bot/template_save", w.withAuth(w.templateSavePost))
 	mux.HandleFunc("/trigger_bot/template_delete", w.withAuth(w.templateDeletePost))
+	mux.HandleFunc("/trigger_bot/settings_get", w.withAuth(w.settingsGet))
+	mux.HandleFunc("/trigger_bot/settings_save", w.withAuth(w.settingsSave))
+	mux.HandleFunc("/trigger_bot/restart", w.withAuth(w.restartPost))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
 	mux.HandleFunc("/trigger_bot/toggle", w.withAuth(w.togglePost))
@@ -295,7 +307,7 @@ func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
 			rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 			rw.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(rw).Encode(struct {
-				OK       bool  `json:"ok"`
+				OK       bool   `json:"ok"`
 				Message  string `json:"message"`
 				Triggers []ref  `json:"triggers"`
 			}{
@@ -314,6 +326,195 @@ func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(rw).Encode(struct {
 		OK bool `json:"ok"`
 	}{OK: true})
+}
+
+func (w *WebAdmin) settingsGet(rw http.ResponseWriter, r *http.Request) {
+	fields := settingsSchema()
+	values := loadEnvSettings(fields)
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		Fields []settingField    `json:"fields"`
+		Values map[string]string `json:"values"`
+	}{
+		Fields: fields,
+		Values: values,
+	})
+}
+
+func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
+	var payload map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(rw, "bad json", http.StatusBadRequest)
+		return
+	}
+	fields := settingsSchema()
+	allowed := make(map[string]settingField, len(fields))
+	for _, f := range fields {
+		allowed[f.Key] = f
+	}
+	updates := make(map[string]string, len(payload))
+	for k, v := range payload {
+		f, ok := allowed[k]
+		if !ok {
+			continue
+		}
+		val := strings.TrimSpace(v)
+		if f.Type == "bool" {
+			val = normalizeBoolString(val)
+		}
+		updates[k] = val
+	}
+	if err := writeEnvFile("./.env", updates); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK              bool   `json:"ok"`
+		RestartRequired bool   `json:"restart_required"`
+		Message         string `json:"message"`
+	}{
+		OK:              true,
+		RestartRequired: true,
+		Message:         "Настройки сохранены. Требуется перезапуск сервиса.",
+	})
+}
+
+func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cmd := exec.Command("sudo", "systemctl", "restart", "trigger-admin-bot.service")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		http.Error(rw, fmt.Sprintf("restart failed: %v: %s", err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
+func settingsSchema() []settingField {
+	return []settingField{
+		{Key: "ADMIN_ENABLED", Label: "Админка включена", Type: "bool", Description: "true"},
+		{Key: "ADMIN_BIND", Label: "Адрес админки", Type: "string", Description: ":8090"},
+		{Key: "ALLOWED_CHAT_IDS", Label: "Разрешённые чаты (через запятую)", Type: "string", Description: ""},
+		{Key: "ADMIN_CACHE_TTL_SEC", Label: "TTL кэша админов (сек)", Type: "int", Description: "120"},
+		{Key: "USER_INDEX_MAX", Label: "Лимит пользователей в индексе", Type: "int", Description: "800"},
+		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
+		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
+		{Key: "OLENYAM_CONTEXT_MESSAGES", Label: "Контекст для GPT (сообщений)", Type: "int", Description: "4"},
+		{Key: "DEBUG_TRIGGER_LOG", Label: "Лог триггеров (debug)", Type: "bool", Description: "false"},
+		{Key: "DEBUG_GPT_LOG", Label: "Лог GPT (debug)", Type: "bool", Description: "false"},
+		{Key: "CHAT_ERROR_LOG", Label: "Отправка ошибок в чат", Type: "bool", Description: "true"},
+		{Key: "WEB_TEMPLATE_DIR", Label: "Путь к HTML-шаблонам", Type: "string", Description: "./templates"},
+		{Key: "WEB_STATIC_DIR", Label: "Путь к статике", Type: "string", Description: "./static"},
+		{Key: "GPT_PROMPT_DEBOUNCE_SEC", Label: "Debounce GPT (сек)", Type: "int", Description: "10"},
+		{Key: "SERPAPI_ENGINE", Label: "SerpAPI engine", Type: "string", Description: "google_images"},
+		{Key: "OPENAI_MODEL", Label: "OpenAI model (chat)", Type: "string", Description: "gpt-4.1-mini"},
+		{Key: "OPENAI_IMAGE_MODEL", Label: "OpenAI model (image)", Type: "string", Description: "gpt-image-1"},
+		{Key: "OPENAI_IMAGE_SIZE", Label: "OpenAI image size", Type: "string", Description: "1024x1024"},
+		{Key: "VK_AUDIO_INTERACTIVE", Label: "VK: интерактивный выбор", Type: "bool", Description: "true"},
+		{Key: "VK_AUDIO_MAX_MB", Label: "VK: лимит аудио (MB)", Type: "int", Description: "60"},
+		{Key: "VK_AUDIO_FFMPEG_TIMEOUT_SEC", Label: "VK: таймаут ffmpeg (сек)", Type: "int", Description: "120"},
+		{Key: "VK_AUDIO_RETRY_COUNT", Label: "VK: ретраи", Type: "int", Description: "3"},
+		{Key: "VK_AUDIO_DL_THREADS", Label: "VK: потоки загрузки", Type: "int", Description: "1"},
+		{Key: "VK_AUDIO_WORKERS", Label: "VK: воркеры очереди", Type: "int", Description: "1"},
+		{Key: "VK_AUDIO_QUEUE", Label: "VK: размер очереди", Type: "int", Description: "8"},
+	}
+}
+
+func loadEnvSettings(fields []settingField) map[string]string {
+	out := make(map[string]string, len(fields))
+	fileVals := readEnvFile("./.env")
+	for _, f := range fields {
+		if v, ok := fileVals[f.Key]; ok {
+			out[f.Key] = v
+			continue
+		}
+		if v := strings.TrimSpace(os.Getenv(f.Key)); v != "" {
+			out[f.Key] = v
+			continue
+		}
+		if f.Description != "" {
+			out[f.Key] = f.Description
+		}
+	}
+	return out
+}
+
+func readEnvFile(path string) map[string]string {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]string{}
+	}
+	lines := strings.Split(string(body), "\n")
+	out := make(map[string]string, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			out[key] = strings.Trim(val, `"'`)
+		}
+	}
+	return out
+}
+
+func writeEnvFile(path string, updates map[string]string) error {
+	body, _ := os.ReadFile(path)
+	lines := strings.Split(string(body), "\n")
+	seen := make(map[string]bool, len(updates))
+	out := make([]string, 0, len(lines)+len(updates))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") || !strings.Contains(line, "=") {
+			out = append(out, line)
+			continue
+		}
+		idx := strings.Index(line, "=")
+		key := strings.TrimSpace(line[:idx])
+		if val, ok := updates[key]; ok {
+			out = append(out, key+"="+formatEnvValue(val))
+			seen[key] = true
+		} else {
+			out = append(out, line)
+		}
+	}
+	for key, val := range updates {
+		if seen[key] {
+			continue
+		}
+		out = append(out, key+"="+formatEnvValue(val))
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(out, "\n")), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func formatEnvValue(v string) string {
+	if v == "" {
+		return ""
+	}
+	if strings.ContainsAny(v, " #\t") {
+		return strconv.Quote(v)
+	}
+	return v
+}
+
+func normalizeBoolString(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "1" || v == "true" || v == "yes" || v == "on" {
+		return "true"
+	}
+	return "false"
 }
 
 func iconForTriggerMode(v model.TriggerMode) string {
@@ -587,8 +788,8 @@ func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 	log.Printf("web import added=%d took=%s", added, time.Since(started))
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(struct {
-		OK    bool  `json:"ok"`
-		Added int   `json:"added"`
+		OK    bool `json:"ok"`
+		Added int  `json:"added"`
 	}{OK: true, Added: added})
 }
 
