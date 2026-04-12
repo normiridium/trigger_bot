@@ -23,7 +23,15 @@ func TestEngineSelectSkipsModeMismatchAndPicksNext(t *testing.T) {
 		{ID: 11, Title: "politics", Enabled: true, TriggerMode: "all", MatchText: `дмитрий\s*гудков`, MatchType: "regex", ActionType: "gpt_prompt", Chance: 100},
 	}
 
-	got := engine.Select(bot, msg, msg.Text, triggers, func() bool { return false })
+	got := engine.Select(triggerSelectInput{
+		Bot:      bot,
+		Msg:      msg,
+		Text:     msg.Text,
+		Triggers: triggers,
+		IsAdminFn: func() bool {
+			return false
+		},
+	})
 	if got == nil || got.ID != 11 {
 		t.Fatalf("expected trigger 11, got %#v", got)
 	}
@@ -48,7 +56,15 @@ func TestEngineSelectReplyToBotMode(t *testing.T) {
 	triggers := []Trigger{
 		{ID: 10, Title: "reply only", Enabled: true, TriggerMode: "only_replies_to_combot", MatchText: "", MatchType: "partial", ActionType: "gpt_prompt", Chance: 100},
 	}
-	got := engine.Select(bot, msg, msg.Text, triggers, func() bool { return false })
+	got := engine.Select(triggerSelectInput{
+		Bot:      bot,
+		Msg:      msg,
+		Text:     msg.Text,
+		Triggers: triggers,
+		IsAdminFn: func() bool {
+			return false
+		},
+	})
 	if got == nil || got.ID != 10 {
 		t.Fatalf("expected trigger 10 in reply-to-bot mode, got %#v", got)
 	}
@@ -70,9 +86,16 @@ func TestEngineSelectAdminMode(t *testing.T) {
 		{ID: 2, Title: "fallback", Enabled: true, TriggerMode: "all", MatchText: "", MatchType: "partial", AdminMode: "anybody", Chance: 100},
 	}
 
-	got := engine.Select(bot, msg, msg.Text, triggers, func() bool { return false })
+	got := engine.Select(triggerSelectInput{
+		Bot:      bot,
+		Msg:      msg,
+		Text:     msg.Text,
+		Triggers: triggers,
+		IsAdminFn: func() bool {
+			return false
+		},
+	})
 	if got == nil || got.ID != 2 {
 		t.Fatalf("expected fallback trigger for non-admin, got %#v", got)
 	}
 }
-

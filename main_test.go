@@ -61,12 +61,17 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 		Text: "покажи кота",
 	}
 
-	gotDefault := buildImageSearchQueryFromMessage(nil, "", msg, "", "", false)
+	gotDefault := buildImageSearchQueryFromMessage(templateContext{
+		Msg: msg,
+	}, "")
 	if gotDefault != "покажи кота" {
 		t.Fatalf("default query mismatch: %q", gotDefault)
 	}
 
-	got := buildImageSearchQueryFromMessage(nil, "доброе фото {{capturing_text}} для {{user_first_name}}", msg, "кац", "", false)
+	got := buildImageSearchQueryFromMessage(templateContext{
+		Msg:           msg,
+		CapturingText: "кац",
+	}, "доброе фото {{capturing_text}} для {{user_first_name}}")
 	if got != "доброе фото кац для Аня" {
 		t.Fatalf("query mismatch: %q", got)
 	}
