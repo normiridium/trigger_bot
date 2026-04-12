@@ -1,17 +1,9 @@
 package main
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestStoreListTriggersCachedInvalidatesOnSave(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	if err := s.SaveTrigger(Trigger{
 		Title:        "one",

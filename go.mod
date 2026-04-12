@@ -6,7 +6,6 @@ require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/normiridium/vk-music-bot-api v0.0.0-20260408213305-334de31d2621
 	go.mongodb.org/mongo-driver v1.17.6
-	modernc.org/sqlite v1.48.0
 )
 
 require (

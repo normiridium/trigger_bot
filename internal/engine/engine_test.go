@@ -1,9 +1,11 @@
-package main
+package engine
 
 import (
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"trigger-admin-bot/internal/model"
 )
 
 func TestEngineSelectSkipsModeMismatchAndPicksNext(t *testing.T) {
@@ -18,12 +20,12 @@ func TestEngineSelectSkipsModeMismatchAndPicksNext(t *testing.T) {
 	}
 	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
 
-	triggers := []Trigger{
+	triggers := []model.Trigger{
 		{ID: 10, Title: "reply only", Enabled: true, TriggerMode: "only_replies_to_combot", MatchText: "", MatchType: "partial", ActionType: "gpt_prompt", Chance: 100},
 		{ID: 11, Title: "politics", Enabled: true, TriggerMode: "all", MatchText: `дмитрий\s*гудков`, MatchType: "regex", ActionType: "gpt_prompt", Chance: 100},
 	}
 
-	got := engine.Select(triggerSelectInput{
+	got := engine.Select(SelectInput{
 		Bot:      bot,
 		Msg:      msg,
 		Text:     msg.Text,
@@ -53,10 +55,10 @@ func TestEngineSelectReplyToBotMode(t *testing.T) {
 		Text:           "тест",
 		ReplyToMessage: replyFromBot,
 	}
-	triggers := []Trigger{
+	triggers := []model.Trigger{
 		{ID: 10, Title: "reply only", Enabled: true, TriggerMode: "only_replies_to_combot", MatchText: "", MatchType: "partial", ActionType: "gpt_prompt", Chance: 100},
 	}
-	got := engine.Select(triggerSelectInput{
+	got := engine.Select(SelectInput{
 		Bot:      bot,
 		Msg:      msg,
 		Text:     msg.Text,
@@ -81,12 +83,12 @@ func TestEngineSelectAdminMode(t *testing.T) {
 		Text:      "тест",
 	}
 	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
-	triggers := []Trigger{
+	triggers := []model.Trigger{
 		{ID: 1, Title: "admins only", Enabled: true, TriggerMode: "all", MatchText: "", MatchType: "partial", AdminMode: "admins", Chance: 100},
 		{ID: 2, Title: "fallback", Enabled: true, TriggerMode: "all", MatchText: "", MatchType: "partial", AdminMode: "anybody", Chance: 100},
 	}
 
-	got := engine.Select(triggerSelectInput{
+	got := engine.Select(SelectInput{
 		Bot:      bot,
 		Msg:      msg,
 		Text:     msg.Text,

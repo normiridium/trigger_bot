@@ -3,9 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	crand "crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,154 +27,16 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
+
+	"trigger-admin-bot/internal/engine"
+	"trigger-admin-bot/internal/gpt"
+	"trigger-admin-bot/internal/trigger"
+	"trigger-admin-bot/internal/vk"
 )
 
 var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
-
-type vkPickRequest struct {
-	Token        string
-	TrackID      string
-	Artist       string
-	Title        string
-	ChatID       int64
-	ReplyTo      int
-	SourceMsgID  int
-	UserID       int64
-	DeleteSource bool
-	ExpiresAt    time.Time
-}
-
-var vkPickMu sync.Mutex
-var vkPickRequests = make(map[string]vkPickRequest)
-
-func newVKPickToken() string {
-	var b [6]byte
-	_, _ = crand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
-
-func putVKPick(req vkPickRequest) string {
-	vkPickMu.Lock()
-	defer vkPickMu.Unlock()
-	now := time.Now()
-	for k, v := range vkPickRequests {
-		if v.ExpiresAt.Before(now) {
-			delete(vkPickRequests, k)
-		}
-	}
-	token := newVKPickToken()
-	req.Token = token
-	if req.ExpiresAt.IsZero() {
-		req.ExpiresAt = now.Add(5 * time.Minute)
-	}
-	vkPickRequests[token] = req
-	return token
-}
-
-func takeVKPick(token string, userID int64) (vkPickRequest, bool, string) {
-	vkPickMu.Lock()
-	defer vkPickMu.Unlock()
-	req, ok := vkPickRequests[token]
-	if !ok {
-		return vkPickRequest{}, false, "выбор устарел"
-	}
-	if time.Now().After(req.ExpiresAt) {
-		delete(vkPickRequests, token)
-		return vkPickRequest{}, false, "выбор устарел"
-	}
-	if req.UserID != 0 && userID != 0 && req.UserID != userID {
-		return vkPickRequest{}, false, "этот выбор доступен только автору запроса"
-	}
-	delete(vkPickRequests, token)
-	return req, true, ""
-}
-
-func buildVKPickKeyboard(msg *tgbotapi.Message, tr *Trigger, tracks []vkmusic.Track) tgbotapi.InlineKeyboardMarkup {
-	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(tracks))
-	for _, track := range tracks {
-		label := strings.TrimSpace(track.Title)
-		artist := strings.TrimSpace(track.Artist)
-		if artist != "" {
-			label = artist + " — " + label
-		}
-		if track.Duration > 0 {
-			label = fmt.Sprintf("%s (%s)", label, formatDuration(float64(track.Duration)))
-		}
-		if label == "" {
-			label = track.ID
-		}
-		token := putVKPick(vkPickRequest{
-			TrackID:      track.ID,
-			Artist:       artist,
-			Title:        strings.TrimSpace(track.Title),
-			ChatID:       msg.Chat.ID,
-			ReplyTo:      msg.MessageID,
-			SourceMsgID:  msg.MessageID,
-			UserID:       msg.From.ID,
-			DeleteSource: tr != nil && tr.DeleteSource,
-		})
-		btn := tgbotapi.NewInlineKeyboardButtonData(label, "vkpick:"+token)
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
-	}
-	return tgbotapi.NewInlineKeyboardMarkup(rows...)
-}
-
-func handleVKPickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, vkMusicClient *vkmusic.Client) bool {
-	if cb == nil || bot == nil {
-		return false
-	}
-	if !strings.HasPrefix(cb.Data, "vkpick:") {
-		return false
-	}
-	token := strings.TrimPrefix(cb.Data, "vkpick:")
-	req, ok, msg := takeVKPick(token, cb.From.ID)
-	if !ok {
-		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
-		return true
-	}
-	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Скачиваю..."))
-
-	var pickMsgID int
-	if cb.Message != nil {
-		pickMsgID = cb.Message.MessageID
-		edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "🎵 Выбрано: "+strings.TrimSpace(req.Artist+" — "+req.Title))
-		_, _ = bot.Request(edit)
-	}
-
-	if vkMusicClient == nil {
-		reportChatFailure(bot, req.ChatID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
-		return true
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	song, err := vkMusicClient.GetAudioURL(ctx, req.TrackID)
-	cancel()
-	if err != nil || song == nil || strings.TrimSpace(song.URL) == "" {
-		if err == nil {
-			err = errors.New("empty audio URL")
-		}
-		reportChatFailure(bot, req.ChatID, "ошибка отправки аудио VK", err)
-		return true
-	}
-	if err := sendAudioFromURL(sendContext{Bot: bot, ChatID: req.ChatID}, song.URL, song.Artist, song.Title); err != nil {
-		reportChatFailure(bot, req.ChatID, "ошибка отправки аудио VK", err)
-		return true
-	}
-	if pickMsgID > 0 {
-		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-			ChatID:    req.ChatID,
-			MessageID: pickMsgID,
-		})
-	}
-	if req.DeleteSource && req.SourceMsgID > 0 {
-		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-			ChatID:    req.ChatID,
-			MessageID: req.SourceMsgID,
-		})
-	}
-	return true
-}
 
 type chatAllowList struct {
 	enabled bool
@@ -282,22 +142,22 @@ type rawMessageWithEmoji struct {
 }
 
 type rawUpdateWithEmoji struct {
-	Message    *rawMessageWithEmoji  `json:"message"`
-	ChatMember *rawChatMemberUpdated `json:"chat_member"`
+	Message      *rawMessageWithEmoji  `json:"message"`
+	ChatMember   *rawChatMemberUpdated `json:"chat_member"`
 	MyChatMember *rawChatMemberUpdated `json:"my_chat_member"`
 }
 
 type updateWithEmojiMeta struct {
-	Update     tgbotapi.Update
-	RawMessage *rawMessageWithEmoji
-	RawChatMember *rawChatMemberUpdated
+	Update          tgbotapi.Update
+	RawMessage      *rawMessageWithEmoji
+	RawChatMember   *rawChatMemberUpdated
 	RawMyChatMember *rawChatMemberUpdated
 }
 
 type rawChatMemberUpdated struct {
-	Chat *rawChat `json:"chat"`
-	From *rawUser `json:"from"`
-	Date int64    `json:"date"`
+	Chat          *rawChat       `json:"chat"`
+	From          *rawUser       `json:"from"`
+	Date          int64          `json:"date"`
 	OldChatMember *rawChatMember `json:"old_chat_member"`
 	NewChatMember *rawChatMember `json:"new_chat_member"`
 }
@@ -399,170 +259,7 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 	return strings.Join(lines, "\n")
 }
 
-type gptPromptTask struct {
-	Bot           *tgbotapi.BotAPI
-	Trigger       Trigger
-	Msg           *tgbotapi.Message
-	RecentContext string
-	IdleTracker   *chatIdleTracker
-	ChatID        int64
-}
-
-type gptPromptDebouncer struct {
-	mu      sync.Mutex
-	delay   time.Duration
-	pending map[int64]*gptPromptDebounceEntry
-}
-
-type gptPromptDebounceEntry struct {
-	timer      *time.Timer
-	task       gptPromptTask
-	hasPending bool
-	lastSentAt time.Time
-}
-
-type chatIdleState struct {
-	firstSeen    time.Time
-	lastActivity time.Time
-}
-
-type chatIdleTracker struct {
-	mu    sync.RWMutex
-	chats map[int64]chatIdleState
-}
-
-func newChatIdleTracker() *chatIdleTracker {
-	return &chatIdleTracker{
-		chats: make(map[int64]chatIdleState),
-	}
-}
-
-func (t *chatIdleTracker) Seen(chatID int64, now time.Time) {
-	if t == nil || chatID == 0 {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	st := t.chats[chatID]
-	if st.firstSeen.IsZero() {
-		st.firstSeen = now
-	}
-	t.chats[chatID] = st
-}
-
-func (t *chatIdleTracker) MarkActivity(chatID int64, now time.Time) {
-	if t == nil || chatID == 0 {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	st := t.chats[chatID]
-	if st.firstSeen.IsZero() {
-		st.firstSeen = now
-	}
-	st.lastActivity = now
-	t.chats[chatID] = st
-}
-
-func (t *chatIdleTracker) ShouldAutoReply(chatID int64, idleAfter time.Duration, now time.Time) bool {
-	if t == nil || chatID == 0 || idleAfter <= 0 {
-		return false
-	}
-	t.mu.RLock()
-	st, ok := t.chats[chatID]
-	t.mu.RUnlock()
-	if !ok {
-		return false
-	}
-	base := st.lastActivity
-	if base.IsZero() {
-		base = st.firstSeen
-	}
-	if base.IsZero() {
-		return false
-	}
-	return now.Sub(base) >= idleAfter
-}
-
-func newGPTPromptDebouncer(delay time.Duration) *gptPromptDebouncer {
-	if delay <= 0 {
-		return nil
-	}
-	return &gptPromptDebouncer{
-		delay:   delay,
-		pending: make(map[int64]*gptPromptDebounceEntry),
-	}
-}
-
-func (d *gptPromptDebouncer) Schedule(chatID int64, task gptPromptTask) {
-	if d == nil || chatID == 0 {
-		runGPTPromptTask(task)
-		return
-	}
-
-	executeNow := false
-	now := time.Now()
-	d.mu.Lock()
-	ent, ok := d.pending[chatID]
-	if !ok {
-		ent = &gptPromptDebounceEntry{}
-		d.pending[chatID] = ent
-	}
-
-	// Leading edge: if quiet window already passed, answer immediately.
-	if ent.lastSentAt.IsZero() || now.Sub(ent.lastSentAt) >= d.delay {
-		ent.task = task
-		ent.hasPending = false
-		ent.lastSentAt = now
-		if ent.timer != nil {
-			ent.timer.Stop()
-			ent.timer = nil
-		}
-		executeNow = true
-	} else {
-		// Trailing edge inside active window: keep only latest task.
-		ent.task = task
-		ent.hasPending = true
-		remaining := d.delay - now.Sub(ent.lastSentAt)
-		if remaining < 10*time.Millisecond {
-			remaining = 10 * time.Millisecond
-		}
-		if ent.timer != nil {
-			ent.timer.Stop()
-		}
-		ent.timer = time.AfterFunc(remaining, func() {
-			d.fire(chatID)
-		})
-	}
-	d.mu.Unlock()
-
-	if executeNow {
-		runGPTPromptTask(task)
-	}
-}
-
-func (d *gptPromptDebouncer) fire(chatID int64) {
-	d.mu.Lock()
-	ent := d.pending[chatID]
-	if ent == nil {
-		d.mu.Unlock()
-		return
-	}
-	ent.timer = nil
-	if !ent.hasPending {
-		d.mu.Unlock()
-		return
-	}
-	task := ent.task
-	ent.hasPending = false
-	ent.lastSentAt = time.Now()
-	d.mu.Unlock()
-	runGPTPromptTask(task)
-}
-
-var runGPTPromptTask = executeGPTPromptTask
-
-func executeGPTPromptTask(task gptPromptTask) {
+func executeGPTPromptTask(task gpt.PromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
@@ -618,8 +315,8 @@ func executeGPTPromptTask(task gptPromptTask) {
 		sent = true
 	}
 	if sent {
-		if task.IdleTracker != nil {
-			task.IdleTracker.MarkActivity(task.ChatID, time.Now())
+		if task.IdleMarkActivity != nil {
+			task.IdleMarkActivity(task.ChatID, time.Now())
 		}
 		deleteTriggerSourceMessage(task.Bot, task.Msg, &task.Trigger)
 	}
@@ -759,63 +456,6 @@ func markdownToTelegramHTMLLite(s string) string {
 		return `<tg-spoiler>` + html.EscapeString(sub[1]) + `</tg-spoiler>`
 	})
 	return s
-}
-
-func parseIdleMinutes(raw string) (int, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil || v <= 0 {
-		return 0, false
-	}
-	return v, true
-}
-
-func selectIdleAutoReplyTrigger(
-	bot *tgbotapi.BotAPI,
-	msg *tgbotapi.Message,
-	items []Trigger,
-	isAdminFn func() bool,
-) (*Trigger, time.Duration) {
-	if msg == nil || len(items) == 0 {
-		return nil, 0
-	}
-	adminChecked := false
-	isAdmin := false
-
-	for i := range items {
-		it := items[i]
-		if !it.Enabled || it.ActionType != "gpt_prompt" || normalizeMatchType(it.MatchType) != "idle" {
-			continue
-		}
-		minutes, ok := parseIdleMinutes(it.MatchText)
-		if !ok {
-			continue
-		}
-		if !triggerModeMatches(bot, &it, msg) {
-			continue
-		}
-		if it.AdminMode != "anybody" {
-			if !adminChecked {
-				isAdmin = isAdminFn()
-				adminChecked = true
-			}
-			if it.AdminMode == "admins" && !isAdmin {
-				continue
-			}
-			if it.AdminMode == "not_admins" && isAdmin {
-				continue
-			}
-		}
-		if it.Chance < 100 && rand.Intn(100) >= it.Chance {
-			continue
-		}
-		cp := it
-		return &cp, time.Duration(minutes) * time.Minute
-	}
-	return nil, 0
 }
 
 func newAdminStatusCache(ttl time.Duration, store *Store) *adminStatusCache {
@@ -1553,18 +1193,16 @@ func main() {
 
 	dbTarget := strings.TrimSpace(os.Getenv("MONGO_URI"))
 	if dbTarget == "" {
-		dbTarget = envOr("BOT_DB_FILE", "./trigger_bot.db")
+		log.Printf("MONGO_URI is required (SQLite support removed); exiting")
+		return
 	}
 	store, err := OpenStore(dbTarget)
 	if err != nil {
-		log.Fatalf("open db failed: %v", err)
+		log.Printf("open db failed: %v", err)
+		return
 	}
 	defer store.Close()
-	if isMongoURI(dbTarget) {
-		log.Printf("storage backend: mongodb")
-	} else {
-		log.Printf("storage backend: sqlite")
-	}
+	log.Printf("storage backend: mongodb")
 
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -1602,9 +1240,9 @@ func main() {
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
 	readonly := newReadonlyManager()
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
-	idleTracker := newChatIdleTracker()
+	idleTracker := trigger.NewIdleTracker()
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
-	gptDebouncer := newGPTPromptDebouncer(time.Duration(gptDebounceSec) * time.Second)
+	gptDebouncer := gpt.NewDebouncer(time.Duration(gptDebounceSec)*time.Second, executeGPTPromptTask)
 	if gptDebounceSec > 0 {
 		log.Printf("gpt prompt debounce enabled: %ds (leading+trailing per chat)", gptDebounceSec)
 	}
@@ -1625,7 +1263,7 @@ func main() {
 	u.Timeout = 60
 	u.AllowedUpdates = []string{"message", "callback_query", "chat_member"}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
-	engine := NewTriggerEngine()
+	triggerEngine := engine.NewTriggerEngine()
 	handlerDeps := triggerHandlerDeps{
 		triggerActionDeps: triggerActionDeps{
 			Bot:          bot,
@@ -1634,7 +1272,7 @@ func main() {
 			VKMusic:      vkMusicClient,
 		},
 		Allowed:    allowedChats,
-		Engine:     engine,
+		Engine:     triggerEngine,
 		Store:      store,
 		AdminCache: adminCache,
 		ChatRecent: chatRecent,
@@ -1648,7 +1286,17 @@ func main() {
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
-			if handleVKPickCallback(bot, update.Update.CallbackQuery, vkMusicClient) {
+			if vk.HandlePickCallback(
+				bot,
+				update.Update.CallbackQuery,
+				vkMusicClient,
+				func(chatID int64, title string, err error) {
+					reportChatFailure(bot, chatID, title, err)
+				},
+				func(chatID int64, url, artist, title string) error {
+					return sendAudioFromURL(sendContext{Bot: bot, ChatID: chatID}, url, artist, title)
+				},
+			) {
 				continue
 			}
 		}
@@ -1820,7 +1468,7 @@ func main() {
 		if debugTriggerLogEnabled {
 			log.Printf("triggers loaded (cached): %d", len(items))
 		}
-		tr := engine.Select(triggerSelectInput{
+		tr := triggerEngine.Select(engine.SelectInput{
 			Bot:      bot,
 			Msg:      msg,
 			Text:     text,
@@ -1834,7 +1482,7 @@ func main() {
 				log.Printf("no trigger matched for msg=%d", msg.MessageID)
 			}
 			if idleTracker != nil {
-				autoTr, idleAfter := selectIdleAutoReplyTrigger(bot, msg, items, func() bool {
+				autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, items, func() bool {
 					return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 				})
 				if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
@@ -1842,13 +1490,17 @@ func main() {
 					if isOlenyamTrigger(autoTr) {
 						ctx = recentBefore
 					}
-					task := gptPromptTask{
+					task := gpt.PromptTask{
 						Bot:           bot,
 						Trigger:       *autoTr,
 						Msg:           msg,
 						RecentContext: ctx,
-						IdleTracker:   idleTracker,
-						ChatID:        msg.Chat.ID,
+						IdleMarkActivity: func(chatID int64, now time.Time) {
+							if idleTracker != nil {
+								idleTracker.MarkActivity(chatID, now)
+							}
+						},
+						ChatID: msg.Chat.ID,
 					}
 					if gptDebouncer != nil {
 						gptDebouncer.Schedule(msg.Chat.ID, task)
@@ -1890,26 +1542,34 @@ func main() {
 				ctx = recentBefore
 			}
 			if gptDebouncer != nil {
-				gptDebouncer.Schedule(msg.Chat.ID, gptPromptTask{
+				gptDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
 					Bot:           bot,
 					Trigger:       *tr,
 					Msg:           msgForTrigger,
 					RecentContext: ctx,
-					IdleTracker:   idleTracker,
-					ChatID:        msg.Chat.ID,
+					IdleMarkActivity: func(chatID int64, now time.Time) {
+						if idleTracker != nil {
+							idleTracker.MarkActivity(chatID, now)
+						}
+					},
+					ChatID: msg.Chat.ID,
 				})
 				if debugTriggerLogEnabled {
 					log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
 				}
 				continue
 			}
-			executeGPTPromptTask(gptPromptTask{
+			executeGPTPromptTask(gpt.PromptTask{
 				Bot:           bot,
 				Trigger:       *tr,
 				Msg:           msgForTrigger,
 				RecentContext: ctx,
-				IdleTracker:   idleTracker,
-				ChatID:        msg.Chat.ID,
+				IdleMarkActivity: func(chatID int64, now time.Time) {
+					if idleTracker != nil {
+						idleTracker.MarkActivity(chatID, now)
+					}
+				},
+				ChatID: msg.Chat.ID,
 			})
 		case "gpt_image":
 			img, err := generateChatGPTImage(tmplCtx, pickResponseVariantText(tr.ResponseText))
@@ -1986,7 +1646,7 @@ func main() {
 					tracks = tracks[:maxResults]
 				}
 				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
-				m.ReplyMarkup = buildVKPickKeyboard(msg, tr, tracks)
+				m.ReplyMarkup = vk.BuildPickKeyboard(msg, tr != nil && tr.DeleteSource, tracks)
 				if replyTo > 0 {
 					m.ReplyToMessageID = replyTo
 					m.AllowSendingWithoutReply = true
@@ -2056,35 +1716,6 @@ func main() {
 				log.Printf("send static/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		}
-	}
-}
-
-func triggerModeMatches(bot *tgbotapi.BotAPI, tr *Trigger, msg *tgbotapi.Message) bool {
-	if tr == nil || msg == nil {
-		return false
-	}
-	mode := tr.TriggerMode
-	switch mode {
-	case "only_replies":
-		return msg.ReplyToMessage != nil
-	case "only_replies_to_any_bot":
-		return msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil && msg.ReplyToMessage.From.IsBot
-	case "only_replies_to_combot":
-		// Legacy storage key kept for compatibility, actual behavior:
-		// trigger only on replies to this bot's own messages.
-		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
-			return false
-		}
-		if bot == nil {
-			return false
-		}
-		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
-	case "never_on_replies":
-		return msg.ReplyToMessage == nil
-	case "command_reply":
-		return msg.IsCommand()
-	default:
-		return true
 	}
 }
 
@@ -2258,7 +1889,7 @@ func buildAudioCaption(path string) string {
 		return ""
 	}
 	sizeMB := float64(stats.SizeBytes) / 1_000_000.0
-	dur := formatDuration(stats.DurationSec)
+	dur := vk.FormatDuration(stats.DurationSec)
 	bitrateKbps := stats.BitrateKbps
 	if bitrateKbps <= 0 && stats.DurationSec > 0 {
 		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
@@ -2305,20 +1936,6 @@ func probeAudioStats(path string) (audioStats, bool) {
 		}
 	}
 	return stats, true
-}
-
-func formatDuration(sec float64) string {
-	if sec <= 0 {
-		return ""
-	}
-	total := int64(sec + 0.5)
-	h := total / 3600
-	m := (total % 3600) / 60
-	s := total % 60
-	if h > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
-	}
-	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
 func downloadAudioToTempFile(audioURL string) (string, error) {
@@ -3484,15 +3101,15 @@ func extractNewMemberDisplayNames(msg *tgbotapi.Message) []string {
 
 type triggerActionDeps struct {
 	Bot          *tgbotapi.BotAPI
-	IdleTracker  *chatIdleTracker
-	GPTDebouncer *gptPromptDebouncer
+	IdleTracker  *trigger.IdleTracker
+	GPTDebouncer *gpt.Debouncer
 	VKMusic      *vkmusic.Client
 }
 
 type triggerHandlerDeps struct {
 	triggerActionDeps
 	Allowed    chatAllowList
-	Engine     *TriggerEngine
+	Engine     *engine.TriggerEngine
 	Store      *Store
 	AdminCache *adminStatusCache
 	ChatRecent *chatRecentStore
@@ -3538,7 +3155,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 		log.Printf("list triggers failed: %v", err)
 		return
 	}
-	tr := deps.Engine.SelectNewMember(triggerSelectNewMemberInput{
+	tr := deps.Engine.SelectNewMember(engine.SelectNewMemberInput{
 		Bot:      deps.Bot,
 		Msg:      msg,
 		Triggers: items,
@@ -3589,26 +3206,34 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			ctx = recentBefore
 		}
 		if deps.GPTDebouncer != nil {
-			deps.GPTDebouncer.Schedule(msg.Chat.ID, gptPromptTask{
+			deps.GPTDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
 				Bot:           deps.Bot,
 				Trigger:       *tr,
 				Msg:           msg,
 				RecentContext: ctx,
-				IdleTracker:   deps.IdleTracker,
-				ChatID:        msg.Chat.ID,
+				IdleMarkActivity: func(chatID int64, now time.Time) {
+					if deps.IdleTracker != nil {
+						deps.IdleTracker.MarkActivity(chatID, now)
+					}
+				},
+				ChatID: msg.Chat.ID,
 			})
 			if debugTriggerLogEnabled {
 				log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
 			}
 			return
 		}
-		executeGPTPromptTask(gptPromptTask{
+		executeGPTPromptTask(gpt.PromptTask{
 			Bot:           deps.Bot,
 			Trigger:       *tr,
 			Msg:           msg,
 			RecentContext: ctx,
-			IdleTracker:   deps.IdleTracker,
-			ChatID:        msg.Chat.ID,
+			IdleMarkActivity: func(chatID int64, now time.Time) {
+				if deps.IdleTracker != nil {
+					deps.IdleTracker.MarkActivity(chatID, now)
+				}
+			},
+			ChatID: msg.Chat.ID,
 		})
 	case "gpt_image":
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr)
@@ -3712,9 +3337,9 @@ func getUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig)
 			return nil, err
 		}
 		out = append(out, updateWithEmojiMeta{
-			Update:     upd,
-			RawMessage: rawUpd.Message,
-			RawChatMember: rawUpd.ChatMember,
+			Update:          upd,
+			RawMessage:      rawUpd.Message,
+			RawChatMember:   rawUpd.ChatMember,
 			RawMyChatMember: rawUpd.MyChatMember,
 		})
 	}

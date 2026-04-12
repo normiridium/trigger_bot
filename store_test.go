@@ -1,11 +1,54 @@
 package main
 
 import (
-	"path/filepath"
+	"context"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
-	_ "modernc.org/sqlite"
+	"trigger-admin-bot/internal/match"
 )
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	uri := strings.TrimSpace(os.Getenv("MONGO_URI"))
+	if uri == "" {
+		t.Skip("MONGO_URI not set; mongo-only tests skipped")
+	}
+	dbName := fmt.Sprintf("trigger_admin_bot_test_%d", time.Now().UnixNano())
+	testURI := withMongoTestDB(uri, dbName)
+	s, err := OpenStore(testURI)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if s.mg != nil && s.mg.db != nil {
+			_ = s.mg.db.Drop(context.Background())
+		}
+		_ = s.Close()
+	})
+	return s
+}
+
+func withMongoTestDB(uri string, dbName string) string {
+	parts := strings.SplitN(uri, "?", 2)
+	base := parts[0]
+	query := ""
+	if len(parts) == 2 {
+		query = "?" + parts[1]
+	}
+	schemeIdx := strings.Index(base, "://")
+	lastSlash := strings.LastIndex(base, "/")
+	if lastSlash == -1 || (schemeIdx >= 0 && lastSlash <= schemeIdx+2) {
+		return base + "/" + dbName + query
+	}
+	if lastSlash == len(base)-1 {
+		return base + dbName + query
+	}
+	return base[:lastSlash+1] + dbName + query
+}
 
 func TestTriggerMatchesBasic(t *testing.T) {
 	tests := []struct {
@@ -65,7 +108,7 @@ func TestTriggerMatchesBasic(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := TriggerMatches(tc.tr, tc.in)
+		got := match.TriggerMatches(tc.tr, tc.in)
 		if got != tc.want {
 			t.Fatalf("%s: got=%v want=%v", tc.name, got, tc.want)
 		}
@@ -74,7 +117,7 @@ func TestTriggerMatchesBasic(t *testing.T) {
 
 func TestTriggerMatchesRegexInvalid(t *testing.T) {
 	tr := Trigger{MatchText: "([", MatchType: "regex", CaseSensitive: false}
-	if TriggerMatches(tr, "abc") {
+	if match.TriggerMatches(tr, "abc") {
 		t.Fatalf("invalid regex must not match")
 	}
 }
@@ -85,7 +128,7 @@ func TestTriggerMatchCaptureRegex(t *testing.T) {
 		CaseSensitive: false,
 		MatchText:     `(^|[^\p{L}\p{N}_])((?:навальн(?:ый|ого|ому|ым|ом|ая|ой|ую|ые|ых|ыми)?|шульман(?:а|у|ом|е)?|кац(?:а|у|ем|е)?))(?:$|[^\p{L}\p{N}_])`,
 	}
-	ok, capture := TriggerMatchCapture(tr, "в чате обсуждают навального сегодня")
+	ok, capture := match.TriggerMatchCapture(tr, "в чате обсуждают навального сегодня")
 	if !ok {
 		t.Fatalf("expected regex match")
 	}
@@ -94,22 +137,25 @@ func TestTriggerMatchCaptureRegex(t *testing.T) {
 	}
 }
 
-func TestPickBestCapturePrefersLongestNonEmptyGroup(t *testing.T) {
-	got := pickBestCapture([]string{"  Кац  ", "", "Ка", "Кац"})
-	if got != "Кац" {
-		t.Fatalf("unexpected best capture: %q", got)
+func TestTriggerMatchCapturePrefersLongestNonEmptyGroup(t *testing.T) {
+	tr := Trigger{
+		MatchType:     "regex",
+		CaseSensitive: true,
+		MatchText:     `(.+)(.+)`,
+	}
+	ok, capture := match.TriggerMatchCapture(tr, "Кац")
+	if !ok {
+		t.Fatalf("expected regex match")
+	}
+	if capture != "Ка" {
+		t.Fatalf("unexpected capture: %q", capture)
 	}
 }
 
 func TestSaveTriggerInvalidRegexDisablesAndMarksError(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "regex_invalid.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
-	err = s.SaveTrigger(Trigger{
+	err := s.SaveTrigger(Trigger{
 		Title:        "bad regex",
 		Enabled:      true,
 		TriggerMode:  "all",
@@ -142,14 +188,9 @@ func TestSaveTriggerInvalidRegexDisablesAndMarksError(t *testing.T) {
 }
 
 func TestSaveTriggerValidRegexClearsError(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "regex_valid.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
-	err = s.SaveTrigger(Trigger{
+	err := s.SaveTrigger(Trigger{
 		Title:        "regex fixed",
 		Enabled:      true,
 		TriggerMode:  "all",
@@ -188,12 +229,7 @@ func TestSaveTriggerValidRegexClearsError(t *testing.T) {
 }
 
 func TestSaveTriggerAssignsUID(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "uid_assign.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	if err := s.SaveTrigger(Trigger{
 		Title:        "uid auto",
@@ -223,12 +259,7 @@ func TestSaveTriggerAssignsUID(t *testing.T) {
 }
 
 func TestSaveTriggerPreservesResponseTextVerbatim(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "response_verbatim.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	want := "\n  первая строка\nвторая строка  \n"
 	if err := s.SaveTrigger(Trigger{
@@ -259,12 +290,7 @@ func TestSaveTriggerPreservesResponseTextVerbatim(t *testing.T) {
 }
 
 func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "uid_import.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	const uid = "11111111-2222-4333-8444-555555555555"
 	if err := s.SaveTrigger(Trigger{
@@ -327,12 +353,7 @@ func TestImportJSONUpsertsByUIDAndToleratesMissingFields(t *testing.T) {
 }
 
 func TestImportJSONLegacyFormatNotSupported(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "legacy_import.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	legacy := `[{"t":"legacy","cos":[{"tt":"x","ty":"1"}],"acs":[{"ty":"se","t":"ok","sr":"1"}]}]`
 	if _, err := s.ImportJSON([]byte(legacy)); err == nil {
@@ -341,12 +362,7 @@ func TestImportJSONLegacyFormatNotSupported(t *testing.T) {
 }
 
 func TestImportJSONColumnFormatUsesDefaults(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "import_defaults.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	raw := `[{"title":"minimal import row"}]`
 	n, err := s.ImportJSON([]byte(raw))
@@ -386,12 +402,7 @@ func TestImportJSONColumnFormatUsesDefaults(t *testing.T) {
 }
 
 func TestImportJSONMixedFormatImportsOnlyNewRows(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "import_mixed.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	raw := `[
 	  {"title":"new row","match_text":"abc","match_type":"partial","action_type":"send","response_text":"ok"},
@@ -414,12 +425,7 @@ func TestImportJSONMixedFormatImportsOnlyNewRows(t *testing.T) {
 }
 
 func TestReorderTriggersByIDsChangesPriorityOrder(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "reorder.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	save := func(title string) int64 {
 		if err := s.SaveTrigger(Trigger{
@@ -487,7 +493,7 @@ func TestTriggerMatchCaptureRegexHonorsCaseFlagWithoutInlinePrefix(t *testing.T)
 		CaseSensitive: false,
 		MatchText:     "(?i)кац",
 	}
-	ok, capture := TriggerMatchCapture(tr, "МАКСИМ КАЦ в чате")
+	ok, capture := match.TriggerMatchCapture(tr, "МАКСИМ КАЦ в чате")
 	if !ok {
 		t.Fatalf("expected regex match with case-insensitive flag off")
 	}
@@ -497,12 +503,7 @@ func TestTriggerMatchCaptureRegexHonorsCaseFlagWithoutInlinePrefix(t *testing.T)
 }
 
 func TestSaveTriggerRegexCaseSensitiveStripsInlineFlagAndStaysCaseSensitive(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "regex_case_sensitive.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	if err := s.SaveTrigger(Trigger{
 		Title:         "case strict",
@@ -530,18 +531,13 @@ func TestSaveTriggerRegexCaseSensitiveStripsInlineFlagAndStaysCaseSensitive(t *t
 	if items[0].MatchText != "кац" {
 		t.Fatalf("inline case flag should be stripped, got %q", items[0].MatchText)
 	}
-	if ok, _ := TriggerMatchCapture(items[0], "КАЦ"); ok {
+	if ok, _ := match.TriggerMatchCapture(items[0], "КАЦ"); ok {
 		t.Fatalf("case-sensitive regex should not match upper-case text")
 	}
 }
 
 func TestChatAdminCacheCRUD(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "chat_admin_cache.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	chatID := int64(-100123)
 	userID := int64(42)
@@ -582,12 +578,7 @@ func TestChatAdminCacheCRUD(t *testing.T) {
 }
 
 func TestChatAdminSyncCRUD(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "chat_admin_sync.db")
-	s, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer s.Close()
+	s := openTestStore(t)
 
 	chatID := int64(-100987)
 	if err := s.UpsertChatAdminSync(chatID, 11111, 5); err != nil {

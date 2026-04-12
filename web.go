@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"trigger-admin-bot/internal/match"
 )
 
 type WebAdmin struct {
@@ -121,21 +123,21 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	var t Trigger
 	if isJSON {
 		var payload struct {
-			ID            int64               `json:"id"`
-			UID           string              `json:"uid"`
-			Title         string              `json:"title"`
-			Enabled       bool                `json:"enabled"`
-			TriggerMode   string              `json:"trigger_mode"`
-			AdminMode     string              `json:"admin_mode"`
-			MatchText     string              `json:"match_text"`
-			MatchType     string              `json:"match_type"`
-			CaseSensitive bool                `json:"case_sensitive"`
-			ActionType    string              `json:"action_type"`
-			ResponseText  []ResponseTextItem  `json:"response_text"`
-			Reply         bool                `json:"reply"`
-			Preview       bool                `json:"preview"`
-			DeleteSource  bool                `json:"delete_source"`
-			Chance        int                 `json:"chance"`
+			ID            int64              `json:"id"`
+			UID           string             `json:"uid"`
+			Title         string             `json:"title"`
+			Enabled       bool               `json:"enabled"`
+			TriggerMode   string             `json:"trigger_mode"`
+			AdminMode     string             `json:"admin_mode"`
+			MatchText     string             `json:"match_text"`
+			MatchType     string             `json:"match_type"`
+			CaseSensitive bool               `json:"case_sensitive"`
+			ActionType    string             `json:"action_type"`
+			ResponseText  []ResponseTextItem `json:"response_text"`
+			Reply         bool               `json:"reply"`
+			Preview       bool               `json:"preview"`
+			DeleteSource  bool               `json:"delete_source"`
+			Chance        int                `json:"chance"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
@@ -384,7 +386,7 @@ func (w *WebAdmin) renderTemplate(name string, data interface{}) ([]byte, error)
 			return "bi-eye-slash-fill"
 		},
 		"regexBenchText": func(t Trigger) string {
-			if normalizeMatchType(t.MatchType) != "regex" || t.RegexBenchUS <= 0 {
+			if match.NormalizeMatchType(t.MatchType) != "regex" || t.RegexBenchUS <= 0 {
 				return "—"
 			}
 			return fmt.Sprintf("%.2f ms", float64(t.RegexBenchUS)/1000.0)
