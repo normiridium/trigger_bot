@@ -681,6 +681,32 @@ func (s *Store) DeleteTemplate(id int64) error {
 	return s.mg.deleteTemplate(id)
 }
 
+func (s *Store) findTemplateUsageByKey(key string) ([]Trigger, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+	items, err := s.ListTriggers()
+	if err != nil {
+		return nil, err
+	}
+	re := regexp.MustCompile(`\\{\\{\\s*template\\s+\"([^\"]+)\"\\s*\\}\\}`)
+	out := make([]Trigger, 0, 4)
+	for _, tr := range items {
+		for _, rt := range tr.ResponseText {
+			matches := re.FindAllStringSubmatch(rt.Text, -1)
+			for _, m := range matches {
+				if len(m) > 1 && m[1] == key {
+					out = append(out, tr)
+					goto nextTrigger
+				}
+			}
+		}
+	nextTrigger:
+	}
+	return out, nil
+}
+
 func newUUID4() (string, error) {
 	var b [16]byte
 	if _, err := crand.Read(b[:]); err != nil {
