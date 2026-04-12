@@ -11,25 +11,25 @@ import (
 	"trigger-admin-bot/internal/model"
 )
 
-func NormalizeMatchType(v string) string {
+func NormalizeMatchType(v string) model.MatchType {
 	v = strings.TrimSpace(strings.ToLower(v))
 	switch v {
 	case "full", "equals", "exact":
-		return "full"
+		return model.MatchTypeFull
 	case "partial", "contains":
-		return "partial"
+		return model.MatchTypePartial
 	case "regex", "regexp":
-		return "regex"
+		return model.MatchTypeRegex
 	case "starts", "prefix", "startswith":
-		return "starts"
+		return model.MatchTypeStarts
 	case "ends", "suffix", "endswith":
-		return "ends"
+		return model.MatchTypeEnds
 	case "idle":
-		return "idle"
+		return model.MatchTypeIdle
 	case "new_member", "new-member":
-		return "new_member"
+		return model.MatchTypeNewMember
 	default:
-		return v
+		return model.MatchType(v)
 	}
 }
 
@@ -41,7 +41,7 @@ func TriggerMatches(t model.Trigger, incoming string) bool {
 func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 	needle := strings.TrimSpace(t.MatchText)
 	hay := strings.TrimSpace(incoming)
-	if NormalizeMatchType(t.MatchType) == "new_member" {
+	if NormalizeMatchType(string(t.MatchType)) == "new_member" {
 		return false, ""
 	}
 	if hay == "" {
@@ -52,7 +52,7 @@ func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 	if needle == "" {
 		return true, ""
 	}
-	switch NormalizeMatchType(t.MatchType) {
+	switch NormalizeMatchType(string(t.MatchType)) {
 	case "idle":
 		// Idle mode is not a text matcher: it is evaluated separately in runtime loop.
 		return false, ""

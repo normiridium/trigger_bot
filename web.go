@@ -148,12 +148,12 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 			UID:           strings.TrimSpace(payload.UID),
 			Title:         payload.Title,
 			Enabled:       payload.Enabled,
-			TriggerMode:   payload.TriggerMode,
-			AdminMode:     payload.AdminMode,
+			TriggerMode:   normalizeTriggerMode(payload.TriggerMode),
+			AdminMode:     normalizeAdminMode(payload.AdminMode),
 			MatchText:     payload.MatchText,
-			MatchType:     payload.MatchType,
+			MatchType:     match.NormalizeMatchType(payload.MatchType),
 			CaseSensitive: payload.CaseSensitive,
-			ActionType:    payload.ActionType,
+			ActionType:    normalizeActionType(payload.ActionType),
 			ResponseText:  payload.ResponseText,
 			Reply:         payload.Reply,
 			Preview:       payload.Preview,
@@ -198,12 +198,12 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 			UID:           strings.TrimSpace(r.FormValue("uid")),
 			Title:         r.FormValue("title"),
 			Enabled:       enabled,
-			TriggerMode:   r.FormValue("trigger_mode"),
-			AdminMode:     r.FormValue("admin_mode"),
+			TriggerMode:   normalizeTriggerMode(r.FormValue("trigger_mode")),
+			AdminMode:     normalizeAdminMode(r.FormValue("admin_mode")),
 			MatchText:     r.FormValue("match_text"),
-			MatchType:     r.FormValue("match_type"),
+			MatchType:     match.NormalizeMatchType(r.FormValue("match_type")),
 			CaseSensitive: r.FormValue("case_sensitive") == "1",
-			ActionType:    r.FormValue("action_type"),
+			ActionType:    normalizeActionType(r.FormValue("action_type")),
 			ResponseText:  responseItems,
 			Reply:         reply,
 			Preview:       r.FormValue("preview") == "1",
@@ -386,7 +386,7 @@ func (w *WebAdmin) renderTemplate(name string, data interface{}) ([]byte, error)
 			return "bi-eye-slash-fill"
 		},
 		"regexBenchText": func(t Trigger) string {
-			if match.NormalizeMatchType(t.MatchType) != "regex" || t.RegexBenchUS <= 0 {
+			if match.NormalizeMatchType(string(t.MatchType)) != "regex" || t.RegexBenchUS <= 0 {
 				return "—"
 			}
 			return fmt.Sprintf("%.2f ms", float64(t.RegexBenchUS)/1000.0)

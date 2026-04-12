@@ -84,7 +84,7 @@ func SelectIdleAutoReplyTrigger(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, ite
 	}
 	for i := range items {
 		it := items[i]
-		if !it.Enabled || it.ActionType != "gpt_prompt" || match.NormalizeMatchType(it.MatchType) != "idle" {
+		if !it.Enabled || it.ActionType != "gpt_prompt" || match.NormalizeMatchType(string(it.MatchType)) != "idle" {
 			continue
 		}
 		idleAfter := parseIdleDuration(it.MatchText)
