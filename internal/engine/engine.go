@@ -46,7 +46,7 @@ func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 		if !cand.Enabled {
 			continue
 		}
-		if match.NormalizeMatchType(cand.MatchType) == "new_member" {
+		if match.NormalizeMatchType(string(cand.MatchType)) == "new_member" {
 			continue
 		}
 		matched, capture := match.TriggerMatchCapture(cand, input.Text)
@@ -89,7 +89,7 @@ func (e *TriggerEngine) SelectNewMember(input SelectNewMemberInput) *model.Trigg
 		if !cand.Enabled {
 			continue
 		}
-		if match.NormalizeMatchType(cand.MatchType) != "new_member" {
+		if match.NormalizeMatchType(string(cand.MatchType)) != "new_member" {
 			continue
 		}
 		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {

@@ -117,48 +117,48 @@ func sanitizeChance(v int) int {
 	return v
 }
 
-func normalizeTriggerMode(v string) string {
+func normalizeTriggerMode(v string) TriggerMode {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "only_replies":
-		return "only_replies"
+		return TriggerModeOnlyReplies
 	case "only_replies_to_any_bot":
-		return "only_replies_to_any_bot"
+		return TriggerModeOnlyRepliesToBot
 	case "only_replies_to_combot":
-		return "only_replies_to_combot"
+		return TriggerModeOnlyRepliesToSelf
 	case "never_on_replies":
-		return "never_on_replies"
+		return TriggerModeNeverOnReplies
 	case "command_reply":
-		return "command_reply"
+		return TriggerModeCommandReply
 	default:
-		return "all"
+		return TriggerModeAll
 	}
 }
 
-func normalizeAdminMode(v string) string {
+func normalizeAdminMode(v string) AdminMode {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "admins":
-		return "admins"
+		return AdminModeAdmins
 	case "not_admins":
-		return "not_admins"
+		return AdminModeNotAdmin
 	default:
-		return "anybody"
+		return AdminModeAnybody
 	}
 }
 
-func normalizeActionType(v string) string {
+func normalizeActionType(v string) ActionType {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "delete":
-		return "delete"
+		return ActionTypeDelete
 	case "gpt_prompt":
-		return "gpt_prompt"
+		return ActionTypeGPTPrompt
 	case "gpt_image":
-		return "gpt_image"
+		return ActionTypeGPTImage
 	case "search_image":
-		return "search_image"
+		return ActionTypeSearchImage
 	case "vk_music_audio":
-		return "vk_music_audio"
+		return ActionTypeVKMusic
 	default:
-		return "send"
+		return ActionTypeSend
 	}
 }
 
@@ -187,10 +187,10 @@ func (s *Store) SaveTrigger(t Trigger) error {
 		t.Title = "Новый триггер"
 	}
 	t.MatchText = strings.TrimSpace(t.MatchText)
-	t.TriggerMode = normalizeTriggerMode(t.TriggerMode)
-	t.AdminMode = normalizeAdminMode(t.AdminMode)
-	t.MatchType = match.NormalizeMatchType(t.MatchType)
-	t.ActionType = normalizeActionType(t.ActionType)
+	t.TriggerMode = normalizeTriggerMode(string(t.TriggerMode))
+	t.AdminMode = normalizeAdminMode(string(t.AdminMode))
+	t.MatchType = match.NormalizeMatchType(string(t.MatchType))
+	t.ActionType = normalizeActionType(string(t.ActionType))
 	t.Chance = sanitizeChance(t.Chance)
 	t.RegexError = ""
 	t.RegexBenchUS = 0
@@ -381,12 +381,12 @@ func (s *Store) ExportJSON() ([]byte, error) {
 			RegexBenchUS:     t.RegexBenchUS,
 			Title:            t.Title,
 			Enabled:          t.Enabled,
-			TriggerMode:      t.TriggerMode,
-			AdminMode:        t.AdminMode,
+			TriggerMode:      string(t.TriggerMode),
+			AdminMode:        string(t.AdminMode),
 			MatchText:        t.MatchText,
-			MatchType:        t.MatchType,
+			MatchType:        string(t.MatchType),
 			CaseSensitive:    t.CaseSensitive,
-			ActionType:       t.ActionType,
+			ActionType:       string(t.ActionType),
 			ResponseText:     t.ResponseText,
 			SendAsReply:      t.Reply,
 			PreviewFirstLink: t.Preview,
@@ -485,12 +485,12 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			UID:           strings.TrimSpace(it.UID),
 			Title:         title,
 			Enabled:       enabled,
-			TriggerMode:   triggerMode,
-			AdminMode:     adminMode,
+			TriggerMode:   normalizeTriggerMode(triggerMode),
+			AdminMode:     normalizeAdminMode(adminMode),
 			MatchText:     matchText,
-			MatchType:     matchType,
+			MatchType:     match.NormalizeMatchType(matchType),
 			CaseSensitive: caseSensitive,
-			ActionType:    actionType,
+			ActionType:    normalizeActionType(actionType),
 			ResponseText:  responseItems,
 			Reply:         reply,
 			Preview:       preview,
