@@ -86,7 +86,7 @@
               <div class="match-text-wrap">
                 <input class="match-text-control" type="text" name="match_text" id="f_match_text" placeholder="Текст триггера">
                 <textarea class="match-text-control d-none" rows="6" id="f_match_text_area" placeholder="Текст триггера"></textarea>
-                <button class="match-text-toggle" type="button" title="Развернуть" onclick="toggleMatchTextArea()">
+                <button class="match-text-toggle" type="button" title="Развернуть" id="match_text_toggle">
                   <i class="bi bi-textarea-resize"></i>
                 </button>
               </div>
@@ -164,28 +164,6 @@
                 <button class="btn btn-outline-secondary btn-sm" type="button" data-action="emoji" title="Кастомный эмодзи Telegram"><i class="bi bi-emoji-smile"></i></button>
                 <select class="form-select form-select-sm bg-black text-light border-secondary ms-auto template-tag-picker" id="f_template_tag_picker">
                   <option value="">Вставить тег сообщения…</option>
-                  <option value='{{"{{message}}"}}'>{{"{{message}}"}} — текст сообщения</option>
-                  <option value='{{"{{user_text}}"}}'>{{"{{user_text}}"}} — текст/подпись сообщения</option>
-                  <option value='{{"{{capturing_text}}"}}'>{{"{{capturing_text}}"}} — захват regex</option>
-                  <option value='{{"{{capturing_choice}}"}}'>{{"{{capturing_choice}}"}} — вариант из regex</option>
-                  <option value='{{"{{capturing_option}}"}}'>{{"{{capturing_option}}"}} — вариант из regex (алиас)</option>
-                  <option value='{{"{{user_id}}"}}'>{{"{{user_id}}"}} — ID автора</option>
-                  <option value='{{"{{user_first_name}}"}}'>{{"{{user_first_name}}"}} — имя автора</option>
-                  <option value='{{"{{user_username}}"}}'>{{"{{user_username}}"}} — username автора</option>
-                  <option value='{{"{{user_display_name}}"}}'>{{"{{user_display_name}}"}} — отображаемое имя автора</option>
-                  <option value='{{"{{user_label}}"}}'>{{"{{user_label}}"}} — метка из скобок в имени автора</option>
-                  <option value='{{"{{user_link}}"}}'>{{"{{user_link}}"}} — ссылка на автора</option>
-                  <option value='{{"{{sender_tag}}"}}'>{{"{{sender_tag}}"}} — тег автора в чате</option>
-                  <option value='{{"{{chat_id}}"}}'>{{"{{chat_id}}"}} — ID чата</option>
-                  <option value='{{"{{chat_title}}"}}'>{{"{{chat_title}}"}} — название чата</option>
-                  <option value='{{"{{reply_text}}"}}'>{{"{{reply_text}}"}} — текст сообщения, на которое ответили</option>
-                  <option value='{{"{{reply_user_id}}"}}'>{{"{{reply_user_id}}"}} — ID адресата реплая</option>
-                  <option value='{{"{{reply_first_name}}"}}'>{{"{{reply_first_name}}"}} — имя адресата реплая</option>
-                  <option value='{{"{{reply_username}}"}}'>{{"{{reply_username}}"}} — username адресата реплая</option>
-                  <option value='{{"{{reply_display_name}}"}}'>{{"{{reply_display_name}}"}} — отображаемое имя адресата реплая</option>
-                  <option value='{{"{{reply_label}}"}}'>{{"{{reply_label}}"}} — метка из скобок в имени адресата</option>
-                  <option value='{{"{{reply_user_link}}"}}'>{{"{{reply_user_link}}"}} — ссылка на адресата реплая</option>
-                  <option value='{{"{{reply_sender_tag}}"}}'>{{"{{reply_sender_tag}}"}} — тег адресата в чате</option>
                 </select>
               </div>
               <div id="response_editor" class="cm-wrap mb-2"></div>

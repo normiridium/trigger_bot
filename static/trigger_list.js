@@ -30,7 +30,9 @@ async function initTriggerPage(){
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
   applyTokenToForms();
   await loadEnums();
+  await loadTemplateTags();
   applyMatchTypeUI();
+  bindMatchTextToggle();
   bindMiniToolbarFallback();
   ensureResponseEditor();
   const form = document.getElementById('trigger_form');
@@ -57,6 +59,45 @@ async function loadEnums(){
   } catch(err){
     // Keep static options as fallback.
   }
+}
+
+async function loadTemplateTags(){
+  const picker = document.getElementById('f_template_tag_picker');
+  if(!picker){
+    return;
+  }
+  try{
+    const r = await fetch(withToken('/trigger_bot/template_tags'));
+    if(!r.ok){
+      return;
+    }
+    const data = await r.json();
+    if(!data || !Array.isArray(data.items)){
+      return;
+    }
+    const prev = String(picker.value || '');
+    picker.innerHTML = '<option value=\"\">Вставить тег сообщения…</option>';
+    data.items.forEach(it => {
+      const opt = document.createElement('option');
+      opt.value = String(it && it.value != null ? it.value : '');
+      opt.textContent = String(it && it.label != null ? it.label : opt.value);
+      picker.appendChild(opt);
+    });
+    if(prev){
+      picker.value = prev;
+    }
+  } catch(err){
+    // Keep static options as fallback.
+  }
+}
+
+function bindMatchTextToggle(){
+  const btn = document.getElementById('match_text_toggle');
+  if(!btn || btn.dataset.bound){
+    return;
+  }
+  btn.addEventListener('click', () => toggleMatchTextArea());
+  btn.dataset.bound = '1';
 }
 
 function applyEnumOptions(id, items, fallback){

@@ -62,6 +62,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/list", w.withAuth(w.listJSON))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
+	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
 	mux.HandleFunc("/trigger_bot/toggle", w.withAuth(w.togglePost))
@@ -132,6 +133,43 @@ func (w *WebAdmin) enumsJSON(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(out)
+}
+
+func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
+	type item struct {
+		Value string `json:"value"`
+		Label string `json:"label"`
+	}
+	items := []item{
+		{Value: "{{message}}", Label: "{{message}} — текст сообщения"},
+		{Value: "{{user_text}}", Label: "{{user_text}} — текст/подпись сообщения"},
+		{Value: "{{capturing_text}}", Label: "{{capturing_text}} — захват regex"},
+		{Value: "{{capturing_choice}}", Label: "{{capturing_choice}} — вариант из regex"},
+		{Value: "{{capturing_option}}", Label: "{{capturing_option}} — вариант из regex (алиас)"},
+		{Value: "{{user_id}}", Label: "{{user_id}} — ID автора"},
+		{Value: "{{user_first_name}}", Label: "{{user_first_name}} — имя автора"},
+		{Value: "{{user_username}}", Label: "{{user_username}} — username автора"},
+		{Value: "{{user_display_name}}", Label: "{{user_display_name}} — отображаемое имя автора"},
+		{Value: "{{user_label}}", Label: "{{user_label}} — метка из скобок в имени автора"},
+		{Value: "{{user_link}}", Label: "{{user_link}} — ссылка на автора"},
+		{Value: "{{sender_tag}}", Label: "{{sender_tag}} — тег автора в чате"},
+		{Value: "{{chat_id}}", Label: "{{chat_id}} — ID чата"},
+		{Value: "{{chat_title}}", Label: "{{chat_title}} — название чата"},
+		{Value: "{{reply_text}}", Label: "{{reply_text}} — текст сообщения, на которое ответили"},
+		{Value: "{{reply_user_id}}", Label: "{{reply_user_id}} — ID адресата реплая"},
+		{Value: "{{reply_first_name}}", Label: "{{reply_first_name}} — имя адресата реплая"},
+		{Value: "{{reply_username}}", Label: "{{reply_username}} — username адресата реплая"},
+		{Value: "{{reply_display_name}}", Label: "{{reply_display_name}} — отображаемое имя адресата реплая"},
+		{Value: "{{reply_label}}", Label: "{{reply_label}} — метка из скобок в имени адресата"},
+		{Value: "{{reply_user_link}}", Label: "{{reply_user_link}} — ссылка на адресата реплая"},
+		{Value: "{{reply_sender_tag}}", Label: "{{reply_sender_tag}} — тег адресата в чате"},
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		Items []item `json:"items"`
+	}{
+		Items: items,
+	})
 }
 
 func iconForTriggerMode(v model.TriggerMode) string {
