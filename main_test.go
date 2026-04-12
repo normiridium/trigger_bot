@@ -7,6 +7,9 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"trigger-admin-bot/internal/gpt"
+	"trigger-admin-bot/internal/trigger"
 )
 
 func TestApplyCapturingTemplate(t *testing.T) {
@@ -155,20 +158,8 @@ func TestResolveGenderVariant(t *testing.T) {
 	}
 }
 
-func TestParseIdleMinutes(t *testing.T) {
-	if v, ok := parseIdleMinutes("120"); !ok || v != 120 {
-		t.Fatalf("expected parsed 120, got v=%d ok=%v", v, ok)
-	}
-	if _, ok := parseIdleMinutes("0"); ok {
-		t.Fatalf("zero must be invalid")
-	}
-	if _, ok := parseIdleMinutes("abc"); ok {
-		t.Fatalf("non-number must be invalid")
-	}
-}
-
 func TestChatIdleTrackerFlow(t *testing.T) {
-	tr := newChatIdleTracker()
+	tr := trigger.NewIdleTracker()
 	chatID := int64(-42)
 	base := time.Unix(1_700_000_000, 0)
 
@@ -203,7 +194,7 @@ func TestSelectIdleAutoReplyTrigger(t *testing.T) {
 		{ID: 4, Enabled: true, MatchType: "idle", MatchText: "45", ActionType: "gpt_prompt", TriggerMode: "all", AdminMode: "anybody", Chance: 100},
 	}
 
-	got, after := selectIdleAutoReplyTrigger(nil, msg, items, func() bool { return false })
+	got, after := trigger.SelectIdleAutoReplyTrigger(nil, msg, items, func() bool { return false })
 	if got == nil || got.ID != 4 {
 		t.Fatalf("expected trigger id=4, got=%#v", got)
 	}
@@ -285,24 +276,20 @@ func TestMarkdownToTelegramHTMLLite(t *testing.T) {
 }
 
 func TestGPTDebouncerLeadingImmediate(t *testing.T) {
-	d := newGPTPromptDebouncer(120 * time.Millisecond)
-	if d == nil {
-		t.Fatalf("debouncer is nil")
-	}
-	orig := runGPTPromptTask
-	defer func() { runGPTPromptTask = orig }()
-
 	var mu sync.Mutex
 	calls := []int{}
 	ch := make(chan struct{}, 4)
-	runGPTPromptTask = func(task gptPromptTask) {
+	d := gpt.NewDebouncer(120*time.Millisecond, func(task gpt.PromptTask) {
 		mu.Lock()
 		calls = append(calls, task.Msg.MessageID)
 		mu.Unlock()
 		ch <- struct{}{}
+	})
+	if d == nil {
+		t.Fatalf("debouncer is nil")
 	}
 
-	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 101}})
+	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 101}})
 	select {
 	case <-ch:
 	case <-time.After(40 * time.Millisecond):
@@ -321,29 +308,25 @@ func TestGPTDebouncerLeadingImmediate(t *testing.T) {
 }
 
 func TestGPTDebouncerTrailingLatest(t *testing.T) {
-	d := newGPTPromptDebouncer(140 * time.Millisecond)
-	if d == nil {
-		t.Fatalf("debouncer is nil")
-	}
-	orig := runGPTPromptTask
-	defer func() { runGPTPromptTask = orig }()
-
 	var mu sync.Mutex
 	calls := []int{}
 	ch := make(chan struct{}, 8)
-	runGPTPromptTask = func(task gptPromptTask) {
+	d := gpt.NewDebouncer(140*time.Millisecond, func(task gpt.PromptTask) {
 		mu.Lock()
 		calls = append(calls, task.Msg.MessageID)
 		mu.Unlock()
 		ch <- struct{}{}
+	})
+	if d == nil {
+		t.Fatalf("debouncer is nil")
 	}
 
-	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 201}}) // immediate
+	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 201}}) // immediate
 	<-ch
 	time.Sleep(30 * time.Millisecond)
-	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 202}})
+	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 202}})
 	time.Sleep(30 * time.Millisecond)
-	d.Schedule(1, gptPromptTask{Msg: &tgbotapi.Message{MessageID: 203}}) // latest in window
+	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 203}}) // latest in window
 
 	select {
 	case <-ch:

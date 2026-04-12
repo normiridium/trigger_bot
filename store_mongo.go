@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"trigger-admin-bot/internal/match"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -268,7 +270,7 @@ func triggerToDocMap(t Trigger) bson.M {
 		"trigger_mode":          normalizeTriggerMode(t.TriggerMode),
 		"admin_mode":            normalizeAdminMode(t.AdminMode),
 		"match_text":            t.MatchText,
-		"match_type":            normalizeMatchType(t.MatchType),
+		"match_type":            match.NormalizeMatchType(t.MatchType),
 		"case_sensitive":        t.CaseSensitive,
 		"action_type":           normalizeActionType(t.ActionType),
 		"response_text":         normalizeResponseItems(t.ResponseText),
@@ -302,7 +304,7 @@ func docToTriggerFromRaw(raw bson.M) (Trigger, bool, error) {
 		TriggerMode:   normalizeTriggerMode(base.TriggerMode),
 		AdminMode:     normalizeAdminMode(base.AdminMode),
 		MatchText:     base.MatchText,
-		MatchType:     normalizeMatchType(base.MatchType),
+		MatchType:     match.NormalizeMatchType(base.MatchType),
 		CaseSensitive: base.CaseSensitive,
 		ActionType:    normalizeActionType(base.ActionType),
 		ResponseText:  items,
@@ -416,7 +418,7 @@ func (m *mongoBackend) updateTrigger(t Trigger, now int64) error {
 		"trigger_mode":          normalizeTriggerMode(t.TriggerMode),
 		"admin_mode":            normalizeAdminMode(t.AdminMode),
 		"match_text":            t.MatchText,
-		"match_type":            normalizeMatchType(t.MatchType),
+		"match_type":            match.NormalizeMatchType(t.MatchType),
 		"case_sensitive":        t.CaseSensitive,
 		"action_type":           normalizeActionType(t.ActionType),
 		"response_text":         normalizeResponseItems(t.ResponseText),

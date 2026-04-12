@@ -1,27 +1,30 @@
-package main
+package engine
 
 import (
 	"math/rand"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"trigger-admin-bot/internal/match"
+	"trigger-admin-bot/internal/model"
 )
 
 type TriggerEngine struct {
 	randIntn func(int) int
 }
 
-type triggerSelectInput struct {
+type SelectInput struct {
 	Bot       *tgbotapi.BotAPI
 	Msg       *tgbotapi.Message
 	Text      string
-	Triggers  []Trigger
+	Triggers  []model.Trigger
 	IsAdminFn func() bool
 }
 
-type triggerSelectNewMemberInput struct {
+type SelectNewMemberInput struct {
 	Bot       *tgbotapi.BotAPI
 	Msg       *tgbotapi.Message
-	Triggers  []Trigger
+	Triggers  []model.Trigger
 	IsAdminFn func() bool
 }
 
@@ -31,7 +34,7 @@ func NewTriggerEngine() *TriggerEngine {
 	}
 }
 
-func (e *TriggerEngine) Select(input triggerSelectInput) *Trigger {
+func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 	if input.Msg == nil {
 		return nil
 	}
@@ -43,15 +46,15 @@ func (e *TriggerEngine) Select(input triggerSelectInput) *Trigger {
 		if !cand.Enabled {
 			continue
 		}
-		if normalizeMatchType(cand.MatchType) == "new_member" {
+		if match.NormalizeMatchType(cand.MatchType) == "new_member" {
 			continue
 		}
-		matched, capture := TriggerMatchCapture(cand, input.Text)
+		matched, capture := match.TriggerMatchCapture(cand, input.Text)
 		if !matched {
 			continue
 		}
 		cand.CapturingText = capture
-		if !triggerModeMatches(input.Bot, &cand, input.Msg) {
+		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
 		if cand.AdminMode != "anybody" {
@@ -74,7 +77,7 @@ func (e *TriggerEngine) Select(input triggerSelectInput) *Trigger {
 	return nil
 }
 
-func (e *TriggerEngine) SelectNewMember(input triggerSelectNewMemberInput) *Trigger {
+func (e *TriggerEngine) SelectNewMember(input SelectNewMemberInput) *model.Trigger {
 	if input.Msg == nil {
 		return nil
 	}
@@ -86,10 +89,10 @@ func (e *TriggerEngine) SelectNewMember(input triggerSelectNewMemberInput) *Trig
 		if !cand.Enabled {
 			continue
 		}
-		if normalizeMatchType(cand.MatchType) != "new_member" {
+		if match.NormalizeMatchType(cand.MatchType) != "new_member" {
 			continue
 		}
-		if !triggerModeMatches(input.Bot, &cand, input.Msg) {
+		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
 		if cand.AdminMode != "anybody" {
@@ -110,4 +113,33 @@ func (e *TriggerEngine) SelectNewMember(input triggerSelectNewMemberInput) *Trig
 		return &cand
 	}
 	return nil
+}
+
+func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.Message) bool {
+	if tr == nil || msg == nil {
+		return false
+	}
+	mode := tr.TriggerMode
+	switch mode {
+	case "only_replies":
+		return msg.ReplyToMessage != nil
+	case "only_replies_to_any_bot":
+		return msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil && msg.ReplyToMessage.From.IsBot
+	case "only_replies_to_combot":
+		// Legacy storage key kept for compatibility, actual behavior:
+		// trigger only on replies to this bot's own messages.
+		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+			return false
+		}
+		if bot == nil {
+			return false
+		}
+		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
+	case "never_on_replies":
+		return msg.ReplyToMessage == nil
+	case "command_reply":
+		return msg.IsCommand()
+	default:
+		return true
+	}
 }
