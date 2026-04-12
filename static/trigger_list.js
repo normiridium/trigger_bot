@@ -6,6 +6,7 @@ function triggerApp(){
     openTemplateNew,
     submitTemplateForm,
     submitTriggerForm,
+    saveSettings,
     syncSwitch,
     wrapResponseSelection,
     insertResponseLink,
@@ -27,6 +28,8 @@ let activeResponseVariant = 0;
 const enumCache = {};
 let templatesCache = [];
 let templatesLoadInFlight = false;
+let settingsLoadInFlight = false;
+let settingsCache = {fields: [], values: {}};
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -36,6 +39,7 @@ async function initTriggerPage(){
   await loadEnums();
   await loadTemplateTags();
   await loadTemplates();
+  await loadSettings();
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
@@ -49,6 +53,16 @@ async function initTriggerPage(){
   if(tplForm && !tplForm.dataset.boundSubmit){
     tplForm.addEventListener('submit', submitTemplateForm);
     tplForm.dataset.boundSubmit = '1';
+  }
+  const settingsForm = document.getElementById('settings_form');
+  if(settingsForm && !settingsForm.dataset.boundSubmit){
+    settingsForm.addEventListener('submit', saveSettings);
+    settingsForm.dataset.boundSubmit = '1';
+  }
+  const restartBtn = document.getElementById('settings_restart_btn');
+  if(restartBtn && !restartBtn.dataset.boundClick){
+    restartBtn.addEventListener('click', restartService);
+    restartBtn.dataset.boundClick = '1';
   }
   const cloneBtn = document.getElementById('f_clone_btn');
   if(cloneBtn && !cloneBtn.dataset.boundClick){
@@ -77,8 +91,11 @@ async function loadEnums(){
 }
 
 async function loadTemplateTags(){
-  const picker = document.getElementById('f_template_tag_picker');
-  if(!picker){
+  const pickers = [
+    document.getElementById('f_template_tag_picker'),
+    document.getElementById('tpl_template_tag_picker'),
+  ].filter(Boolean);
+  if(pickers.length === 0){
     return;
   }
   try{
@@ -90,17 +107,19 @@ async function loadTemplateTags(){
     if(!data || !Array.isArray(data.items)){
       return;
     }
-    const prev = String(picker.value || '');
-    picker.innerHTML = '<option value=\"\">Вставить тег сообщения…</option>';
-    data.items.forEach(it => {
-      const opt = document.createElement('option');
-      opt.value = String(it && it.value != null ? it.value : '');
-      opt.textContent = String(it && it.label != null ? it.label : opt.value);
-      picker.appendChild(opt);
+    pickers.forEach((picker) => {
+      const prev = String(picker.value || '');
+      picker.innerHTML = '<option value=\"\">Вставить тег сообщения…</option>';
+      data.items.forEach(it => {
+        const opt = document.createElement('option');
+        opt.value = String(it && it.value != null ? it.value : '');
+        opt.textContent = String(it && it.label != null ? it.label : opt.value);
+        picker.appendChild(opt);
+      });
+      if(prev){
+        picker.value = prev;
+      }
     });
-    if(prev){
-      picker.value = prev;
-    }
   } catch(err){
     // Keep static options as fallback.
   }
@@ -191,6 +210,135 @@ function renderTemplatesPicker(picker){
   });
   if(prev){
     picker.value = prev;
+  }
+}
+
+async function loadSettings(){
+  if(settingsLoadInFlight){ return; }
+  settingsLoadInFlight = true;
+  try{
+    const r = await fetch(withToken('/trigger_bot/settings_get'));
+    if(!r.ok){ throw new Error('HTTP ' + r.status); }
+    const data = await r.json();
+    settingsCache.fields = Array.isArray(data?.fields) ? data.fields : [];
+    settingsCache.values = data && typeof data.values === 'object' && data.values ? data.values : {};
+    renderSettingsForm();
+  } catch(err){
+    renderSettingsError('Не удалось загрузить настройки');
+  } finally {
+    settingsLoadInFlight = false;
+  }
+}
+
+function renderSettingsError(msg){
+  const wrap = document.getElementById('settings_fields');
+  if(!wrap){ return; }
+  wrap.innerHTML = `<div class="text-danger">${escapeHtml(msg)}</div>`;
+}
+
+function renderSettingsForm(){
+  const wrap = document.getElementById('settings_fields');
+  if(!wrap){ return; }
+  const fields = settingsCache.fields || [];
+  if(fields.length === 0){
+    wrap.innerHTML = '<div class="text-secondary">Настройки не найдены.</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  fields.forEach((f) => {
+    const key = String(f?.key || '');
+    const label = String(f?.label || key);
+    const type = String(f?.type || 'string');
+    const val = settingsCache.values && settingsCache.values[key] != null ? String(settingsCache.values[key]) : '';
+    const row = document.createElement('div');
+    row.className = 'd-flex align-items-center gap-2 settings-row';
+    const labelEl = document.createElement('label');
+    labelEl.className = 'settings-label';
+    labelEl.textContent = label;
+    labelEl.setAttribute('for', 'settings_' + key);
+    row.appendChild(labelEl);
+    if(type === 'bool'){
+      const wrapSwitch = document.createElement('div');
+      wrapSwitch.className = 'form-check form-switch m-0';
+      const input = document.createElement('input');
+      input.className = 'form-check-input';
+      input.type = 'checkbox';
+      input.id = 'settings_' + key;
+      input.dataset.key = key;
+      input.checked = normalizeBool(val);
+      wrapSwitch.appendChild(input);
+      row.appendChild(wrapSwitch);
+    } else {
+      const input = document.createElement('input');
+      input.className = 'form-control form-control-sm bg-black text-light border-secondary settings-input';
+      input.type = 'text';
+      input.id = 'settings_' + key;
+      input.dataset.key = key;
+      input.value = val;
+      row.appendChild(input);
+    }
+    wrap.appendChild(row);
+  });
+}
+
+function normalizeBool(v){
+  return ['1','true','yes','on'].includes(String(v || '').toLowerCase());
+}
+
+async function saveSettings(ev){
+  if(ev){ ev.preventDefault(); }
+  const btn = document.getElementById('settings_save_btn');
+  const hint = document.getElementById('settings_save_hint');
+  lockButton(btn);
+  const payload = {};
+  const inputs = document.querySelectorAll('#settings_fields [data-key]');
+  inputs.forEach((el) => {
+    const key = el.dataset.key;
+    if(!key){ return; }
+    if(el.type === 'checkbox'){
+      payload[key] = el.checked ? 'true' : 'false';
+    } else {
+      payload[key] = String(el.value || '');
+    }
+  });
+  try{
+    const r = await fetch(withToken('/trigger_bot/settings_save'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      alert('Ошибка сохранения: ' + (txt || r.status));
+      return false;
+    }
+    const data = await r.json().catch(() => ({}));
+    if(hint){
+      hint.textContent = data && data.message ? data.message : 'Сохранено. Нужен перезапуск.';
+    }
+  } finally {
+    unlockButton(btn);
+  }
+  return false;
+}
+
+async function restartService(){
+  if(!confirm('Перезапустить сервис?')){ return; }
+  const btn = document.getElementById('settings_restart_btn');
+  lockButton(btn);
+  try{
+    const r = await fetch(withToken('/trigger_bot/restart'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify({ok: true}),
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      alert('Ошибка перезапуска: ' + (txt || r.status));
+      return;
+    }
+  } finally {
+    unlockButton(btn);
   }
 }
 
@@ -863,6 +1011,10 @@ function getResponseTextArea(){
   return document.getElementById('f_response_text');
 }
 
+function getTemplateTextArea(){
+  return document.getElementById('tpl_text');
+}
+
 function replaceTextAreaSelection(el, before, after){
   const editor = getEditorView();
   if(editor){
@@ -890,7 +1042,7 @@ function replaceTextAreaSelection(el, before, after){
 
 function insertTextAtCursor(el, text){
   const editor = getEditorView();
-  if(editor){
+  if(editor && el && el.id === 'f_response_text'){
     const sel = editor.state.selection.main;
     editor.dispatch({
       changes: {from: sel.from, to: sel.to, insert: text},
@@ -913,10 +1065,10 @@ function wrapResponseSelection(before, after){
   replaceTextAreaSelection(getResponseTextArea(), before, after);
 }
 
-function insertResponseLink(){
+function insertResponseLink(target){
   const url = prompt('URL ссылки', 'https://');
   if(!url){ return; }
-  const el = getResponseTextArea();
+  const el = target || getResponseTextArea();
   if(!el){ return; }
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
@@ -929,12 +1081,12 @@ function insertResponseLink(){
   el.setSelectionRange(caret, caret);
 }
 
-function insertTgEmojiSnippet(){
+function insertTgEmojiSnippet(target){
   const id = prompt('ID кастомного emoji (из Telegram)', '12345');
   if(!id){ return; }
   const safeId = String(id).trim();
   if(!safeId){ return; }
-  insertTextAtCursor(getResponseTextArea(), `<tg-emoji emoji-id="${safeId}">🙂</tg-emoji>`);
+  insertTextAtCursor(target || getResponseTextArea(), `<tg-emoji emoji-id="${safeId}">🙂</tg-emoji>`);
 }
 
 function showTelegramHtmlHelp(){
@@ -949,7 +1101,8 @@ function showTelegramHtmlHelp(){
 
 function insertTemplateTagFromPicker(sel){
   if(!sel || !sel.value){ return; }
-  insertTextAtCursor(getResponseTextArea(), sel.value);
+  const isTemplate = sel.id === 'tpl_template_tag_picker';
+  insertTextAtCursor(isTemplate ? getTemplateTextArea() : getResponseTextArea(), sel.value);
   sel.value = '';
 }
 
@@ -959,19 +1112,21 @@ function bindMiniToolbarFallback(){
   document.addEventListener('click', (e) => {
     const btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
     if(!btn){ return; }
+    const target = btn.closest('.mini-toolbar')?.getAttribute('data-target') || '';
+    const targetEl = target === 'template' ? getTemplateTextArea() : getResponseTextArea();
     const action = btn.getAttribute('data-action');
     if(action === 'wrap'){
       const before = btn.getAttribute('data-before') || '';
       const after = btn.getAttribute('data-after') || '';
-      wrapResponseSelection(before, after);
+      replaceTextAreaSelection(targetEl, before, after);
       return;
     }
     if(action === 'link'){
-      insertResponseLink();
+      insertResponseLink(targetEl);
       return;
     }
     if(action === 'emoji'){
-      insertTgEmojiSnippet();
+      insertTgEmojiSnippet(targetEl);
       return;
     }
     if(action === 'help'){
