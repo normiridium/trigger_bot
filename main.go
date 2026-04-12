@@ -1337,6 +1337,7 @@ func main() {
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)
+	audioQueue := newAudioSendQueue(envInt("VK_AUDIO_WORKERS", 1), envInt("VK_AUDIO_QUEUE", 8))
 	handlerDeps := triggerHandlerDeps{
 		triggerActionDeps: triggerActionDeps{
 			Bot:            bot,
@@ -1344,6 +1345,7 @@ func main() {
 			GPTDebouncer:   gptDebouncer,
 			VKMusic:        vkMusicClient,
 			TemplateLookup: templateLookup,
+			AudioQueue:     audioQueue,
 		},
 		Allowed:    allowedChats,
 		Engine:     triggerEngine,
@@ -1368,7 +1370,16 @@ func main() {
 					reportChatFailure(bot, chatID, title, err)
 				},
 				func(chatID int64, url, artist, title string) error {
-					return sendAudioFromURL(sendContext{Bot: bot, ChatID: chatID}, url, artist, title)
+					task := audioSendTask{
+						Ctx:       sendContext{Bot: bot, ChatID: chatID},
+						AudioURL:  url,
+						Performer: artist,
+						Title:     title,
+					}
+					if audioQueue != nil && audioQueue.enqueue(task) {
+						return nil
+					}
+					return sendAudioFromURL(task.Ctx, url, artist, title)
 				},
 			) {
 				continue
@@ -1766,13 +1777,30 @@ func main() {
 					}
 					continue
 				}
-				if err := sendAudioFromURL(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}, song.URL, song.Artist, song.Title); err != nil {
+				task := audioSendTask{
+					Ctx:       sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+					AudioURL:  song.URL,
+					Performer: song.Artist,
+					Title:     song.Title,
+					Msg:       msg,
+					Trigger:   tr,
+					Idle:      idleTracker,
+				}
+				if audioQueue != nil && audioQueue.enqueue(task) {
+					sent = true
+					break
+				}
+				if err := sendAudioFromURL(task.Ctx, song.URL, song.Artist, song.Title); err != nil {
 					sendErr = err
 					if debugTriggerLogEnabled {
 						log.Printf("vk music send failed trigger=%d track_id=%q err=%v", tr.ID, tracks[i].ID, err)
 					}
 					continue
 				}
+				if idleTracker != nil {
+					idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				}
+				deleteTriggerSourceMessage(bot, msg, tr)
 				sent = true
 				break
 			}
@@ -1783,10 +1811,10 @@ func main() {
 				}
 				continue
 			}
-			idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-			deleteTriggerSourceMessage(bot, msg, tr)
-			if debugTriggerLogEnabled {
-				log.Printf("send vk/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+			if sent {
+				if debugTriggerLogEnabled {
+					log.Printf("send vk/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+				}
 			}
 		default:
 			replyTo := 0
@@ -1968,6 +1996,61 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 		log.Printf("send audio ok chat=%d msg=%d replyTo=%d performer=%q title=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title)
 	}
 	return nil
+}
+
+type audioSendTask struct {
+	Ctx       sendContext
+	AudioURL  string
+	Performer string
+	Title     string
+	Msg       *tgbotapi.Message
+	Trigger   *Trigger
+	Idle      *trigger.IdleTracker
+}
+
+type audioSendQueue struct {
+	ch chan audioSendTask
+}
+
+func newAudioSendQueue(workers, size int) *audioSendQueue {
+	if workers < 1 {
+		workers = 1
+	}
+	if size < 1 {
+		size = workers * 2
+	}
+	q := &audioSendQueue{ch: make(chan audioSendTask, size)}
+	for i := 0; i < workers; i++ {
+		go func() {
+			for task := range q.ch {
+				err := sendAudioFromURL(task.Ctx, task.AudioURL, task.Performer, task.Title)
+				if err != nil {
+					log.Printf("audio send failed chat=%d err=%v", task.Ctx.ChatID, err)
+					reportChatFailure(task.Ctx.Bot, task.Ctx.ChatID, "ошибка отправки аудио VK", err)
+					continue
+				}
+				if task.Idle != nil {
+					task.Idle.MarkActivity(task.Ctx.ChatID, time.Now())
+				}
+				if task.Msg != nil && task.Trigger != nil {
+					deleteTriggerSourceMessage(task.Ctx.Bot, task.Msg, task.Trigger)
+				}
+			}
+		}()
+	}
+	return q
+}
+
+func (q *audioSendQueue) enqueue(task audioSendTask) bool {
+	if q == nil {
+		return false
+	}
+	select {
+	case q.ch <- task:
+		return true
+	default:
+		return false
+	}
 }
 
 func buildAudioCaption(path string) string {
@@ -3198,6 +3281,7 @@ type triggerActionDeps struct {
 	GPTDebouncer   *gpt.Debouncer
 	VKMusic        *vkmusic.Client
 	TemplateLookup func(string) string
+	AudioQueue     *audioSendQueue
 }
 
 type triggerHandlerDeps struct {
@@ -3379,18 +3463,18 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK музыка не поддерживается для события входа"))
 		}
 		return
-	default:
-		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
-			replyTo = msg.MessageID
-		}
-		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
-		out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
-		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-		if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
-			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
-			deleteTriggerSourceMessage(deps.Bot, msg, tr)
-		}
+		default:
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+			out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+			sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+			if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
+				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				deleteTriggerSourceMessage(deps.Bot, msg, tr)
+			}
 	}
 }
 
