@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -1679,7 +1680,7 @@ func main() {
 					"{{capturing_text}}\n" +
 					"{{capturing_choice}} / {{capturing_option}}\n" +
 					"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
-					"{{reply_display_name}}, {{reply_label}}\n" +
+					"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
 					"{{reply_sender_tag}}\n\n" +
 					"Кастомный emoji ID:\n" +
 					"— команда /emojiid\n" +
@@ -2875,11 +2876,166 @@ func evalTemplatePipe(expr string, vars map[string]string) (string, bool) {
 				}
 			}
 			continue
+		case "gender":
+			male := ""
+			female := ""
+			neuter := ""
+			plural := ""
+			unknown := ""
+			if len(args) > 0 {
+				male = args[0]
+			}
+			if len(args) > 1 {
+				female = args[1]
+			}
+			if len(args) > 2 {
+				neuter = args[2]
+			}
+			if len(args) > 3 {
+				plural = args[3]
+			}
+			if len(args) > 4 {
+				unknown = args[4]
+			}
+			val = resolveGenderVariant(val, male, female, neuter, plural, unknown)
+			continue
 		default:
 			continue
 		}
 	}
 	return strings.TrimSpace(val), true
+}
+
+type pronounFlags struct {
+	any     bool
+	none    bool
+	he      bool
+	she     bool
+	it      bool
+	neutral bool
+	they    bool
+}
+
+func resolveGenderVariant(tag, male, female, neuter, plural, unknown string) string {
+	flags := detectPronounFlags(tag)
+	if flags.they {
+		return plural
+	}
+	if flags.he {
+		return male
+	}
+	if flags.she {
+		return female
+	}
+	if flags.it {
+		return neuter
+	}
+	return unknown
+}
+
+func detectPronounFlags(raw string) pronounFlags {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return pronounFlags{}
+	}
+	tokens := splitPronounTokens(raw)
+	flags := pronounFlags{}
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if tok == "any" || strings.HasPrefix(tok, "люб") {
+			flags.any = true
+		}
+		if isPronounNoneToken(tok) {
+			flags.none = true
+		}
+		if isPronounHeToken(tok) {
+			flags.he = true
+		}
+		if isPronounSheToken(tok) {
+			flags.she = true
+		}
+		if isPronounItToken(tok) {
+			flags.it = true
+		}
+		if isPronounNeutralToken(tok) {
+			flags.neutral = true
+		}
+		if isPronounTheyToken(tok) {
+			flags.they = true
+		}
+	}
+	return flags
+}
+
+func splitPronounTokens(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+}
+
+func isPronounNoneToken(tok string) bool {
+	switch tok {
+	case "0", "vo", "nul", "null", "no", "нет", "избег":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPronounHeToken(tok string) bool {
+	switch tok {
+	case "1", "him", "boy", "mas", "его", "па", "му", "тот", "he", "он", "mal", "male", "man":
+		return true
+	default:
+		if strings.HasPrefix(tok, "mas") {
+			return true
+		}
+		return false
+	}
+}
+
+func isPronounSheToken(tok string) bool {
+	switch tok {
+	case "2", "she", "her", "wom", "woman", "gir", "girl", "fem", "female", "она", "её", "ее", "де", "же", "та", "фем":
+		return true
+	default:
+		if strings.HasPrefix(tok, "fem") || strings.HasPrefix(tok, "wom") || strings.HasPrefix(tok, "gir") {
+			return true
+		}
+		return false
+	}
+}
+
+func isPronounItToken(tok string) bool {
+	switch tok {
+	case "3", "it":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPronounNeutralToken(tok string) bool {
+	switch tok {
+	case "4", "one", "neu", "оно", "то":
+		return true
+	default:
+		if strings.HasPrefix(tok, "neu") {
+			return true
+		}
+		return false
+	}
+}
+
+func isPronounTheyToken(tok string) bool {
+	switch tok {
+	case "5", "the", "они", "их", "эти", "те":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitPipeOp(s string) (string, string) {
@@ -3141,6 +3297,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 	replyUsername := ""
 	replyDisplayName := ""
 	replyLabel := ""
+	replyUserLink := ""
 	replySenderTag := ""
 	if msg.ReplyToMessage != nil {
 		replyText = strings.TrimSpace(msg.ReplyToMessage.Text)
@@ -3153,6 +3310,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 			replyUsername = strings.TrimSpace(msg.ReplyToMessage.From.UserName)
 			replyDisplayName = buildDisplayName(msg.ReplyToMessage.From)
 			replyLabel = extractLabel(replyDisplayName)
+			replyUserLink = buildUserLink(msg.ReplyToMessage.From)
 			if bot != nil {
 				replySenderTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.ReplyToMessage.From.ID)
 			}
@@ -3183,6 +3341,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{reply_username}}":     replyUsername,
 		"{{reply_display_name}}": replyDisplayName,
 		"{{reply_label}}":        replyLabel,
+		"{{reply_user_link}}":    replyUserLink,
 		"{{reply_sender_tag}}":   replySenderTagDisplay,
 	}
 }
