@@ -10,44 +10,53 @@ type TriggerEngine struct {
 	randIntn func(int) int
 }
 
+type triggerSelectInput struct {
+	Bot       *tgbotapi.BotAPI
+	Msg       *tgbotapi.Message
+	Text      string
+	Triggers  []Trigger
+	IsAdminFn func() bool
+}
+
+type triggerSelectNewMemberInput struct {
+	Bot       *tgbotapi.BotAPI
+	Msg       *tgbotapi.Message
+	Triggers  []Trigger
+	IsAdminFn func() bool
+}
+
 func NewTriggerEngine() *TriggerEngine {
 	return &TriggerEngine{
 		randIntn: rand.Intn,
 	}
 }
 
-func (e *TriggerEngine) Select(
-	bot *tgbotapi.BotAPI,
-	msg *tgbotapi.Message,
-	text string,
-	triggers []Trigger,
-	isAdminFn func() bool,
-) *Trigger {
-	if msg == nil {
+func (e *TriggerEngine) Select(input triggerSelectInput) *Trigger {
+	if input.Msg == nil {
 		return nil
 	}
 	adminChecked := false
 	isAdmin := false
 
-	for i := range triggers {
-		cand := triggers[i]
+	for i := range input.Triggers {
+		cand := input.Triggers[i]
 		if !cand.Enabled {
 			continue
 		}
 		if normalizeMatchType(cand.MatchType) == "new_member" {
 			continue
 		}
-		matched, capture := TriggerMatchCapture(cand, text)
+		matched, capture := TriggerMatchCapture(cand, input.Text)
 		if !matched {
 			continue
 		}
 		cand.CapturingText = capture
-		if !triggerModeMatches(bot, &cand, msg) {
+		if !triggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
 		if cand.AdminMode != "anybody" {
 			if !adminChecked {
-				isAdmin = isAdminFn()
+				isAdmin = input.IsAdminFn()
 				adminChecked = true
 			}
 			if cand.AdminMode == "admins" && !isAdmin {
@@ -65,32 +74,27 @@ func (e *TriggerEngine) Select(
 	return nil
 }
 
-func (e *TriggerEngine) SelectNewMember(
-	bot *tgbotapi.BotAPI,
-	msg *tgbotapi.Message,
-	triggers []Trigger,
-	isAdminFn func() bool,
-) *Trigger {
-	if msg == nil {
+func (e *TriggerEngine) SelectNewMember(input triggerSelectNewMemberInput) *Trigger {
+	if input.Msg == nil {
 		return nil
 	}
 	adminChecked := false
 	isAdmin := false
 
-	for i := range triggers {
-		cand := triggers[i]
+	for i := range input.Triggers {
+		cand := input.Triggers[i]
 		if !cand.Enabled {
 			continue
 		}
 		if normalizeMatchType(cand.MatchType) != "new_member" {
 			continue
 		}
-		if !triggerModeMatches(bot, &cand, msg) {
+		if !triggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
 		if cand.AdminMode != "anybody" {
 			if !adminChecked {
-				isAdmin = isAdminFn()
+				isAdmin = input.IsAdminFn()
 				adminChecked = true
 			}
 			if cand.AdminMode == "admins" && !isAdmin {
