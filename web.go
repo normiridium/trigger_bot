@@ -63,6 +63,10 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
+	mux.HandleFunc("/trigger_bot/templates", w.withAuth(w.templatesJSON))
+	mux.HandleFunc("/trigger_bot/template_get", w.withAuth(w.templateGetJSON))
+	mux.HandleFunc("/trigger_bot/template_save", w.withAuth(w.templateSavePost))
+	mux.HandleFunc("/trigger_bot/template_delete", w.withAuth(w.templateDeletePost))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
 	mux.HandleFunc("/trigger_bot/toggle", w.withAuth(w.togglePost))
@@ -170,6 +174,80 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 	}{
 		Items: items,
 	})
+}
+
+func (w *WebAdmin) templatesJSON(rw http.ResponseWriter, r *http.Request) {
+	items, err := w.store.ListTemplates()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		Items []ResponseTemplate `json:"items"`
+	}{
+		Items: items,
+	})
+}
+
+func (w *WebAdmin) templateGetJSON(rw http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("id")), 10, 64)
+	var item *ResponseTemplate
+	if id > 0 {
+		var err error
+		item, err = w.store.GetTemplate(id)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if item == nil {
+		item = &ResponseTemplate{}
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(item)
+}
+
+func (w *WebAdmin) templateSavePost(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	t := ResponseTemplate{
+		ID:    id,
+		Key:   strings.TrimSpace(r.FormValue("key")),
+		Title: strings.TrimSpace(r.FormValue("title")),
+		Text:  strings.TrimSpace(r.FormValue("text")),
+	}
+	if err := w.store.SaveTemplate(t); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
+func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id, _ := strconv.ParseInt(strings.TrimSpace(r.FormValue("id")), 10, 64)
+	if id <= 0 {
+		http.Error(rw, "id required", http.StatusBadRequest)
+		return
+	}
+	if err := w.store.DeleteTemplate(id); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
 }
 
 func iconForTriggerMode(v model.TriggerMode) string {
@@ -484,7 +562,7 @@ func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-	rw.Header().Set("Content-Disposition", `attachment; filename="triggers.json"`)
+	rw.Header().Set("Content-Disposition", `attachment; filename="trigger_bot_export.json"`)
 	_, _ = rw.Write(body)
 }
 
@@ -507,7 +585,7 @@ func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Printf("web import triggers added=%d took=%s", added, time.Since(started))
+	log.Printf("web import added=%d took=%s", added, time.Since(started))
 	redirectToListWithToken(rw, r)
 }
 

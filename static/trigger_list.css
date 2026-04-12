@@ -55,6 +55,9 @@ body { background: #111827; }
 .action-mini i {
   font-size: .88rem;
 }
+.action-visibility.btn-outline-success {
+  filter: brightness(1.06);
+}
 .drag-handle {
   cursor: grab;
   color: #9ca3af;
@@ -78,6 +81,22 @@ tr.dragging-row {
 }
 .template-tag-picker {
   max-width: 320px;
+}
+.templates-table .col-action {
+  width: 1%;
+  white-space: nowrap;
+}
+.templates-table .col-key {
+  width: 160px;
+}
+.templates-table .col-text {
+  min-width: 240px;
+}
+.template-actions .btn {
+  line-height: 1.1;
+}
+.settings-panel {
+  background: #2b3035;
 }
 .cm-wrap .cm-editor {
   border: 1px solid #4b5563;
@@ -248,5 +267,13 @@ tr.dragging-row {
   .trigger-table th:nth-child(4),
   .trigger-table td:nth-child(4) {
     display: none;
+  }
+  .templates-table .col-key,
+  .templates-table .col-text,
+  .template-insert-btn {
+    display: none !important;
+  }
+  .templates-table .col-action {
+    width: 1%;
   }
 }

@@ -3,6 +3,8 @@ function triggerApp(){
     handleImportSubmit,
     updateImportFileName,
     openNew,
+    openTemplateNew,
+    submitTemplateForm,
     submitTriggerForm,
     syncSwitch,
     wrapResponseSelection,
@@ -23,6 +25,8 @@ let responseEditorReady = false;
 let responseVariants = [{text: ''}];
 let activeResponseVariant = 0;
 const enumCache = {};
+let templatesCache = [];
+let templatesLoadInFlight = false;
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -31,6 +35,7 @@ async function initTriggerPage(){
   applyTokenToForms();
   await loadEnums();
   await loadTemplateTags();
+  await loadTemplates();
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
@@ -39,6 +44,11 @@ async function initTriggerPage(){
   if(form && !form.dataset.boundSubmit){
     form.addEventListener('submit', submitTriggerForm);
     form.dataset.boundSubmit = '1';
+  }
+  const cloneBtn = document.getElementById('f_clone_btn');
+  if(cloneBtn && !cloneBtn.dataset.boundClick){
+    cloneBtn.addEventListener('click', () => cloneCurrentTrigger());
+    cloneBtn.dataset.boundClick = '1';
   }
   renderVariantControls();
   await loadTriggerList();
@@ -91,6 +101,156 @@ async function loadTemplateTags(){
   }
 }
 
+async function loadTemplates(){
+  const tbody = document.getElementById('templates_tbody');
+  const picker = document.getElementById('f_template_picker');
+  if(!tbody){
+    return;
+  }
+  try{
+    if(templatesLoadInFlight){ return; }
+    templatesLoadInFlight = true;
+    const r = await fetch(withToken('/trigger_bot/templates'));
+    if(!r.ok){
+      renderTemplatesError('Не удалось загрузить шаблоны');
+      return;
+    }
+    const data = await r.json();
+    templatesCache = Array.isArray(data?.items) ? data.items : [];
+    renderTemplatesTable();
+    renderTemplatesPicker(picker);
+  } catch(err){
+    renderTemplatesError('Не удалось загрузить шаблоны');
+  } finally {
+    templatesLoadInFlight = false;
+  }
+}
+
+function renderTemplatesError(msg){
+  const tbody = document.getElementById('templates_tbody');
+  if(!tbody){ return; }
+  tbody.innerHTML = `<tr><td colspan="4" class="text-center text-danger py-4">${escapeHtml(msg)}</td></tr>`;
+}
+
+function renderTemplatesTable(){
+  const tbody = document.getElementById('templates_tbody');
+  if(!tbody){ return; }
+  if(!Array.isArray(templatesCache) || templatesCache.length === 0){
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-secondary py-4">Список пуст</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  templatesCache.forEach((tpl) => {
+    const id = String(tpl?.id ?? '').trim();
+    const key = String(tpl?.key ?? '').trim();
+    const title = String(tpl?.title ?? '').trim();
+    const text = String(tpl?.text ?? '').trim();
+    const preview = clipTemplatePreview(text, 120);
+    const tr = document.createElement('tr');
+    const insertDisabled = key ? '' : 'disabled';
+    tr.innerHTML = `
+      <td class="col-key"><code>${escapeHtml(key || id)}</code></td>
+      <td class="col-title">${escapeHtml(title || '—')}</td>
+      <td class="text-wrap col-text" title="${escapeHtml(text)}">${escapeHtml(preview)}</td>
+      <td class="text-nowrap col-action">
+        <div class="template-actions d-flex gap-2 flex-wrap">
+          <button type="button" class="btn btn-outline-secondary btn-sm template-insert-btn" data-template-key="${escapeHtml(key)}" ${insertDisabled}>
+            <i class="bi bi-clipboard-plus"></i> Вставить тег
+          </button>
+          <button type="button" class="btn btn-outline-info btn-sm" data-template-edit="${escapeHtml(id)}">
+            <i class="bi bi-pencil"></i>
+          </button>
+          <button type="button" class="btn btn-outline-danger btn-sm" data-template-delete="${escapeHtml(id)}">
+            <i class="bi bi-trash"></i>
+          </button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderTemplatesPicker(picker){
+  if(!picker){
+    return;
+  }
+  const prev = String(picker.value || '');
+  picker.innerHTML = '<option value="">Вставить шаблон…</option>';
+  if(!Array.isArray(templatesCache) || templatesCache.length === 0){
+    return;
+  }
+  templatesCache.forEach((tpl) => {
+    const key = String(tpl?.key ?? '').trim();
+    const title = String(tpl?.title ?? '').trim();
+    if(!key){ return; }
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = title ? `${key} — ${title}` : key;
+    picker.appendChild(opt);
+  });
+  if(prev){
+    picker.value = prev;
+  }
+}
+
+function openTemplateNew(){
+  document.getElementById('tpl_id').value = '';
+  document.getElementById('tpl_key').value = '';
+  document.getElementById('tpl_title').value = '';
+  document.getElementById('tpl_text').value = '';
+  ensureTemplateModal().show();
+}
+
+async function openTemplateEdit(id){
+  if(!id){ return; }
+  const r = await fetch(withToken('/trigger_bot/template_get?id=' + encodeURIComponent(id)));
+  if(!r.ok){
+    alert('Не удалось загрузить шаблон: ' + r.status);
+    return;
+  }
+  const t = await r.json();
+  document.getElementById('tpl_id').value = t.id || '';
+  document.getElementById('tpl_key').value = t.key || '';
+  document.getElementById('tpl_title').value = t.title || '';
+  document.getElementById('tpl_text').value = t.text || '';
+  ensureTemplateModal().show();
+}
+
+async function submitTemplateForm(ev){
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  const fd = new FormData(form);
+  const r = await fetch(withToken('/trigger_bot/template_save'), {method: 'POST', body: fd});
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка сохранения шаблона: ' + (txt || r.status));
+    return false;
+  }
+  ensureTemplateModal().hide();
+  await loadTemplates();
+  return false;
+}
+
+async function deleteTemplate(id){
+  if(!id){ return; }
+  if(!confirm('Удалить шаблон?')){ return; }
+  const fd = new FormData();
+  fd.append('id', id);
+  const r = await fetch(withToken('/trigger_bot/template_delete'), {method: 'POST', body: fd});
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка удаления шаблона: ' + (txt || r.status));
+    return;
+  }
+  await loadTemplates();
+}
+
+function ensureTemplateModal(){
+  if(!window.__tplModal){
+    window.__tplModal = new bootstrap.Modal(document.getElementById('templateModal'));
+  }
+  return window.__tplModal;
+}
+
 function bindMatchTextToggle(){
   const btn = document.getElementById('match_text_toggle');
   if(!btn || btn.dataset.bound){
@@ -98,6 +258,17 @@ function bindMatchTextToggle(){
   }
   btn.addEventListener('click', () => toggleMatchTextArea());
   btn.dataset.bound = '1';
+}
+
+function clipTemplatePreview(text, maxLen){
+  const src = String(text ?? '');
+  if(maxLen <= 0){
+    return src;
+  }
+  if(src.length <= maxLen){
+    return src;
+  }
+  return src.slice(0, maxLen).trimEnd() + '…';
 }
 
 function applyEnumOptions(id, items, fallback){
@@ -172,15 +343,21 @@ function escapeHtml(v){
 function ensureResponseEditor(){
   if(responseEditorReady){ return; }
   if(typeof window.initResponseEditor !== 'function'){ return; }
-  const editor = window.initResponseEditor('f_response_text', 'response_editor');
-  if(editor){
+  const onEditorReady = (editor) => {
+    if(!editor || responseEditorReady){ return; }
     const ta = document.getElementById('f_response_text');
     if(ta){ ta.classList.add('d-none'); }
     responseEditorReady = true;
     if(responseVariants.length > 0){
       setResponseValue(responseVariants[activeResponseVariant]?.text || '');
     }
+  };
+  const editorOrPromise = window.initResponseEditor('f_response_text', 'response_editor');
+  if(editorOrPromise && typeof editorOrPromise.then === 'function'){
+    editorOrPromise.then(onEditorReady).catch(() => {});
+    return;
   }
+  onEditorReady(editorOrPromise);
 }
 
 function getEditorView(){
@@ -380,16 +557,16 @@ function triggerRowHTML(t){
   </td>
   <td><small>${adminModeRaw === 'anybody' ? actionType : `${actionType} / ${adminMode}`}</small></td>
   <td class="text-nowrap">
-    <button class="btn btn-sm action-mini ${toggleClass}" type="button" data-id="${id}" title="Переключить статус" aria-label="Переключить статус" onclick="handleToggleClick(event, this)">
+    <button class="btn btn-sm action-mini action-visibility ${toggleClass}" type="button" data-id="${id}" title="Переключить статус" aria-label="Переключить статус" onclick="handleToggleClick(event, this)">
       <i class="bi ${statusIcon(enabled)}"></i>
     </button>
-    <button class="btn btn-sm action-mini btn-outline-primary ms-1" type="button" onclick="openEdit(${id}, this)" title="Редактировать" aria-label="Редактировать">
+    <button class="btn btn-sm action-mini btn-outline-info ms-1" type="button" onclick="openEdit(${id}, this)" title="Редактировать" aria-label="Редактировать">
       <i class="bi bi-pencil"></i>
     </button>
     <form class="d-inline ms-1" method="post" action="${withToken('/trigger_bot/delete')}" onsubmit="return handleDeleteSubmit(event, this)">
       <input type="hidden" name="id" value="${id}">
       <button class="btn btn-sm action-mini btn-outline-danger" type="submit" title="Удалить" aria-label="Удалить">
-        <i class="bi bi-x-lg"></i>
+        <i class="bi bi-trash"></i>
       </button>
     </form>
   </td>
@@ -424,7 +601,8 @@ async function loadTriggerList(){
 }
 
 function updateImportFileName(input){
-  const out = document.getElementById('import_file_name');
+  const outId = input && input.dataset ? input.dataset.output : '';
+  const out = document.getElementById(outId || 'import_file_name');
   if(!out){ return; }
   const f = input && input.files && input.files[0];
   out.textContent = f ? f.name : 'Файл не выбран';
@@ -527,7 +705,8 @@ function handleDeleteSubmit(event, form){
 }
 
 function handleImportSubmit(event, form){
-  const btn = document.getElementById('import_submit_btn');
+  const btnId = form && form.dataset ? form.dataset.submitBtn : '';
+  const btn = document.getElementById(btnId || 'import_submit_btn');
   if(btn && btn.dataset.locked === '1'){
     if(event){ event.preventDefault(); }
     return false;
@@ -734,11 +913,74 @@ function bindMiniToolbarFallback(){
     }
   });
 
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-template-key]') : null;
+    if(!btn){ return; }
+    const key = String(btn.getAttribute('data-template-key') || '');
+    if(!key){ return; }
+    insertTemplateTag(key, btn);
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-template-edit]') : null;
+    if(!btn){ return; }
+    const id = String(btn.getAttribute('data-template-edit') || '');
+    if(!id){ return; }
+    openTemplateEdit(id);
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-template-delete]') : null;
+    if(!btn){ return; }
+    const id = String(btn.getAttribute('data-template-delete') || '');
+    if(!id){ return; }
+    deleteTemplate(id);
+  });
+
   document.addEventListener('change', (ev) => {
     const target = ev.target;
     if(!target || target.id !== 'f_template_tag_picker'){ return; }
     insertTemplateTagFromPicker(target);
   });
+
+  document.addEventListener('change', (ev) => {
+    const target = ev.target;
+    if(!target || target.id !== 'f_template_picker'){ return; }
+    if(!target.value){ return; }
+    insertTextAtCursor(getResponseTextArea(), `{{template \"${String(target.value)}\"}}`);
+    target.value = '';
+  });
+}
+
+function insertTemplateTag(key, btn){
+  const tag = `{{template \"${key}\"}}`;
+  const editor = getEditorView();
+  const el = getResponseTextArea();
+  if(editor || el){
+    insertTextAtCursor(el, tag);
+    return;
+  }
+  if(navigator && navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(tag).then(() => {
+      flashButtonLabel(btn, 'Скопировано');
+    }).catch(() => {
+      flashButtonLabel(btn, 'Скопировать не удалось');
+    });
+  }
+}
+
+function flashButtonLabel(btn, label){
+  if(!btn){ return; }
+  const prev = btn.dataset.labelPrev || btn.innerHTML;
+  if(!btn.dataset.labelPrev){
+    btn.dataset.labelPrev = prev;
+  }
+  btn.textContent = label;
+  setTimeout(() => {
+    if(btn.dataset.labelPrev){
+      btn.innerHTML = btn.dataset.labelPrev;
+    }
+  }, 1200);
 }
 
 function applyMatchTypeUI(){
