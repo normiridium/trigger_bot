@@ -108,6 +108,17 @@ set -a; source .env; set +a
 Экспорт:
 - `GET /trigger_bot/export` — скачать bundle `trigger_bot_export.json`.
 
+## Перезапуск сервиса из админки
+
+Кнопка «Перезапуск сервиса» использует `sudo systemctl restart trigger-admin-bot.service`.
+Нужно разрешить это действие без пароля для пользователя сервиса:
+
+```bash
+echo 'faline ALL=(root) NOPASSWD: /usr/bin/systemctl restart trigger-admin-bot.service' | sudo tee /etc/sudoers.d/trigger-admin-bot
+sudo chmod 440 /etc/sudoers.d/trigger-admin-bot
+sudo visudo -cf /etc/sudoers.d/trigger-admin-bot
+```
+
 ## ENV-переменные
 
 - `ALLOWED_CHAT_IDS` — список разрешённых `chat_id` через запятую/пробел.
