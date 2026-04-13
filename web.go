@@ -385,10 +385,10 @@ func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	cmd := exec.Command("sudo", "systemctl", "restart", "trigger-admin-bot.service")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		http.Error(rw, fmt.Sprintf("restart failed: %v: %s", err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+	// Delay restart so we can ответить до остановки процесса.
+	cmd := exec.Command("sh", "-c", "sleep 1; sudo /usr/bin/systemctl restart trigger-admin-bot.service")
+	if err := cmd.Start(); err != nil {
+		http.Error(rw, fmt.Sprintf("restart failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -399,7 +399,6 @@ func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
 
 func settingsSchema() []settingField {
 	return []settingField{
-		{Key: "ADMIN_BIND", Label: "Адрес админки", Type: "string", Description: ":8090"},
 		{Key: "ALLOWED_CHAT_IDS", Label: "Разрешённые чаты (через запятую)", Type: "string", Description: ""},
 		{Key: "ADMIN_CACHE_TTL_SEC", Label: "TTL кэша админов (сек)", Type: "int", Description: "120"},
 		{Key: "USER_INDEX_MAX", Label: "Лимит пользователей в индексе", Type: "int", Description: "800"},
@@ -409,8 +408,6 @@ func settingsSchema() []settingField {
 		{Key: "DEBUG_TRIGGER_LOG", Label: "Лог триггеров (debug)", Type: "bool", Description: "false"},
 		{Key: "DEBUG_GPT_LOG", Label: "Лог GPT (debug)", Type: "bool", Description: "false"},
 		{Key: "CHAT_ERROR_LOG", Label: "Отправка ошибок в чат", Type: "bool", Description: "true"},
-		{Key: "WEB_TEMPLATE_DIR", Label: "Путь к HTML-шаблонам", Type: "string", Description: "./templates"},
-		{Key: "WEB_STATIC_DIR", Label: "Путь к статике", Type: "string", Description: "./static"},
 		{Key: "GPT_PROMPT_DEBOUNCE_SEC", Label: "Debounce GPT (сек)", Type: "int", Description: "10"},
 		{Key: "SERPAPI_ENGINE", Label: "SerpAPI engine", Type: "string", Description: "google_images"},
 		{Key: "OPENAI_MODEL", Label: "OpenAI model (chat)", Type: "string", Description: "gpt-4.1-mini"},
