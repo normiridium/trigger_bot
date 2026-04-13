@@ -121,9 +121,12 @@ tr.dragging-row {
   }
   .settings-label {
     min-width: 0;
+    text-align: left;
   }
   .settings-input {
     max-width: 100%;
+    width: 100%;
+    text-align: left;
   }
 }
 .cm-wrap .cm-editor {
