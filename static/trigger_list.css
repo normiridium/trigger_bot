@@ -115,6 +115,9 @@ tr.dragging-row {
   max-width: 420px;
 }
 @media (max-width: 768px) {
+  .settings-panel {
+    text-align: left;
+  }
   .settings-row {
     flex-direction: column;
     align-items: flex-start;
@@ -122,11 +125,19 @@ tr.dragging-row {
   .settings-label {
     min-width: 0;
     text-align: left;
+    align-self: flex-start;
   }
   .settings-input {
     max-width: 100%;
     width: 100%;
     text-align: left;
+    align-self: stretch;
+  }
+  .settings-row .form-check {
+    align-self: flex-start;
+  }
+  .settings-row .form-check-input {
+    margin-left: 0;
   }
 }
 .cm-wrap .cm-editor {

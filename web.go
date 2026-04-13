@@ -399,7 +399,6 @@ func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
 
 func settingsSchema() []settingField {
 	return []settingField{
-		{Key: "ADMIN_ENABLED", Label: "Админка включена", Type: "bool", Description: "true"},
 		{Key: "ADMIN_BIND", Label: "Адрес админки", Type: "string", Description: ":8090"},
 		{Key: "ALLOWED_CHAT_IDS", Label: "Разрешённые чаты (через запятую)", Type: "string", Description: ""},
 		{Key: "ADMIN_CACHE_TTL_SEC", Label: "TTL кэша админов (сек)", Type: "int", Description: "120"},
