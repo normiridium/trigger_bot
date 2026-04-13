@@ -156,7 +156,7 @@ set -a; source .env; set +a
 Нужно разрешить это действие без пароля для пользователя сервиса:
 
 ```bash
-echo 'faline ALL=(root) NOPASSWD: /usr/bin/systemctl restart trigger-admin-bot.service' | sudo tee /etc/sudoers.d/trigger-admin-bot
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart trigger-admin-bot.service" | sudo tee /etc/sudoers.d/trigger-admin-bot
 sudo chmod 440 /etc/sudoers.d/trigger-admin-bot
 sudo visudo -cf /etc/sudoers.d/trigger-admin-bot
 ```
