@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type Downloader struct {
@@ -35,6 +37,8 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 		"--audio-format", d.audioFormat(),
 		"--audio-quality", d.audioQuality(),
 		"--no-playlist",
+		"--quiet",
+		"--no-warnings",
 		"--extractor-args", d.extractorArgs(),
 		"--print", "after_move:filepath",
 		"-o", outTpl,
@@ -61,6 +65,14 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 		return "", err
 	}
 	var path string
+	errBuf := new(strings.Builder)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		raw, _ := io.ReadAll(stderr)
+		errBuf.Write(raw)
+	}()
 	outScan := bufio.NewScanner(stdout)
 	for outScan.Scan() {
 		line := strings.TrimSpace(outScan.Text())
@@ -68,12 +80,7 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 			path = line
 		}
 	}
-	errBuf := new(strings.Builder)
-	errScan := bufio.NewScanner(stderr)
-	for errScan.Scan() {
-		errBuf.WriteString(errScan.Text())
-		errBuf.WriteString("\n")
-	}
+	wg.Wait()
 	if err := cmd.Wait(); err != nil {
 		return "", fmt.Errorf("yt-dlp failed: %w: %s", err, strings.TrimSpace(errBuf.String()))
 	}

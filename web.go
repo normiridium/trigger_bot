@@ -413,13 +413,11 @@ func settingsSchema() []settingField {
 		{Key: "OPENAI_MODEL", Label: "OpenAI model (chat)", Type: "string", Description: "gpt-4.1-mini"},
 		{Key: "OPENAI_IMAGE_MODEL", Label: "OpenAI model (image)", Type: "string", Description: "gpt-image-1"},
 		{Key: "OPENAI_IMAGE_SIZE", Label: "OpenAI image size", Type: "string", Description: "1024x1024"},
-		{Key: "VK_AUDIO_INTERACTIVE", Label: "VK: интерактивный выбор", Type: "bool", Description: "true"},
-		{Key: "VK_AUDIO_MAX_MB", Label: "VK: лимит аудио (MB)", Type: "int", Description: "60"},
-		{Key: "VK_AUDIO_FFMPEG_TIMEOUT_SEC", Label: "VK: таймаут ffmpeg (сек)", Type: "int", Description: "120"},
-		{Key: "VK_AUDIO_RETRY_COUNT", Label: "VK: ретраи", Type: "int", Description: "3"},
-		{Key: "VK_AUDIO_DL_THREADS", Label: "VK: потоки загрузки", Type: "int", Description: "1"},
-		{Key: "VK_AUDIO_WORKERS", Label: "VK: воркеры очереди", Type: "int", Description: "1"},
-		{Key: "VK_AUDIO_QUEUE", Label: "VK: размер очереди", Type: "int", Description: "8"},
+		{Key: "SPOTIFY_AUDIO_INTERACTIVE", Label: "Spotify: интерактивный выбор", Type: "bool", Description: "true"},
+		{Key: "AUDIO_FORMAT", Label: "Формат аудио", Type: "string", Description: "mp3"},
+		{Key: "AUDIO_QUALITY", Label: "Качество аудио", Type: "string", Description: "320K"},
+		{Key: "YTDLP_BIN", Label: "Путь к yt-dlp", Type: "string", Description: "/usr/local/bin/yt-dlp"},
+		{Key: "FIXIE_SOCKS_HOST", Label: "SOCKS5 proxy (host:port)", Type: "string", Description: ""},
 	}
 }
 
@@ -578,7 +576,7 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-image"
 	case model.ActionTypeSearchImage:
 		return "bi-search"
-	case model.ActionTypeSpotifyMusic, model.ActionTypeVKMusic:
+	case model.ActionTypeSpotifyMusic:
 		return "bi-music-note-beamed"
 	default:
 		return ""
