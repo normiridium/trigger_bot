@@ -1295,6 +1295,7 @@ func main() {
 		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 	}
+	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
 	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
@@ -1374,7 +1375,17 @@ func main() {
 					reportChatFailure(bot, chatID, title, err)
 				},
 				func(ctx context.Context, req vk.PickRequest) error {
-					return processSpotifyPick(ctx, sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo}, spotifyMusicClient, spotifyDownloader, req)
+					_ = ctx
+					task := spotifyPickTask{
+						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+						Req:      req,
+						DL:       spotifyDownloader,
+						ReportTo: req.ChatID,
+					}
+					if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
+						return errors.New("spotify queue is full")
+					}
+					return nil
 				},
 			) {
 				continue
@@ -1776,19 +1787,21 @@ func main() {
 				DeleteSource: tr != nil && tr.DeleteSource,
 				UserID:       msg.From.ID,
 			}
-			ctxSend, cancelSend := context.WithTimeout(context.Background(), 3*time.Minute)
-			err = processSpotifyPick(ctxSend, sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}, spotifyMusicClient, spotifyDownloader, req)
-			cancelSend()
-			if err != nil {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", err)
+			task := spotifyPickTask{
+				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				Req:      req,
+				DL:       spotifyDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     idleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
 				continue
 			}
-			if idleTracker != nil {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-			}
-			deleteTriggerSourceMessage(bot, msg, tr)
 			if debugTriggerLogEnabled {
-				log.Printf("send spotify/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+				log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 			}
 		default:
 			replyTo := 0
@@ -1997,20 +2010,12 @@ func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error
 	return nil
 }
 
-func processSpotifyPick(ctx context.Context, sendCtx sendContext, spClient *spotifymusic.Client, dl spotifymusic.Downloader, req vk.PickRequest) error {
-	if spClient == nil || !spClient.Enabled() {
-		return errors.New("spotify client is not configured")
-	}
+func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl spotifymusic.Downloader, req vk.PickRequest) error {
 	if strings.TrimSpace(req.TrackID) == "" {
 		return errors.New("empty track id")
 	}
-	trackCtx, cancelTrack := context.WithTimeout(ctx, 20*time.Second)
-	track, err := spClient.GetTrack(trackCtx, req.TrackID)
-	cancelTrack()
-	if err != nil {
-		return err
-	}
-	query := spotifymusic.BuildSearchQuery(track)
+	query := strings.TrimSpace(req.Artist + " - " + req.Title)
+	query = strings.Trim(query, " -")
 	if query == "" {
 		query = strings.TrimSpace(req.Artist + " " + req.Title)
 	}
@@ -2028,53 +2033,53 @@ func processSpotifyPick(ctx context.Context, sendCtx sendContext, spClient *spot
 			log.Printf("spotify temp cleanup failed path=%q err=%v", filePath, rmErr)
 		}
 	}()
-	performer := strings.TrimSpace(track.Artist)
-	title := strings.TrimSpace(track.Title)
-	if performer == "" {
-		performer = strings.TrimSpace(req.Artist)
-	}
-	if title == "" {
-		title = strings.TrimSpace(req.Title)
-	}
+	performer := strings.TrimSpace(req.Artist)
+	title := strings.TrimSpace(req.Title)
 	return sendAudioFromFile(sendCtx, filePath, performer, title)
 }
 
-type audioSendTask struct {
-	Ctx       sendContext
-	AudioURL  string
-	Performer string
-	Title     string
-	Msg       *tgbotapi.Message
-	Trigger   *Trigger
-	Idle      *trigger.IdleTracker
+type spotifyPickTask struct {
+	SendCtx  sendContext
+	Req      vk.PickRequest
+	DL       spotifymusic.Downloader
+	Msg      *tgbotapi.Message
+	Trigger  *Trigger
+	Idle     *trigger.IdleTracker
+	ReportTo int64
 }
 
-type audioSendQueue struct {
-	ch chan audioSendTask
+type spotifyPickQueue struct {
+	ch chan spotifyPickTask
 }
 
-func newAudioSendQueue(workers, size int) *audioSendQueue {
+func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 	if workers < 1 {
 		workers = 1
 	}
 	if size < 1 {
 		size = workers * 2
 	}
-	q := &audioSendQueue{ch: make(chan audioSendTask, size)}
+	q := &spotifyPickQueue{ch: make(chan spotifyPickTask, size)}
 	for i := 0; i < workers; i++ {
 		go func() {
 			for task := range q.ch {
-				err := sendAudioFromURL(task.Ctx, task.AudioURL, task.Performer, task.Title)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				err := processSpotifyPick(ctx, task.SendCtx, task.DL, task.Req)
+				cancel()
 				if err != nil {
-					log.Printf("audio send failed chat=%d err=%v", task.Ctx.ChatID, err)
-					reportChatFailure(task.Ctx.Bot, task.Ctx.ChatID, "ошибка отправки аудио VK", err)
+					chatID := task.ReportTo
+					if chatID == 0 {
+						chatID = task.SendCtx.ChatID
+					}
+					log.Printf("spotify queue send failed chat=%d err=%v", chatID, err)
+					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка отправки аудио Spotify", err)
 					continue
 				}
 				if task.Idle != nil {
-					task.Idle.MarkActivity(task.Ctx.ChatID, time.Now())
+					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
 				}
 				if task.Msg != nil && task.Trigger != nil {
-					deleteTriggerSourceMessage(task.Ctx.Bot, task.Msg, task.Trigger)
+					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
 				}
 			}
 		}()
@@ -2082,7 +2087,7 @@ func newAudioSendQueue(workers, size int) *audioSendQueue {
 	return q
 }
 
-func (q *audioSendQueue) enqueue(task audioSendTask) bool {
+func (q *spotifyPickQueue) enqueue(task spotifyPickTask) bool {
 	if q == nil {
 		return false
 	}
