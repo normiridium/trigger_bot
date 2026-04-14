@@ -155,7 +155,7 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeGPTImage
 	case "search_image":
 		return ActionTypeSearchImage
-	case "spotify_music_audio", "vk_music_audio":
+	case "spotify_music_audio":
 		return ActionTypeSpotifyMusic
 	default:
 		return ActionTypeSend

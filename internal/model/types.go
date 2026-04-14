@@ -155,7 +155,6 @@ const (
 	ActionTypeGPTImage     ActionType = "gpt_image"
 	ActionTypeSearchImage  ActionType = "search_image"
 	ActionTypeSpotifyMusic ActionType = "spotify_music_audio"
-	ActionTypeVKMusic      ActionType = "vk_music_audio" // legacy alias for old saved triggers
 )
 
 var ActionTypeValues = []ActionType{
@@ -179,7 +178,7 @@ func (m ActionType) String() string {
 		return "Сгенерировать картинку (ChatGPT)"
 	case ActionTypeSearchImage:
 		return "Найти картинку (по запросу)"
-	case ActionTypeSpotifyMusic, ActionTypeVKMusic:
+	case ActionTypeSpotifyMusic:
 		return "Spotify музыка (аудио-вложение)"
 	default:
 		return string(m)

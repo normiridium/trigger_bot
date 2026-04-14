@@ -39,7 +39,7 @@ type PickProcessor func(ctx context.Context, req PickRequest) error
 var pickMu sync.Mutex
 var pickRequests = make(map[string]PickRequest)
 
-func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []PickTrack) tgbotapi.InlineKeyboardMarkup {
+func BuildPickKeyboard(msg *tgbotapi.Message, replyTo int, sourceMsgID int, deleteSource bool, tracks []PickTrack) tgbotapi.InlineKeyboardMarkup {
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(tracks))
 	for _, track := range tracks {
 		label := strings.TrimSpace(track.Title)
@@ -58,8 +58,8 @@ func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []PickTr
 			Artist:       artist,
 			Title:        strings.TrimSpace(track.Title),
 			ChatID:       msg.Chat.ID,
-			ReplyTo:      msg.MessageID,
-			SourceMsgID:  msg.MessageID,
+			ReplyTo:      replyTo,
+			SourceMsgID:  sourceMsgID,
 			UserID:       msg.From.ID,
 			DeleteSource: deleteSource,
 		})
@@ -71,10 +71,10 @@ func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []PickTr
 		Artist:       "",
 		Title:        "",
 		ChatID:       msg.Chat.ID,
-		ReplyTo:      msg.MessageID,
-		SourceMsgID:  msg.MessageID,
+		ReplyTo:      replyTo,
+		SourceMsgID:  sourceMsgID,
 		UserID:       msg.From.ID,
-		DeleteSource: false,
+		DeleteSource: deleteSource,
 	})
 	cancelBtn := tgbotapi.NewInlineKeyboardButtonData("Отменить", "vkpick_cancel:"+cancelToken)
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(cancelBtn))

@@ -1292,8 +1292,8 @@ func main() {
 	spotifyDownloader := spotifymusic.Downloader{
 		YTDLPBin:     strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		ProxySocks:   strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
-		AudioFormat:  strings.TrimSpace(firstNonEmptyEnv("AUDIO_FORMAT", "VK_AUDIO_FORMAT")),
-		AudioQuality: strings.TrimSpace(firstNonEmptyEnv("AUDIO_QUALITY", "VK_AUDIO_QUALITY")),
+		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
+		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 	}
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
@@ -1343,7 +1343,6 @@ func main() {
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)
-	audioQueue := newAudioSendQueue(envInt("VK_AUDIO_WORKERS", 1), envInt("VK_AUDIO_QUEUE", 8))
 	handlerDeps := triggerHandlerDeps{
 		triggerActionDeps: triggerActionDeps{
 			Bot:               bot,
@@ -1352,7 +1351,6 @@ func main() {
 			SpotifyMusic:      spotifyMusicClient,
 			SpotifyDownloader: spotifyDownloader,
 			TemplateLookup:    templateLookup,
-			AudioQueue:        audioQueue,
 		},
 		Allowed:    allowedChats,
 		Engine:     triggerEngine,
@@ -1420,7 +1418,7 @@ func main() {
 			case "start", "help":
 				s := "Триггер-бот активен.\n\n" +
 					"Админка: /trigger_bot\n" +
-					"Команды: /start /help /emojiid /vksearch\n" +
+					"Команды: /start /help /emojiid /spsearch\n" +
 					"Мод-команды: !ban !unban !mute !unmute !kick !readonly !reload_admins (+ тихие !sban !smute !skick)\n\n" +
 					"Теги для ChatGPT-промпта:\n" +
 					"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -1460,7 +1458,7 @@ func main() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-			case "spsearch", "spfind", "vksearch", "vkfind":
+			case "spsearch", "spfind":
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: /spsearch исполнитель или трек", false)
@@ -1705,7 +1703,7 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
-		case "spotify_music_audio", "vk_music_audio":
+		case "spotify_music_audio":
 			if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 				continue
@@ -1735,7 +1733,7 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			if envBool("SPOTIFY_AUDIO_INTERACTIVE", envBool("VK_AUDIO_INTERACTIVE", true)) {
+			if envBool("SPOTIFY_AUDIO_INTERACTIVE", true) {
 				maxResults := 10
 				if len(tracks) > maxResults {
 					tracks = tracks[:maxResults]
@@ -1750,7 +1748,7 @@ func main() {
 					})
 				}
 				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
-				m.ReplyMarkup = vk.BuildPickKeyboard(msg, tr != nil && tr.DeleteSource, pickTracks)
+				m.ReplyMarkup = vk.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr != nil && tr.DeleteSource, pickTracks)
 				if replyTo > 0 {
 					m.ReplyToMessageID = replyTo
 					m.AllowSendingWithoutReply = true
@@ -1758,6 +1756,12 @@ func main() {
 				if _, err := bot.Send(m); err != nil {
 					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки списка Spotify", err)
 					continue
+				}
+				if tr != nil && tr.DeleteSource && msg.MessageID > 0 {
+					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+						ChatID:    msg.Chat.ID,
+						MessageID: msg.MessageID,
+					})
 				}
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				continue
@@ -2153,23 +2157,23 @@ func downloadAudioToTempFile(audioURL string) (string, error) {
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
 	tmpSrcPath := ""
-	maxMB := envInt("VK_AUDIO_MAX_MB", 60)
+	maxMB := envInt("SPOTIFY_AUDIO_MAX_MB", 60)
 	if maxMB < 5 {
 		maxMB = 5
 	}
-	ffmpegTimeout := envInt("VK_AUDIO_FFMPEG_TIMEOUT_SEC", 120)
+	ffmpegTimeout := envInt("SPOTIFY_AUDIO_FFMPEG_TIMEOUT_SEC", 120)
 	if ffmpegTimeout < 30 {
 		ffmpegTimeout = 30
 	}
-	ua := strings.TrimSpace(os.Getenv("VK_USER_AGENT"))
+	ua := strings.TrimSpace(os.Getenv("SPOTIFY_USER_AGENT"))
 	if ua == "" {
-		ua = "VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)"
+		ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 	}
-	retries := envInt("VK_AUDIO_RETRY_COUNT", 3)
+	retries := envInt("SPOTIFY_AUDIO_RETRY_COUNT", 3)
 	if retries < 1 {
 		retries = 1
 	}
-	dlThreads := envInt("VK_AUDIO_DL_THREADS", 1)
+	dlThreads := envInt("SPOTIFY_AUDIO_DL_THREADS", 1)
 	if dlThreads < 1 {
 		dlThreads = 1
 	}
@@ -3328,7 +3332,6 @@ type triggerActionDeps struct {
 	SpotifyMusic      *spotifymusic.Client
 	SpotifyDownloader spotifymusic.Downloader
 	TemplateLookup    func(string) string
-	AudioQueue        *audioSendQueue
 }
 
 type triggerHandlerDeps struct {
@@ -3503,7 +3506,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
-	case "spotify_music_audio", "vk_music_audio":
+	case "spotify_music_audio":
 		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 		} else {
