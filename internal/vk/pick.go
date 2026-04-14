@@ -61,12 +61,46 @@ func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []vkmusi
 		btn := tgbotapi.NewInlineKeyboardButtonData(label, "vkpick:"+token)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
 	}
+	cancelToken := putPick(PickRequest{
+		TrackID:      "",
+		Artist:       "",
+		Title:        "",
+		ChatID:       msg.Chat.ID,
+		ReplyTo:      msg.MessageID,
+		SourceMsgID:  msg.MessageID,
+		UserID:       msg.From.ID,
+		DeleteSource: false,
+	})
+	cancelBtn := tgbotapi.NewInlineKeyboardButtonData("Отменить", "vkpick_cancel:"+cancelToken)
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(cancelBtn))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func HandlePickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, vkClient *vkmusic.Client, report FailureReporter, sendAudio AudioSender) bool {
 	if cb == nil || bot == nil {
 		return false
+	}
+	if strings.HasPrefix(cb.Data, "vkpick_cancel:") {
+		token := strings.TrimPrefix(cb.Data, "vkpick_cancel:")
+		req, ok, msg := takePick(token, cb.From.ID)
+		if !ok {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+			return true
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
+		if cb.Message != nil {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    cb.Message.Chat.ID,
+				MessageID: cb.Message.MessageID,
+			})
+		}
+		if req.DeleteSource && req.SourceMsgID > 0 {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    req.ChatID,
+				MessageID: req.SourceMsgID,
+			})
+		}
+		return true
 	}
 	if !strings.HasPrefix(cb.Data, "vkpick:") {
 		return false
