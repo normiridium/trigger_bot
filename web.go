@@ -578,7 +578,7 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-image"
 	case model.ActionTypeSearchImage:
 		return "bi-search"
-	case model.ActionTypeVKMusic:
+	case model.ActionTypeSpotifyMusic, model.ActionTypeVKMusic:
 		return "bi-music-note-beamed"
 	default:
 		return ""
