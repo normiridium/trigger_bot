@@ -29,6 +29,8 @@ Telegram-бот с web-админкой триггеров и поддержко
 
 Ключевые для Spotify-аудио:
 - `SPOTIFY_AUDIO_INTERACTIVE=true` — показывать список выбора
+- `SPOTIFY_AUDIO_WORKERS=1` — число воркеров скачивания
+- `SPOTIFY_AUDIO_QUEUE=8` — размер очереди задач скачивания
 - `AUDIO_FORMAT=mp3`
 - `AUDIO_QUALITY=320K`
 - `YTDLP_BIN=/usr/local/bin/yt-dlp` (или оставить пустым, если есть в `PATH`)
