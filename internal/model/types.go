@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|delete|gpt_prompt|gpt_image|search_image|vk_music_audio
+	ActionType    ActionType         // send|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -149,12 +149,13 @@ func (m MatchType) String() string {
 type ActionType string
 
 const (
-	ActionTypeSend        ActionType = "send"
-	ActionTypeDelete      ActionType = "delete"
-	ActionTypeGPTPrompt   ActionType = "gpt_prompt"
-	ActionTypeGPTImage    ActionType = "gpt_image"
-	ActionTypeSearchImage ActionType = "search_image"
-	ActionTypeVKMusic     ActionType = "vk_music_audio"
+	ActionTypeSend         ActionType = "send"
+	ActionTypeDelete       ActionType = "delete"
+	ActionTypeGPTPrompt    ActionType = "gpt_prompt"
+	ActionTypeGPTImage     ActionType = "gpt_image"
+	ActionTypeSearchImage  ActionType = "search_image"
+	ActionTypeSpotifyMusic ActionType = "spotify_music_audio"
+	ActionTypeVKMusic      ActionType = "vk_music_audio" // legacy alias for old saved triggers
 )
 
 var ActionTypeValues = []ActionType{
@@ -163,7 +164,7 @@ var ActionTypeValues = []ActionType{
 	ActionTypeGPTPrompt,
 	ActionTypeGPTImage,
 	ActionTypeSearchImage,
-	ActionTypeVKMusic,
+	ActionTypeSpotifyMusic,
 }
 
 func (m ActionType) String() string {
@@ -178,8 +179,8 @@ func (m ActionType) String() string {
 		return "Сгенерировать картинку (ChatGPT)"
 	case ActionTypeSearchImage:
 		return "Найти картинку (по запросу)"
-	case ActionTypeVKMusic:
-		return "VK музыка (аудио-вложение)"
+	case ActionTypeSpotifyMusic, ActionTypeVKMusic:
+		return "Spotify музыка (аудио-вложение)"
 	default:
 		return string(m)
 	}

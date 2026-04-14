@@ -80,21 +80,21 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 	}
 }
 
-func TestBuildVKMusicQueryFromMessage(t *testing.T) {
+func TestBuildSpotifyMusicQueryFromMessage(t *testing.T) {
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
 		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
 		Text: "найди песню",
 	}
 
-	gotDefault := buildVKMusicQueryFromMessage(templateContext{
+	gotDefault := buildSpotifyMusicQueryFromMessage(templateContext{
 		Msg: msg,
 	}, "")
 	if gotDefault != "найди песню" {
 		t.Fatalf("default query mismatch: %q", gotDefault)
 	}
 
-	got := buildVKMusicQueryFromMessage(templateContext{
+	got := buildSpotifyMusicQueryFromMessage(templateContext{
 		Msg:           msg,
 		CapturingText: "летов",
 	}, "играй {{capturing_text}}")

@@ -26,10 +26,10 @@ import (
 	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 
 	"trigger-admin-bot/internal/engine"
 	"trigger-admin-bot/internal/gpt"
+	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
 	"trigger-admin-bot/internal/vk"
 )
@@ -1280,14 +1280,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("create bot failed: %v", err)
 	}
-	var vkMusicClient *vkmusic.Client
-	if vkToken := strings.TrimSpace(os.Getenv("VK_TOKEN")); vkToken != "" {
-		vkMusicClient, err = vkmusic.NewClient(vkToken, strings.TrimSpace(os.Getenv("VK_USER_AGENT")))
-		if err != nil {
-			log.Printf("vk music client init failed: %v", err)
-		} else {
-			log.Printf("vk music client enabled")
-		}
+	var spotifyMusicClient *spotifymusic.Client
+	spotifyClientID := strings.TrimSpace(firstNonEmptyEnv("SPOTIPY_CLIENT_ID", "SPOTIFY_CLIENT_ID"))
+	spotifyClientSecret := strings.TrimSpace(firstNonEmptyEnv("SPOTIPY_CLIENT_SECRET", "SPOTIFY_CLIENT_SECRET"))
+	if spotifyClientID != "" && spotifyClientSecret != "" {
+		spotifyMusicClient = spotifymusic.New(spotifyClientID, spotifyClientSecret)
+		log.Printf("spotify music client enabled")
+	} else {
+		log.Printf("spotify music client disabled: set SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET")
+	}
+	spotifyDownloader := spotifymusic.Downloader{
+		YTDLPBin:     strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		ProxySocks:   strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		AudioFormat:  strings.TrimSpace(firstNonEmptyEnv("AUDIO_FORMAT", "VK_AUDIO_FORMAT")),
+		AudioQuality: strings.TrimSpace(firstNonEmptyEnv("AUDIO_QUALITY", "VK_AUDIO_QUALITY")),
 	}
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
@@ -1340,12 +1346,13 @@ func main() {
 	audioQueue := newAudioSendQueue(envInt("VK_AUDIO_WORKERS", 1), envInt("VK_AUDIO_QUEUE", 8))
 	handlerDeps := triggerHandlerDeps{
 		triggerActionDeps: triggerActionDeps{
-			Bot:            bot,
-			IdleTracker:    idleTracker,
-			GPTDebouncer:   gptDebouncer,
-			VKMusic:        vkMusicClient,
-			TemplateLookup: templateLookup,
-			AudioQueue:     audioQueue,
+			Bot:               bot,
+			IdleTracker:       idleTracker,
+			GPTDebouncer:      gptDebouncer,
+			SpotifyMusic:      spotifyMusicClient,
+			SpotifyDownloader: spotifyDownloader,
+			TemplateLookup:    templateLookup,
+			AudioQueue:        audioQueue,
 		},
 		Allowed:    allowedChats,
 		Engine:     triggerEngine,
@@ -1365,21 +1372,11 @@ func main() {
 			if vk.HandlePickCallback(
 				bot,
 				update.Update.CallbackQuery,
-				vkMusicClient,
 				func(chatID int64, title string, err error) {
 					reportChatFailure(bot, chatID, title, err)
 				},
-				func(chatID int64, url, artist, title string) error {
-					task := audioSendTask{
-						Ctx:       sendContext{Bot: bot, ChatID: chatID},
-						AudioURL:  url,
-						Performer: artist,
-						Title:     title,
-					}
-					if audioQueue != nil && audioQueue.enqueue(task) {
-						return nil
-					}
-					return sendAudioFromURL(task.Ctx, url, artist, title)
+				func(ctx context.Context, req vk.PickRequest) error {
+					return processSpotifyPick(ctx, sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo}, spotifyMusicClient, spotifyDownloader, req)
 				},
 			) {
 				continue
@@ -1463,29 +1460,29 @@ func main() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-			case "vksearch", "vkfind":
+			case "spsearch", "spfind", "vksearch", "vkfind":
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: /vksearch исполнитель или трек", false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: /spsearch исполнитель или трек", false)
 					continue
 				}
-				if vkMusicClient == nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "VK-поиск не настроен (добавьте VK_TOKEN в .env).", false)
+				if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Spotify-поиск не настроен (добавьте SPOTIPY_CLIENT_ID и SPOTIPY_CLIENT_SECRET в .env).", false)
 					continue
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-				tracks, err := vkMusicClient.SearchTracks(ctx, query, 10)
+				tracks, err := spotifyMusicClient.SearchTracks(ctx, query, 10)
 				cancel()
 				if err != nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка VK-поиска: "+clipText(err.Error(), 240), false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка Spotify-поиска: "+clipText(err.Error(), 240), false)
 					continue
 				}
 				if len(tracks) == 0 {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ничего не найдено в VK.", false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Ничего не найдено в Spotify.", false)
 					continue
 				}
 				var b strings.Builder
-				b.WriteString("VK поиск:\n")
+				b.WriteString("Spotify поиск:\n")
 				for i, tr := range tracks {
 					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
 				}
@@ -1708,12 +1705,12 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
 			}
-		case "vk_music_audio":
-			if vkMusicClient == nil {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+		case "spotify_music_audio", "vk_music_audio":
+			if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 				continue
 			}
-			query := buildVKMusicQueryFromMessage(tmplCtx, resolvedTemplate)
+			query := buildSpotifyMusicQueryFromMessage(tmplCtx, resolvedTemplate)
 			if query == "" {
 				query = strings.TrimSpace(msg.Text)
 			}
@@ -1721,16 +1718,16 @@ func main() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			tracks, err := vkMusicClient.SearchTracks(ctx, query, 10)
+			tracks, err := spotifyMusicClient.SearchTracks(ctx, query, 10)
 			cancel()
 			if err != nil {
-				log.Printf("vk music search failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска музыки VK", err)
+				log.Printf("spotify music search failed: %v", err)
+				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска музыки Spotify", err)
 				continue
 			}
 			if len(tracks) == 0 {
 				if debugTriggerLogEnabled {
-					log.Printf("vk music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
+					log.Printf("spotify music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
 				}
 				continue
 			}
@@ -1738,83 +1735,56 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			if envBool("VK_AUDIO_INTERACTIVE", true) {
+			if envBool("SPOTIFY_AUDIO_INTERACTIVE", envBool("VK_AUDIO_INTERACTIVE", true)) {
 				maxResults := 10
 				if len(tracks) > maxResults {
 					tracks = tracks[:maxResults]
 				}
+				pickTracks := make([]vk.PickTrack, 0, len(tracks))
+				for _, track := range tracks {
+					pickTracks = append(pickTracks, vk.PickTrack{
+						ID:          track.ID,
+						Artist:      track.Artist,
+						Title:       track.Title,
+						DurationSec: track.DurationSec,
+					})
+				}
 				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
-				m.ReplyMarkup = vk.BuildPickKeyboard(msg, tr != nil && tr.DeleteSource, tracks)
+				m.ReplyMarkup = vk.BuildPickKeyboard(msg, tr != nil && tr.DeleteSource, pickTracks)
 				if replyTo > 0 {
 					m.ReplyToMessageID = replyTo
 					m.AllowSendingWithoutReply = true
 				}
 				if _, err := bot.Send(m); err != nil {
-					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки списка VK", err)
+					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки списка Spotify", err)
 					continue
 				}
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				continue
 			}
-			var sendErr error
-			sent := false
-			maxCandidates := 3
-			for i := 0; i < len(tracks) && i < maxCandidates; i++ {
-				ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
-				song, err := vkMusicClient.GetAudioURL(ctx2, tracks[i].ID)
-				cancel2()
-				if err != nil {
-					sendErr = err
-					if debugTriggerLogEnabled {
-						log.Printf("vk music get audio failed trigger=%d track_id=%q err=%v", tr.ID, tracks[i].ID, err)
-					}
-					continue
-				}
-				if song == nil || strings.TrimSpace(song.URL) == "" {
-					sendErr = errors.New("empty audio URL")
-					if debugTriggerLogEnabled {
-						log.Printf("vk music no direct url trigger=%d track_id=%q", tr.ID, tracks[i].ID)
-					}
-					continue
-				}
-				task := audioSendTask{
-					Ctx:       sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-					AudioURL:  song.URL,
-					Performer: song.Artist,
-					Title:     song.Title,
-					Msg:       msg,
-					Trigger:   tr,
-					Idle:      idleTracker,
-				}
-				if audioQueue != nil && audioQueue.enqueue(task) {
-					sent = true
-					break
-				}
-				if err := sendAudioFromURL(task.Ctx, song.URL, song.Artist, song.Title); err != nil {
-					sendErr = err
-					if debugTriggerLogEnabled {
-						log.Printf("vk music send failed trigger=%d track_id=%q err=%v", tr.ID, tracks[i].ID, err)
-					}
-					continue
-				}
-				if idleTracker != nil {
-					idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				}
-				deleteTriggerSourceMessage(bot, msg, tr)
-				sent = true
-				break
+			req := vk.PickRequest{
+				TrackID:      tracks[0].ID,
+				Artist:       tracks[0].Artist,
+				Title:        tracks[0].Title,
+				ChatID:       msg.Chat.ID,
+				ReplyTo:      replyTo,
+				SourceMsgID:  msg.MessageID,
+				DeleteSource: tr != nil && tr.DeleteSource,
+				UserID:       msg.From.ID,
 			}
-
-			if !sent {
-				if sendErr != nil {
-					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио VK", sendErr)
-				}
+			ctxSend, cancelSend := context.WithTimeout(context.Background(), 3*time.Minute)
+			err = processSpotifyPick(ctxSend, sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}, spotifyMusicClient, spotifyDownloader, req)
+			cancelSend()
+			if err != nil {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", err)
 				continue
 			}
-			if sent {
-				if debugTriggerLogEnabled {
-					log.Printf("send vk/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
-				}
+			if idleTracker != nil {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
+			deleteTriggerSourceMessage(bot, msg, tr)
+			if debugTriggerLogEnabled {
+				log.Printf("send spotify/audio attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 			}
 		default:
 			replyTo := 0
@@ -1996,6 +1966,73 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 		log.Printf("send audio ok chat=%d msg=%d replyTo=%d performer=%q title=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title)
 	}
 	return nil
+}
+
+func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error {
+	filePath = strings.TrimSpace(filePath)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return errors.New("invalid audio file send params")
+	}
+	m := tgbotapi.NewAudio(ctx.ChatID, tgbotapi.FilePath(filePath))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	m.Performer = strings.TrimSpace(performer)
+	m.Title = strings.TrimSpace(title)
+	if caption := buildAudioCaption(filePath); caption != "" {
+		m.Caption = caption
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send audio file ok chat=%d msg=%d replyTo=%d performer=%q title=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title)
+	}
+	return nil
+}
+
+func processSpotifyPick(ctx context.Context, sendCtx sendContext, spClient *spotifymusic.Client, dl spotifymusic.Downloader, req vk.PickRequest) error {
+	if spClient == nil || !spClient.Enabled() {
+		return errors.New("spotify client is not configured")
+	}
+	if strings.TrimSpace(req.TrackID) == "" {
+		return errors.New("empty track id")
+	}
+	trackCtx, cancelTrack := context.WithTimeout(ctx, 20*time.Second)
+	track, err := spClient.GetTrack(trackCtx, req.TrackID)
+	cancelTrack()
+	if err != nil {
+		return err
+	}
+	query := spotifymusic.BuildSearchQuery(track)
+	if query == "" {
+		query = strings.TrimSpace(req.Artist + " " + req.Title)
+	}
+	if query == "" {
+		return errors.New("empty track search query")
+	}
+	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+	filePath, err := dl.DownloadByQuery(dlCtx, query)
+	cancelDl()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rmErr := os.Remove(filePath); rmErr != nil && debugTriggerLogEnabled {
+			log.Printf("spotify temp cleanup failed path=%q err=%v", filePath, rmErr)
+		}
+	}()
+	performer := strings.TrimSpace(track.Artist)
+	title := strings.TrimSpace(track.Title)
+	if performer == "" {
+		performer = strings.TrimSpace(req.Artist)
+	}
+	if title == "" {
+		title = strings.TrimSpace(req.Title)
+	}
+	return sendAudioFromFile(sendCtx, filePath, performer, title)
 }
 
 type audioSendTask struct {
@@ -3113,7 +3150,7 @@ func buildImageSearchQueryFromMessage(ctx templateContext, queryTemplate string)
 	return strings.TrimSpace(query)
 }
 
-func buildVKMusicQueryFromMessage(ctx templateContext, queryTemplate string) string {
+func buildSpotifyMusicQueryFromMessage(ctx templateContext, queryTemplate string) string {
 	query := strings.TrimSpace(renderTemplateWithMessage(ctx, queryTemplate))
 	if ctx.Msg == nil {
 		return query
@@ -3123,6 +3160,15 @@ func buildVKMusicQueryFromMessage(ctx templateContext, queryTemplate string) str
 		return strings.TrimSpace(replacements["{{message}}"])
 	}
 	return strings.TrimSpace(query)
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := strings.TrimSpace(os.Getenv(strings.TrimSpace(key))); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) map[string]string {
@@ -3276,12 +3322,13 @@ func extractNewMemberDisplayNames(msg *tgbotapi.Message) []string {
 }
 
 type triggerActionDeps struct {
-	Bot            *tgbotapi.BotAPI
-	IdleTracker    *trigger.IdleTracker
-	GPTDebouncer   *gpt.Debouncer
-	VKMusic        *vkmusic.Client
-	TemplateLookup func(string) string
-	AudioQueue     *audioSendQueue
+	Bot               *tgbotapi.BotAPI
+	IdleTracker       *trigger.IdleTracker
+	GPTDebouncer      *gpt.Debouncer
+	SpotifyMusic      *spotifymusic.Client
+	SpotifyDownloader spotifymusic.Downloader
+	TemplateLookup    func(string) string
+	AudioQueue        *audioSendQueue
 }
 
 type triggerHandlerDeps struct {
@@ -3456,25 +3503,25 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
-	case "vk_music_audio":
-		if deps.VKMusic == nil {
-			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+	case "spotify_music_audio", "vk_music_audio":
+		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 		} else {
-			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK музыка не поддерживается для события входа"))
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("Spotify музыка не поддерживается для события входа"))
 		}
 		return
-		default:
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
-			out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
-			sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-			if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
-				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				deleteTriggerSourceMessage(deps.Bot, msg, tr)
-			}
+	default:
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
 	}
 }
 

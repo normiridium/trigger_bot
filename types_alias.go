@@ -41,10 +41,11 @@ const (
 )
 
 const (
-	ActionTypeSend        = model.ActionTypeSend
-	ActionTypeDelete      = model.ActionTypeDelete
-	ActionTypeGPTPrompt   = model.ActionTypeGPTPrompt
-	ActionTypeGPTImage    = model.ActionTypeGPTImage
-	ActionTypeSearchImage = model.ActionTypeSearchImage
-	ActionTypeVKMusic     = model.ActionTypeVKMusic
+	ActionTypeSend         = model.ActionTypeSend
+	ActionTypeDelete       = model.ActionTypeDelete
+	ActionTypeGPTPrompt    = model.ActionTypeGPTPrompt
+	ActionTypeGPTImage     = model.ActionTypeGPTImage
+	ActionTypeSearchImage  = model.ActionTypeSearchImage
+	ActionTypeSpotifyMusic = model.ActionTypeSpotifyMusic
+	ActionTypeVKMusic      = model.ActionTypeVKMusic
 )

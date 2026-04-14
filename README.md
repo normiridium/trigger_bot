@@ -181,13 +181,12 @@ sudo visudo -cf /etc/sudoers.d/trigger-admin-bot
 - `SERPAPI_ENGINE` — движок SerpAPI (по умолчанию `google_images`)
 - `GPT_PROMPT_DEBOUNCE_SEC` — debounce для `gpt_prompt` (если `>0`, бот отвечает только на последнее сообщение в окне времени, per chat)
 - `match_type=idle` — специальный тип условия: в поле `match_text` указывается время простоя в минутах, после которого бот автоответит на первое следующее сообщение (для `gpt_prompt`)
-- `VK_AUDIO_INTERACTIVE` — интерактивный режим выбора трека (по умолчанию `true`)
-- `VK_AUDIO_MAX_MB` — лимит размера аудио (по умолчанию `60`)
-- `VK_AUDIO_FFMPEG_TIMEOUT_SEC` — таймаут ffmpeg (по умолчанию `120`)
-- `VK_AUDIO_RETRY_COUNT` — число ретраев загрузки аудио (по умолчанию `3`)
-- `VK_AUDIO_DL_THREADS` — количество потоков скачивания (по умолчанию `1`)
-- `VK_AUDIO_WORKERS` — количество воркеров очереди аудио (по умолчанию `1`)
-- `VK_AUDIO_QUEUE` — размер очереди аудио (по умолчанию `8`)
+- `SPOTIPY_CLIENT_ID` / `SPOTIPY_CLIENT_SECRET` — ключи Spotify Web API (обязательно для `spotify_music_audio`)
+- `SPOTIFY_AUDIO_INTERACTIVE` — интерактивный режим выбора трека (по умолчанию `true`)
+- `AUDIO_FORMAT` — формат выгрузки через `yt-dlp`/`ffmpeg` (по умолчанию `mp3`)
+- `AUDIO_QUALITY` — качество аудио (по умолчанию `320K`)
+- `YTDLP_BIN` — путь до бинарника `yt-dlp` (по умолчанию `yt-dlp` из `PATH`)
+- `FIXIE_SOCKS_HOST` — SOCKS5 прокси (`host:port`) для `yt-dlp` при необходимости
 
 ## 🖼️ UI-правки без ребилда
 

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 )
 
 type PickRequest struct {
@@ -27,14 +26,20 @@ type PickRequest struct {
 	ExpiresAt    time.Time
 }
 
-type AudioSender func(chatID int64, url, artist, title string) error
+type PickTrack struct {
+	ID          string
+	Artist      string
+	Title       string
+	DurationSec float64
+}
 
 type FailureReporter func(chatID int64, title string, err error)
+type PickProcessor func(ctx context.Context, req PickRequest) error
 
 var pickMu sync.Mutex
 var pickRequests = make(map[string]PickRequest)
 
-func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []vkmusic.Track) tgbotapi.InlineKeyboardMarkup {
+func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []PickTrack) tgbotapi.InlineKeyboardMarkup {
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(tracks))
 	for _, track := range tracks {
 		label := strings.TrimSpace(track.Title)
@@ -42,8 +47,8 @@ func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []vkmusi
 		if artist != "" {
 			label = artist + " — " + label
 		}
-		if track.Duration > 0 {
-			label = fmt.Sprintf("%s (%s)", label, FormatDuration(float64(track.Duration)))
+		if track.DurationSec > 0 {
+			label = fmt.Sprintf("%s (%s)", label, FormatDuration(track.DurationSec))
 		}
 		if label == "" {
 			label = track.ID
@@ -76,7 +81,7 @@ func BuildPickKeyboard(msg *tgbotapi.Message, deleteSource bool, tracks []vkmusi
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
-func HandlePickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, vkClient *vkmusic.Client, report FailureReporter, sendAudio AudioSender) bool {
+func HandlePickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, report FailureReporter, process PickProcessor) bool {
 	if cb == nil || bot == nil {
 		return false
 	}
@@ -120,26 +125,15 @@ func HandlePickCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, vkClie
 		_, _ = bot.Request(edit)
 	}
 
-	if vkClient == nil {
-		reportFailure(report, req.ChatID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+	if process == nil {
+		reportFailure(report, req.ChatID, "ошибка обработки выбора трека", errors.New("pick processor not configured"))
 		return true
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	song, err := vkClient.GetAudioURL(ctx, req.TrackID)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	err := process(ctx, req)
 	cancel()
-	if err != nil || song == nil || strings.TrimSpace(song.URL) == "" {
-		if err == nil {
-			err = errors.New("empty audio URL")
-		}
-		reportFailure(report, req.ChatID, "ошибка отправки аудио VK", err)
-		return true
-	}
-	if sendAudio == nil {
-		reportFailure(report, req.ChatID, "ошибка отправки аудио VK", errors.New("audio sender not configured"))
-		return true
-	}
-	if err := sendAudio(req.ChatID, song.URL, song.Artist, song.Title); err != nil {
-		reportFailure(report, req.ChatID, "ошибка отправки аудио VK", err)
+	if err != nil {
+		reportFailure(report, req.ChatID, "ошибка отправки аудио", err)
 		return true
 	}
 	if pickMsgID > 0 {
