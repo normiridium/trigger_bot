@@ -157,6 +157,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeSearchImage
 	case "spotify_music_audio":
 		return ActionTypeSpotifyMusic
+	case "media_link_audio":
+		return ActionTypeMediaAudio
 	default:
 		return ActionTypeSend
 	}

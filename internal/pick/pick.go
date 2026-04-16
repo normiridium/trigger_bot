@@ -177,7 +177,7 @@ func putPick(req PickRequest) string {
 	token := newPickToken()
 	req.Token = token
 	if req.ExpiresAt.IsZero() {
-		req.ExpiresAt = now.Add(5 * time.Minute)
+		req.ExpiresAt = now.Add(2 * time.Hour)
 	}
 	pickRequests[token] = req
 	return token

@@ -103,6 +103,102 @@ func TestBuildSpotifyMusicQueryFromMessage(t *testing.T) {
 	}
 }
 
+func TestBuildMediaDownloadQueryFromMessage(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+		Text: "скачай https://youtu.be/abc",
+	}
+	gotDefault := buildMediaDownloadQueryFromMessage(templateContext{
+		Msg: msg,
+	}, "")
+	if gotDefault != "скачай https://youtu.be/abc" {
+		t.Fatalf("default query mismatch: %q", gotDefault)
+	}
+	got := buildMediaDownloadQueryFromMessage(templateContext{
+		Msg:           msg,
+		CapturingText: "https://soundcloud.com/a/b",
+	}, "{{capturing_text}}")
+	if got != "https://soundcloud.com/a/b" {
+		t.Fatalf("template query mismatch: %q", got)
+	}
+}
+
+func TestExtractSupportedMediaURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{in: "скачай https://www.youtube.com/watch?v=abc123", want: "https://www.youtube.com/watch?v=abc123"},
+		{in: "линк https://instagram.com/reel/ABCDEF/?igsh=123", want: "https://instagram.com/reel/ABCDEF/?igsh=123"},
+		{in: "https://soundcloud.com/artist/track", want: "https://soundcloud.com/artist/track"},
+		{in: "https://example.org/video", want: ""},
+	}
+	for _, tc := range cases {
+		if got := extractSupportedMediaURL(tc.in); got != tc.want {
+			t.Fatalf("extractSupportedMediaURL(%q)=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestVideoFallbackHeights(t *testing.T) {
+	cases := []struct {
+		in   int
+		want []int
+	}{
+		{in: 720, want: []int{720, 480, 360}},
+		{in: 480, want: []int{480, 360}},
+		{in: 360, want: []int{360}},
+		{in: 0, want: []int{720, 480, 360}},
+	}
+	for _, tc := range cases {
+		got := videoFallbackHeights(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("videoFallbackHeights(%d) len=%d want=%d (%v)", tc.in, len(got), len(tc.want), got)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("videoFallbackHeights(%d) = %v, want %v", tc.in, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestTargetVideoBitrateKbps(t *testing.T) {
+	if got := targetVideoBitrateKbps(50*1024*1024, 120); got < 220 {
+		t.Fatalf("bitrate too low: %d", got)
+	}
+	if got := targetVideoBitrateKbps(0, 120); got != 1200 {
+		t.Fatalf("unexpected fallback bitrate: %d", got)
+	}
+}
+
+func TestBuildMediaAudioTitle(t *testing.T) {
+	got := buildMediaAudioTitle("Track Name", "https://youtu.be/abc")
+	if got != "Track Name" {
+		t.Fatalf("unexpected media audio title: %q", got)
+	}
+}
+
+func TestBuildSourceLinkHTML(t *testing.T) {
+	got := buildSourceLinkHTML("https://instagram.com/reel/abc", "ссылка")
+	if !strings.Contains(got, `<a href="https://instagram.com/reel/abc">ссылка</a>`) {
+		t.Fatalf("unexpected source link html: %q", got)
+	}
+}
+
+func TestMediaServiceEmoji(t *testing.T) {
+	if got := mediaServiceEmoji("youtube", "video"); !strings.Contains(got, "5463206079913533096") {
+		t.Fatalf("unexpected youtube video emoji: %q", got)
+	}
+	if got := mediaServiceEmoji("instagram", "video"); !strings.Contains(got, "5463238270693416950") {
+		t.Fatalf("unexpected instagram video emoji: %q", got)
+	}
+	if got := mediaServiceEmoji("soundcloud", "audio"); !strings.Contains(got, "5359614685664523140") {
+		t.Fatalf("unexpected soundcloud emoji: %q", got)
+	}
+}
+
 func TestBuildPromptFromMessageTemplateAndFallback(t *testing.T) {
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
