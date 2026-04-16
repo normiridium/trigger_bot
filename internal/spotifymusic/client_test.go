@@ -119,3 +119,22 @@ func TestGetTrack_EmptyID(t *testing.T) {
 		t.Fatalf("expected empty track id error, got: %v", err)
 	}
 }
+
+func TestExtractTrackID(t *testing.T) {
+	cases := []struct {
+		in   string
+		id   string
+		want bool
+	}{
+		{in: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC?si=abc", id: "4uLU6hMCjMI75M1A2tKUQC", want: true},
+		{in: "spotify:track:4uLU6hMCjMI75M1A2tKUQC", id: "4uLU6hMCjMI75M1A2tKUQC", want: true},
+		{in: "https://open.spotify.com/album/xxx", id: "", want: false},
+		{in: "https://example.com/track/xxx", id: "", want: false},
+	}
+	for _, tc := range cases {
+		got, ok := ExtractTrackID(tc.in)
+		if ok != tc.want || got != tc.id {
+			t.Fatalf("ExtractTrackID(%q) => (%q,%v), want (%q,%v)", tc.in, got, ok, tc.id, tc.want)
+		}
+	}
+}

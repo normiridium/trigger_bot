@@ -145,6 +145,35 @@ func BuildSearchQuery(track *Track) string {
 	return artist + " - " + title
 }
 
+func ExtractTrackID(input string) (string, bool) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", false
+	}
+	lower := strings.ToLower(input)
+	if strings.HasPrefix(lower, "spotify:track:") {
+		id := strings.TrimSpace(input[len("spotify:track:"):])
+		return id, id != ""
+	}
+	u, err := url.Parse(input)
+	if err != nil {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host != "open.spotify.com" && host != "play.spotify.com" {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 || strings.ToLower(parts[0]) != "track" {
+		return "", false
+	}
+	id := strings.TrimSpace(parts[1])
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
 func (c *Client) doJSON(ctx context.Context, method, endpoint string, body io.Reader, out any) error {
 	token, err := c.ensureToken(ctx)
 	if err != nil {
