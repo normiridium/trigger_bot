@@ -31,7 +31,7 @@ import (
 	"trigger-admin-bot/internal/gpt"
 	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
-	"trigger-admin-bot/internal/vk"
+	"trigger-admin-bot/internal/pick"
 )
 
 var chatErrorLogEnabled bool
@@ -1368,13 +1368,13 @@ func main() {
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
-			if vk.HandlePickCallback(
+			if pick.HandlePickCallback(
 				bot,
 				update.Update.CallbackQuery,
 				func(chatID int64, title string, err error) {
 					reportChatFailure(bot, chatID, title, err)
 				},
-				func(ctx context.Context, req vk.PickRequest) error {
+				func(ctx context.Context, req pick.PickRequest) error {
 					_ = ctx
 					task := spotifyPickTask{
 						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
@@ -1749,9 +1749,9 @@ func main() {
 				if len(tracks) > maxResults {
 					tracks = tracks[:maxResults]
 				}
-				pickTracks := make([]vk.PickTrack, 0, len(tracks))
+				pickTracks := make([]pick.PickTrack, 0, len(tracks))
 				for _, track := range tracks {
-					pickTracks = append(pickTracks, vk.PickTrack{
+					pickTracks = append(pickTracks, pick.PickTrack{
 						ID:          track.ID,
 						Artist:      track.Artist,
 						Title:       track.Title,
@@ -1759,7 +1759,7 @@ func main() {
 					})
 				}
 				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
-				m.ReplyMarkup = vk.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr != nil && tr.DeleteSource, pickTracks)
+				m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr != nil && tr.DeleteSource, pickTracks)
 				if replyTo > 0 {
 					m.ReplyToMessageID = replyTo
 					m.AllowSendingWithoutReply = true
@@ -1777,7 +1777,7 @@ func main() {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				continue
 			}
-			req := vk.PickRequest{
+			req := pick.PickRequest{
 				TrackID:      tracks[0].ID,
 				Artist:       tracks[0].Artist,
 				Title:        tracks[0].Title,
@@ -1974,6 +1974,7 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 	m.Title = strings.TrimSpace(title)
 	if caption := buildAudioCaption(tmpPath); caption != "" {
 		m.Caption = caption
+		m.ParseMode = "HTML"
 	}
 	sent, err := ctx.Bot.Send(m)
 	if err != nil {
@@ -1999,6 +2000,7 @@ func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error
 	m.Title = strings.TrimSpace(title)
 	if caption := buildAudioCaption(filePath); caption != "" {
 		m.Caption = caption
+		m.ParseMode = "HTML"
 	}
 	sent, err := ctx.Bot.Send(m)
 	if err != nil {
@@ -2010,7 +2012,7 @@ func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error
 	return nil
 }
 
-func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl spotifymusic.Downloader, req vk.PickRequest) error {
+func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl spotifymusic.Downloader, req pick.PickRequest) error {
 	if strings.TrimSpace(req.TrackID) == "" {
 		return errors.New("empty track id")
 	}
@@ -2040,7 +2042,7 @@ func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl spotifymusi
 
 type spotifyPickTask struct {
 	SendCtx  sendContext
-	Req      vk.PickRequest
+	Req      pick.PickRequest
 	DL       spotifymusic.Downloader
 	Msg      *tgbotapi.Message
 	Trigger  *Trigger
@@ -2105,15 +2107,16 @@ func buildAudioCaption(path string) string {
 		return ""
 	}
 	sizeMB := float64(stats.SizeBytes) / 1_000_000.0
-	dur := vk.FormatDuration(stats.DurationSec)
+	dur := pick.FormatDuration(stats.DurationSec)
 	bitrateKbps := stats.BitrateKbps
 	if bitrateKbps <= 0 && stats.DurationSec > 0 {
 		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
 	}
+	emoji := `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 	if dur == "" || bitrateKbps <= 0 {
-		return fmt.Sprintf("🎧 %.2f MB", sizeMB)
+		return fmt.Sprintf("%s %.2f MB", emoji, sizeMB)
 	}
-	return fmt.Sprintf("🎧 %s | %.2fMB | %dKbps", dur, sizeMB, bitrateKbps)
+	return fmt.Sprintf("%s %s | %.2fMB | %dKbps", emoji, dur, sizeMB, bitrateKbps)
 }
 
 type audioStats struct {

@@ -1,4 +1,4 @@
-package vk
+package pick
 
 import (
 	"strings"

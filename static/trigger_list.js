@@ -249,6 +249,7 @@ function renderSettingsForm(){
     const key = String(f?.key || '');
     const label = String(f?.label || key);
     const type = String(f?.type || 'string');
+    const options = Array.isArray(f?.options) ? f.options.map(v => String(v ?? '')).filter(Boolean) : [];
     const val = settingsCache.values && settingsCache.values[key] != null ? String(settingsCache.values[key]) : '';
     const row = document.createElement('div');
     row.className = 'd-flex align-items-center gap-2 settings-row';
@@ -268,6 +269,27 @@ function renderSettingsForm(){
       input.checked = normalizeBool(val);
       wrapSwitch.appendChild(input);
       row.appendChild(wrapSwitch);
+    } else if (options.length > 0) {
+      const select = document.createElement('select');
+      select.className = 'form-select form-select-sm bg-black text-light border-secondary settings-input';
+      select.id = 'settings_' + key;
+      select.dataset.key = key;
+      options.forEach((optVal) => {
+        const opt = document.createElement('option');
+        opt.value = optVal;
+        opt.textContent = optVal;
+        select.appendChild(opt);
+      });
+      if(options.includes(val)){
+        select.value = val;
+      } else if (val) {
+        const custom = document.createElement('option');
+        custom.value = val;
+        custom.textContent = val + ' (custom)';
+        select.appendChild(custom);
+        select.value = val;
+      }
+      row.appendChild(select);
     } else {
       const input = document.createElement('input');
       input.className = 'form-control form-control-sm bg-black text-light border-secondary settings-input';
