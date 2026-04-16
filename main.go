@@ -29,14 +29,16 @@ import (
 
 	"trigger-admin-bot/internal/engine"
 	"trigger-admin-bot/internal/gpt"
+	"trigger-admin-bot/internal/mediadl"
+	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
-	"trigger-admin-bot/internal/pick"
 )
 
 var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
+var errTelegramUploadTooLarge = errors.New("telegram upload too large")
 
 type chatAllowList struct {
 	enabled bool
@@ -349,6 +351,7 @@ var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P
 var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
 var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
+var supportedMediaURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
 
 func canonicalizeTGEmojiTags(s string) string {
 	if strings.TrimSpace(s) == "" {
@@ -1295,7 +1298,24 @@ func main() {
 		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 	}
+	mediaMaxMB := envInt("MEDIA_DOWNLOAD_MAX_MB", 100)
+	mediaDownloader := mediadl.Downloader{
+		YTDLPBin:      strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		ProxySocks:    strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		AudioFormat:   strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
+		AudioQuality:  strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
+		ExtractorArgs: strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
+		MaxSizeMB:     mediaMaxMB,
+		MaxHeight:     envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
+	}
+	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
+	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
+	if created, err := ensureMediaLinkTriggers(store); err != nil {
+		log.Printf("ensure media link triggers failed: %v", err)
+	} else if created > 0 {
+		log.Printf("media link triggers created: %d", created)
+	}
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
 	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
@@ -1390,6 +1410,31 @@ func main() {
 			) {
 				continue
 			}
+			if mediadl.HandleChoiceCallback(
+				bot,
+				update.Update.CallbackQuery,
+				func(chatID int64, title string, err error) {
+					reportChatFailure(bot, chatID, title, err)
+				},
+				func(ctx context.Context, req mediadl.ChoiceRequest, mode string) error {
+					_ = ctx
+					log.Printf("media choice selected chat=%d user=%d mode=%s url=%q", req.ChatID, req.UserID, mode, clipText(req.URL, 220))
+					task := mediaDownloadTask{
+						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+						URL:      req.URL,
+						Mode:     mode,
+						DL:       mediaDownloader,
+						ReportTo: req.ChatID,
+					}
+					if mediaQueue == nil || !mediaQueue.enqueue(task) {
+						return errors.New("media queue is full")
+					}
+					log.Printf("media choice enqueued chat=%d mode=%s replyTo=%d", req.ChatID, mode, req.ReplyTo)
+					return nil
+				},
+			) {
+				continue
+			}
 		}
 		if update.Update.Message == nil {
 			continue
@@ -1427,25 +1472,100 @@ func main() {
 			cmd := msg.Command()
 			switch cmd {
 			case "start", "help":
-				s := "Триггер-бот активен.\n\n" +
-					"Админка: /trigger_bot\n" +
-					"Команды: /start /help /emojiid /spsearch\n" +
-					"Мод-команды: !ban !unban !mute !unmute !kick !readonly !reload_admins (+ тихие !sban !smute !skick)\n\n" +
-					"Теги для ChatGPT-промпта:\n" +
-					"{{message}} / {{user_text}} — текст сообщения\n" +
-					"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
-					"{{user_display_name}}, {{user_label}}\n" +
-					"{{sender_tag}}\n" +
-					"{{chat_id}}, {{chat_title}}\n" +
-					"{{reply_text}}\n" +
-					"{{capturing_text}}\n" +
-					"{{capturing_choice}} / {{capturing_option}}\n" +
-					"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
-					"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
-					"{{reply_sender_tag}}\n\n" +
-					"Кастомный emoji ID:\n" +
-					"— команда /emojiid\n" +
-					"— или просто отправьте кастомный emoji в личку боту."
+				s := ""
+				if isPrivateChat {
+					s = "Триггер-бот активен.\n\n" +
+						"Админка: /trigger_bot\n" +
+						"Команды: /start /help /emojiid /spsearch\n" +
+						"Мод-команды: !ban !unban !mute !unmute !kick !readonly !reload_admins (+ тихие !sban !smute !skick)\n\n" +
+						"Теги для ChatGPT-промпта:\n" +
+						"{{message}} / {{user_text}} — текст сообщения\n" +
+						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
+						"{{user_display_name}}, {{user_label}}\n" +
+						"{{sender_tag}}\n" +
+						"{{chat_id}}, {{chat_title}}\n" +
+						"{{reply_text}}\n" +
+						"{{capturing_text}}\n" +
+						"{{capturing_choice}} / {{capturing_option}}\n" +
+						"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
+						"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
+						"{{reply_sender_tag}}\n\n" +
+						"Кастомный emoji ID:\n" +
+						"— команда /emojiid\n" +
+						"— или просто отправьте кастомный emoji в личку боту."
+				} else {
+					triggerInfo := "Триггеры: список временно недоступен."
+					featureInfo := "Что умею:\n— выполнять триггеры, настроенные админами"
+					usageInfo := "Как пользоваться:\n— /emojiid — показать ID кастомного эмодзи"
+					if items, err := store.ListTriggers(); err == nil {
+						enabled := make([]string, 0, len(items))
+						hasSpotify := false
+						hasYouTube := false
+						hasInstagram := false
+						hasSoundCloud := false
+						for _, it := range items {
+							if !it.Enabled {
+								continue
+							}
+							switch strings.TrimSpace(it.UID) {
+							case "system-media-youtube-link-audio":
+								hasYouTube = true
+							case "system-media-instagram-link-audio":
+								hasInstagram = true
+							case "system-media-soundcloud-link-audio":
+								hasSoundCloud = true
+							}
+							if strings.TrimSpace(string(it.ActionType)) == "spotify_music_audio" {
+								hasSpotify = true
+							}
+							title := strings.TrimSpace(it.Title)
+							if title == "" {
+								title = strings.TrimSpace(it.MatchText)
+							}
+							if title == "" {
+								title = fmt.Sprintf("ID %d", it.ID)
+							}
+							enabled = append(enabled, "• "+clipText(title, 70))
+						}
+						if len(enabled) > 0 {
+							triggerInfo = fmt.Sprintf("Активные триггеры: %d\n%s", len(enabled), strings.Join(enabled, "\n"))
+						} else {
+							triggerInfo = "Активные триггеры: пока не настроены."
+						}
+						featureLines := []string{"Что умею:"}
+						if hasSpotify {
+							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
+						}
+						mediaServices := make([]string, 0, 3)
+						if hasYouTube {
+							mediaServices = append(mediaServices, "YouTube")
+						}
+						if hasInstagram {
+							mediaServices = append(mediaServices, "Instagram")
+						}
+						if hasSoundCloud {
+							mediaServices = append(mediaServices, "SoundCloud")
+						}
+						if len(mediaServices) > 0 {
+							featureLines = append(featureLines, "— скачивать аудио/видео по ссылкам: "+strings.Join(mediaServices, ", "))
+						}
+						featureLines = append(featureLines, "— выполнять триггеры и GPT-ответы, настроенные админами")
+						featureInfo = strings.Join(featureLines, "\n")
+						usageLines := []string{"Как пользоваться:"}
+						if len(mediaServices) > 0 {
+							usageLines = append(usageLines, "— отправьте ссылку, и я предложу формат (аудио/видео)")
+						}
+						if hasSpotify {
+							usageLines = append(usageLines, "— для Spotify: /spsearch <запрос>")
+						}
+						usageLines = append(usageLines, "— если нужен ID кастомного эмодзи: /emojiid")
+						usageInfo = strings.Join(usageLines, "\n")
+					}
+					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
+						featureInfo + "\n\n" +
+						usageInfo + "\n\n" +
+						triggerInfo
+				}
 				reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
 				continue
 			case "emojiid", "emoji_id":
@@ -1803,6 +1923,62 @@ func main() {
 			if debugTriggerLogEnabled {
 				log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 			}
+		case "media_link_audio":
+			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
+			targetURL := extractSupportedMediaURL(query)
+			if targetURL == "" {
+				continue
+			}
+			_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			// SoundCloud is audio-only for this bot flow; skip interactive prompt.
+			useInteractive := mediaInteractive && mediaService != "soundcloud"
+			if useInteractive {
+				req := mediadl.ChoiceRequest{
+					URL:          targetURL,
+					ChatID:       msg.Chat.ID,
+					ReplyTo:      replyTo,
+					SourceMsgID:  msg.MessageID,
+					UserID:       msg.From.ID,
+					DeleteSource: tr != nil && tr.DeleteSource,
+				}
+				m := tgbotapi.NewMessage(msg.Chat.ID, "Выбери формат скачивания:")
+				kb := mediadl.BuildChoiceKeyboard(msg, req)
+				m.ReplyMarkup = &kb
+				if replyTo > 0 {
+					m.ReplyToMessageID = replyTo
+					m.AllowSendingWithoutReply = true
+				}
+				log.Printf("media pick keyboard built rows=%d chat=%d replyTo=%d", len(kb.InlineKeyboard), msg.Chat.ID, replyTo)
+				if _, err := bot.Send(m); err != nil {
+					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки выбора формата", err)
+					continue
+				}
+				if tr != nil && tr.DeleteSource && msg.MessageID > 0 {
+					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: msg.Chat.ID, MessageID: msg.MessageID})
+				}
+				log.Printf("send media pick keyboard trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				continue
+			}
+			task := mediaDownloadTask{
+				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				URL:      targetURL,
+				Mode:     mediadl.ModeAudio,
+				DL:       mediaDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     idleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if mediaQueue == nil || !mediaQueue.enqueue(task) {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("media download queue is full"))
+				continue
+			}
+			log.Printf("send media/audio queued trigger=%d replyTo=%d service=%s url=%q", tr.ID, replyTo, mediaService, clipText(targetURL, 160))
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -1987,9 +2163,16 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 }
 
 func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error {
+	return sendAudioFromFileWithMeta(ctx, filePath, performer, title, "", "")
+}
+
+func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sourceURL, service string) error {
 	filePath = strings.TrimSpace(filePath)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
 		return errors.New("invalid audio file send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
 	}
 	m := tgbotapi.NewAudio(ctx.ChatID, tgbotapi.FilePath(filePath))
 	if ctx.ReplyTo > 0 {
@@ -1999,6 +2182,13 @@ func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
 	if caption := buildAudioCaption(filePath); caption != "" {
+		if strings.TrimSpace(sourceURL) != "" {
+			head := buildSourceLinkHTML(sourceURL, m.Title)
+			if strings.TrimSpace(head) == "" {
+				head = buildSourceLinkHTML(sourceURL, "ссылка")
+			}
+			caption = strings.TrimSpace(head + "\n" + caption)
+		}
 		m.Caption = caption
 		m.ParseMode = "HTML"
 	}
@@ -2007,9 +2197,245 @@ func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error
 		return err
 	}
 	if debugTriggerLogEnabled {
-		log.Printf("send audio file ok chat=%d msg=%d replyTo=%d performer=%q title=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title)
+		log.Printf("send audio file ok chat=%d msg=%d replyTo=%d performer=%q title=%q service=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title, service)
 	}
 	return nil
+}
+
+func sendVideoFromFile(ctx sendContext, filePath, caption string) error {
+	filePath = strings.TrimSpace(filePath)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return errors.New("invalid video file send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	m := tgbotapi.NewVideo(ctx.ChatID, tgbotapi.FilePath(filePath))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	m.SupportsStreaming = true
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send video file ok chat=%d msg=%d replyTo=%d caption=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Caption, 120))
+	}
+	return nil
+}
+
+func buildMediaAudioTitle(title, sourceURL string) string {
+	title = strings.TrimSpace(title)
+	_ = sourceURL
+	return clipText(title, 120)
+}
+
+func mediaServiceEmoji(service, mode string) string {
+	service = strings.ToLower(strings.TrimSpace(service))
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == mediadl.ModeVideo {
+		switch service {
+		case "instagram":
+			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+		case "soundcloud":
+			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+		default:
+			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
+		}
+	}
+	return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+}
+
+func buildMediaVideoCaption(path, title, sourceURL, service string) string {
+	title = strings.TrimSpace(title)
+	sourceURL = strings.TrimSpace(sourceURL)
+	sizeMB := 0.0
+	if st, err := os.Stat(path); err == nil && st != nil {
+		sizeMB = float64(st.Size()) / 1_000_000.0
+	}
+	dur := ""
+	if d, err := probeMediaDurationSec(path); err == nil && d > 0 {
+		dur = pick.FormatDuration(d)
+	}
+	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
+	stats := ""
+	if dur != "" && sizeMB > 0 {
+		stats = fmt.Sprintf("%s %s | %.2fMB", emoji, dur, sizeMB)
+	} else if sizeMB > 0 {
+		stats = fmt.Sprintf("%s %.2fMB", emoji, sizeMB)
+	} else {
+		stats = emoji
+	}
+	head := strings.TrimSpace(title)
+	if sourceURL != "" {
+		if head == "" {
+			head = buildSourceLinkHTML(sourceURL, "ссылка")
+		} else {
+			head = buildSourceLinkHTML(sourceURL, head)
+		}
+	} else {
+		head = html.EscapeString(head)
+	}
+	if strings.TrimSpace(head) == "" {
+		return stats
+	}
+	return head + "\n" + stats
+}
+
+func buildSourceLinkHTML(rawURL, label string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "ссылка"
+	}
+	return `<a href="` + html.EscapeString(rawURL) + `">` + html.EscapeString(label) + `</a>`
+}
+
+func ensureTelegramUploadLimit(path string) error {
+	maxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
+	if maxMB <= 0 {
+		return nil
+	}
+	st, err := os.Stat(strings.TrimSpace(path))
+	if err != nil {
+		return err
+	}
+	maxBytes := int64(maxMB) * 1024 * 1024
+	if st.Size() <= maxBytes {
+		return nil
+	}
+	return fmt.Errorf("%w: %d bytes > %d MB limit", errTelegramUploadTooLarge, st.Size(), maxMB)
+}
+
+func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heights []int) (string, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return "", errors.New("empty source video path")
+	}
+	if maxMB <= 0 {
+		return "", fmt.Errorf("%w: TELEGRAM_UPLOAD_MAX_MB is not set", errTelegramUploadTooLarge)
+	}
+	durationSec, err := probeMediaDurationSec(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if durationSec <= 0 {
+		return "", fmt.Errorf("%w: unknown video duration", errTelegramUploadTooLarge)
+	}
+	if len(heights) == 0 {
+		heights = []int{720, 480, 360}
+	}
+	maxBytes := int64(maxMB) * 1024 * 1024
+	dir := filepath.Dir(sourcePath)
+	log.Printf("media transcode ladder start source=%q max_mb=%d duration=%.2fs heights=%v", sourcePath, maxMB, durationSec, heights)
+	for _, h := range heights {
+		videoBitrateK := targetVideoBitrateKbps(maxBytes, durationSec)
+		outPath := filepath.Join(dir, fmt.Sprintf("fit-%dp.mp4", h))
+		log.Printf("media transcode try height=%dp bitrate=%dk out=%q", h, videoBitrateK, outPath)
+		if err := transcodeVideoForLimit(ctx, sourcePath, outPath, h, videoBitrateK); err != nil {
+			log.Printf("media transcode failed height=%dp err=%v", h, err)
+			continue
+		}
+		if st, stErr := os.Stat(outPath); stErr == nil {
+			log.Printf("media transcode produced height=%dp size=%.2fMB", h, float64(st.Size())/1_000_000.0)
+		}
+		if err := ensureTelegramUploadLimit(outPath); err == nil {
+			log.Printf("media transcode accepted height=%dp file=%q", h, outPath)
+			return outPath, nil
+		}
+		_ = os.Remove(outPath)
+		log.Printf("media transcode over limit after height=%dp", h)
+	}
+	return "", fmt.Errorf("%w: cannot fit video into %d MB", errTelegramUploadTooLarge, maxMB)
+}
+
+func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, maxHeight int, videoBitrateKbps int) error {
+	timeoutSec := envInt("MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC", 300)
+	if timeoutSec < 60 {
+		timeoutSec = 60
+	}
+	tctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+	scaleArg := fmt.Sprintf("scale='if(gt(ih,%d),-2,iw)':'if(gt(ih,%d),%d,ih)'", maxHeight, maxHeight, maxHeight)
+	if videoBitrateKbps < 220 {
+		videoBitrateKbps = 220
+	}
+	maxRateKbps := int(float64(videoBitrateKbps) * 1.15)
+	bufSizeKbps := videoBitrateKbps * 2
+	cmd := exec.CommandContext(tctx,
+		"ffmpeg",
+		"-nostdin",
+		"-y",
+		"-i", sourcePath,
+		"-vf", scaleArg,
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-pix_fmt", "yuv420p",
+		"-b:v", strconv.Itoa(videoBitrateKbps)+"k",
+		"-maxrate", strconv.Itoa(maxRateKbps)+"k",
+		"-bufsize", strconv.Itoa(bufSizeKbps)+"k",
+		"-c:a", "aac",
+		"-b:a", "96k",
+		"-ac", "2",
+		"-ar", "44100",
+		"-movflags", "+faststart",
+		outPath,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if errors.Is(tctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("ffmpeg transcode timeout")
+		}
+		return fmt.Errorf("ffmpeg transcode failed: %s", clipText(msg, 400))
+	}
+	return nil
+}
+
+func probeMediaDurationSec(path string) (float64, error) {
+	out, err := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe duration failed: %w", err)
+	}
+	val := strings.TrimSpace(string(out))
+	if val == "" {
+		return 0, errors.New("empty duration")
+	}
+	dur, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad duration %q: %w", val, err)
+	}
+	return dur, nil
+}
+
+func targetVideoBitrateKbps(limitBytes int64, durationSec float64) int {
+	if limitBytes <= 0 || durationSec <= 1 {
+		return 1200
+	}
+	// Reserve overhead and audio stream (~96kbps) for predictable final size.
+	totalKbps := int((float64(limitBytes) * 8.0) / (durationSec * 1000.0) * 0.94)
+	videoKbps := totalKbps - 96
+	if videoKbps < 220 {
+		return 220
+	}
+	return videoKbps
 }
 
 func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl spotifymusic.Downloader, req pick.PickRequest) error {
@@ -2073,6 +2499,10 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 					if chatID == 0 {
 						chatID = task.SendCtx.ChatID
 					}
+					if errors.Is(err, errTelegramUploadTooLarge) {
+						reportChatFailure(task.SendCtx.Bot, chatID, "аудио слишком большое для отправки в Telegram", err)
+						continue
+					}
 					log.Printf("spotify queue send failed chat=%d err=%v", chatID, err)
 					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка отправки аудио Spotify", err)
 					continue
@@ -2099,6 +2529,192 @@ func (q *spotifyPickQueue) enqueue(task spotifyPickTask) bool {
 	default:
 		return false
 	}
+}
+
+type mediaDownloadTask struct {
+	SendCtx  sendContext
+	URL      string
+	Mode     string
+	DL       mediadl.Downloader
+	Msg      *tgbotapi.Message
+	Trigger  *Trigger
+	Idle     *trigger.IdleTracker
+	ReportTo int64
+}
+
+type mediaDownloadQueue struct {
+	ch chan mediaDownloadTask
+}
+
+func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
+	if workers < 1 {
+		workers = 1
+	}
+	if size < 1 {
+		size = workers * 2
+	}
+	q := &mediaDownloadQueue{ch: make(chan mediaDownloadTask, size)}
+	for i := 0; i < workers; i++ {
+		workerID := i + 1
+		go func(id int) {
+			for task := range q.ch {
+				log.Printf("media worker=%d start mode=%s chat=%d replyTo=%d url=%q", id, task.Mode, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.URL, 220))
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode)
+				cancel()
+				if err != nil {
+					if errors.Is(err, mediadl.ErrTooLarge) {
+						if debugTriggerLogEnabled {
+							log.Printf("media download skipped by size limit url=%q err=%v", clipText(task.URL, 180), err)
+						}
+						continue
+					}
+					if errors.Is(err, errTelegramUploadTooLarge) {
+						if debugTriggerLogEnabled {
+							log.Printf("media download skipped by telegram upload limit url=%q err=%v", clipText(task.URL, 180), err)
+						}
+						continue
+					}
+					if errors.Is(err, mediadl.ErrUnsupportedURL) {
+						if debugTriggerLogEnabled {
+							log.Printf("media download skipped unsupported url=%q", clipText(task.URL, 180))
+						}
+						continue
+					}
+					chatID := task.ReportTo
+					if chatID == 0 {
+						chatID = task.SendCtx.ChatID
+					}
+					log.Printf("media queue send failed chat=%d err=%v", chatID, err)
+					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания аудио", err)
+					continue
+				}
+				log.Printf("media worker=%d success mode=%s chat=%d url=%q", id, task.Mode, task.SendCtx.ChatID, clipText(task.URL, 220))
+				if task.Idle != nil {
+					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
+				}
+				if task.Msg != nil && task.Trigger != nil {
+					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+				}
+			}
+		}(workerID)
+	}
+	return q
+}
+
+func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
+	if q == nil {
+		return false
+	}
+	select {
+	case q.ch <- task:
+		return true
+	default:
+		return false
+	}
+}
+
+func processMediaDownload(ctx context.Context, sendCtx sendContext, dl mediadl.Downloader, rawURL string, mode string) error {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		mode = mediadl.ModeAudio
+	}
+	log.Printf(
+		"media process start mode=%s chat=%d url=%q limits(download=%dMB upload=%dMB max_h=%dp)",
+		mode,
+		sendCtx.ChatID,
+		clipText(rawURL, 220),
+		dl.MaxSizeMB,
+		envInt("TELEGRAM_UPLOAD_MAX_MB", 50),
+		dl.MaxHeight,
+	)
+	if mode == mediadl.ModeVideo {
+		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		res, err := dl.DownloadVideoFromURL(dlCtx, rawURL)
+		cancelDl()
+		if err != nil {
+			return err
+		}
+		if st, stErr := os.Stat(res.FilePath); stErr == nil {
+			log.Printf("media video downloaded chat=%d path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
+		}
+		videoPath := res.FilePath
+		defer func() {
+			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
+				log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+			}
+			if videoPath != res.FilePath {
+				if rmErr := os.Remove(videoPath); rmErr != nil && debugTriggerLogEnabled {
+					log.Printf("media temp cleanup failed path=%q err=%v", videoPath, rmErr)
+				}
+			}
+		}()
+		if err := ensureTelegramUploadLimit(videoPath); err != nil {
+			if !errors.Is(err, errTelegramUploadTooLarge) {
+				return err
+			}
+			log.Printf("media video over telegram limit chat=%d path=%q, starting transcode ladder", sendCtx.ChatID, videoPath)
+			fitted, fitErr := fitVideoToTelegram(ctx, videoPath, envInt("TELEGRAM_UPLOAD_MAX_MB", 50), videoFallbackHeights(dl.MaxHeight))
+			if fitErr != nil {
+				return fitErr
+			}
+			videoPath = fitted
+			if st, stErr := os.Stat(videoPath); stErr == nil {
+				log.Printf("media video fitted chat=%d path=%q size=%.2fMB", sendCtx.ChatID, videoPath, float64(st.Size())/1_000_000.0)
+			}
+		}
+		title := strings.TrimSpace(res.Title)
+		if title == "" {
+			title = strings.TrimSpace(rawURL)
+		}
+		return sendVideoFromFile(sendCtx, videoPath, buildMediaVideoCaption(videoPath, title, res.SourceURL, res.Service))
+	}
+	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+	res, err := dl.DownloadAudioFromURL(dlCtx, rawURL)
+	cancelDl()
+	if err != nil {
+		return err
+	}
+	if st, stErr := os.Stat(res.FilePath); stErr == nil {
+		log.Printf("media audio downloaded chat=%d path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
+	}
+	defer func() {
+		if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
+			log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+		}
+	}()
+	title := strings.TrimSpace(res.Title)
+	if title == "" {
+		title = strings.TrimSpace(rawURL)
+	}
+	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL), res.SourceURL, res.Service)
+}
+
+func videoFallbackHeights(maxHeight int) []int {
+	if maxHeight <= 0 {
+		maxHeight = 720
+	}
+	levels := []int{maxHeight}
+	if maxHeight > 720 {
+		levels = append(levels, 720, 480, 360)
+	} else if maxHeight > 480 {
+		levels = append(levels, 480, 360)
+	} else if maxHeight > 360 {
+		levels = append(levels, 360)
+	}
+	seen := make(map[int]struct{}, len(levels))
+	out := make([]int, 0, len(levels))
+	for _, v := range levels {
+		if v <= 0 {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func buildAudioCaption(path string) string {
@@ -3174,6 +3790,37 @@ func buildSpotifyMusicQueryFromMessage(ctx templateContext, queryTemplate string
 	return strings.TrimSpace(query)
 }
 
+func buildMediaDownloadQueryFromMessage(ctx templateContext, queryTemplate string) string {
+	query := strings.TrimSpace(renderTemplateWithMessage(ctx, queryTemplate))
+	if ctx.Msg == nil {
+		return query
+	}
+	if query == "" {
+		return strings.TrimSpace(firstNonEmptyUserText(ctx.Msg))
+	}
+	return strings.TrimSpace(query)
+}
+
+func firstNonEmptyUserText(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(msg.Text); v != "" {
+		return v
+	}
+	return strings.TrimSpace(msg.Caption)
+}
+
+func extractSupportedMediaURL(input string) string {
+	matches := supportedMediaURLRe.FindAllString(input, 8)
+	for _, raw := range matches {
+		if norm, _, ok := mediadl.NormalizeSupportedURL(raw); ok {
+			return norm
+		}
+	}
+	return ""
+}
+
 func firstNonEmptyEnv(keys ...string) string {
 	for _, key := range keys {
 		if v := strings.TrimSpace(os.Getenv(strings.TrimSpace(key))); v != "" {
@@ -3181,6 +3828,73 @@ func firstNonEmptyEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func ensureMediaLinkTriggers(store *Store) (int, error) {
+	if store == nil {
+		return 0, errors.New("store is nil")
+	}
+	specs := []Trigger{
+		{
+			UID:          "system-media-youtube-link-audio",
+			Title:        "Скачать аудио: YouTube ссылка",
+			Enabled:      true,
+			TriggerMode:  TriggerModeAll,
+			AdminMode:    AdminModeAnybody,
+			MatchType:    MatchTypeRegex,
+			MatchText:    `https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|shorts/|live/)[^\s]+|youtu\.be/[^\s]+)`,
+			ActionType:   ActionTypeMediaAudio,
+			Reply:        true,
+			Preview:      false,
+			DeleteSource: false,
+			Chance:       100,
+		},
+		{
+			UID:          "system-media-instagram-link-audio",
+			Title:        "Скачать аудио: Instagram ссылка",
+			Enabled:      true,
+			TriggerMode:  TriggerModeAll,
+			AdminMode:    AdminModeAnybody,
+			MatchType:    MatchTypeRegex,
+			MatchText:    `https?://(?:www\.)?instagram\.com/(?:reel|p|tv)/[^\s/?#]+(?:[^\s]*)`,
+			ActionType:   ActionTypeMediaAudio,
+			Reply:        true,
+			Preview:      false,
+			DeleteSource: false,
+			Chance:       100,
+		},
+		{
+			UID:          "system-media-soundcloud-link-audio",
+			Title:        "Скачать аудио: SoundCloud ссылка",
+			Enabled:      true,
+			TriggerMode:  TriggerModeAll,
+			AdminMode:    AdminModeAnybody,
+			MatchType:    MatchTypeRegex,
+			MatchText:    `https?://(?:www\.|m\.)?soundcloud\.com/[^\s/]+/[^\s?#]+(?:[^\s]*)`,
+			ActionType:   ActionTypeMediaAudio,
+			Reply:        true,
+			Preview:      false,
+			DeleteSource: false,
+			Chance:       100,
+		},
+	}
+	created := 0
+	for _, spec := range specs {
+		id, err := store.getIDByUID(spec.UID)
+		if err != nil {
+			return created, err
+		}
+		// Do not overwrite existing system triggers on every restart:
+		// admins can tune reply/delete_source/chance/etc in UI.
+		if id > 0 {
+			continue
+		}
+		if err := store.SaveTrigger(spec); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
 }
 
 func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) map[string]string {
@@ -3520,6 +4234,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		} else {
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("Spotify музыка не поддерживается для события входа"))
 		}
+		return
+	case "media_link_audio":
+		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("скачивание по ссылке не поддерживается для события входа"))
 		return
 	default:
 		replyTo := 0

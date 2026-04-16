@@ -1,14 +1,28 @@
 # Trigger Admin Bot (Go)
 
-Telegram-бот с web-админкой триггеров и поддержкой Spotify-аудио через `yt-dlp`.
+Telegram-бот с web-админкой триггеров, Spotify-аудио и скачиванием аудио по ссылкам (`YouTube`, `Instagram`, `SoundCloud`) через `yt-dlp`.
 
 ## Что умеет
 - Триггеры по `match_type` (`full`, `partial`, `regex`, `starts`, `ends`, `idle`, `new_member`)
-- Действия: `send`, `delete`, `gpt_prompt`, `gpt_image`, `search_image`, `spotify_music_audio`
+- Действия: `send`, `delete`, `gpt_prompt`, `gpt_image`, `search_image`, `spotify_music_audio`, `media_link_audio`
 - Для `spotify_music_audio`:
   - поиск треков в Spotify
   - интерактивный список кнопок выбора
   - скачивание аудио через `yt-dlp` + `ffmpeg`
+- Для `media_link_audio`:
+  - авто-обработка ссылок `YouTube` / `Instagram` / `SoundCloud`
+  - интерактивные кнопки выбора: скачать `аудио` или `видео`
+  - для `SoundCloud` интерактив отключён: сразу скачивается аудио
+  - в подписи/тайтле добавляется исходная ссылка
+  - статистика в формате `длительность | размер`
+  - сервисные emoji:
+    - YouTube видео: `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
+    - Instagram видео: `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+    - SoundCloud: `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+  - лимит размера скачивания (`MEDIA_DOWNLOAD_MAX_MB`)
+  - лимит отправки в Telegram (`TELEGRAM_UPLOAD_MAX_MB`, по умолчанию 50 MB)
+  - если видео не влезает в Telegram-лимит: локальный `ffmpeg`-транскод по лестнице `720 -> 480 -> 360`
+  - лимит качества источника по высоте (по умолчанию 720)
 - Web-админка: список, создание, редактирование, reorder, import/export
 
 ## Зависимости
@@ -33,7 +47,15 @@ Telegram-бот с web-админкой триггеров и поддержко
 - `SPOTIFY_AUDIO_QUEUE=8` — размер очереди задач скачивания
 - `AUDIO_FORMAT=mp3`
 - `AUDIO_QUALITY=320K`
+- `MEDIA_DOWNLOAD_MAX_MB=100`
+- `TELEGRAM_UPLOAD_MAX_MB=50` (жёсткий лимит отправки файла ботом в Telegram)
+- `MEDIA_DOWNLOAD_MAX_HEIGHT=720`
+- `MEDIA_DOWNLOAD_INTERACTIVE=true`
+- `MEDIA_DOWNLOAD_WORKERS=1`
+- `MEDIA_DOWNLOAD_QUEUE=8`
+- `MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC=300` (таймаут локального пережатия видео)
 - `YTDLP_BIN=/usr/local/bin/yt-dlp` (или оставить пустым, если есть в `PATH`)
+- `YTDLP_EXTRACTOR_ARGS=youtube:player_client=android,web`
 - `FIXIE_SOCKS_HOST=` (опционально, SOCKS5 `host:port`)
 
 Прочие важные:
@@ -67,11 +89,45 @@ set -a && source .env && set +a
 - `reply` — выбранный трек отправляется reply на исходное сообщение
 - `delete_source_message` — исходное сообщение удаляется сразу после показа списка и после завершения выбора
 
+## Действие `media_link_audio`
+- `action_type = media_link_audio`
+- `match_type = regex`
+- `match_text` = регулярка на URL (YouTube / Instagram / SoundCloud)
+- бот сам достаёт ссылку из текста сообщения
+- при `MEDIA_DOWNLOAD_INTERACTIVE=true` показывает кнопки `Скачать аудио` / `Скачать видео`
+- если выбран `видео`:
+  - файл пытается отправиться как есть
+  - если превышает Telegram-лимит, пережимается локально (`720 -> 480 -> 360`)
+  - если после 360 всё равно больше лимита — отправка отменяется
+
+Системные триггеры на эти ссылки создаются автоматически при старте:
+- YouTube
+- Instagram
+- SoundCloud
+
 ## Проверка
 ```bash
 cd /home/faline/trigger_admin_bot
 /usr/local/go/bin/go test ./...
 ```
+
+## Логи
+Полезно включить подробную диагностику:
+- `DEBUG_TRIGGER_LOG=true`
+
+Смотреть live-логи сервиса:
+```bash
+sudo journalctl -u trigger-admin-bot.service -f -l
+```
+
+Ключевые строки для `media_link_audio`:
+- `send media pick keyboard ...` — показаны кнопки выбора формата
+- `media choice selected ...` — пользователь нажал кнопку
+- `media worker=... start ...` — задача пошла в воркер
+- `media video downloaded ...` / `media audio downloaded ...` — файл скачан
+- `media transcode ...` — этапы пережатия видео
+- `media worker=... success ...` — файл отправлен успешно
+- `media queue send failed ...` — ошибка (с текстом причины)
 
 ## Перезапуск systemd
 ```bash

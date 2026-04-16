@@ -26,10 +26,10 @@ type WebAdmin struct {
 }
 
 type settingField struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Type        string `json:"type"` // bool|string|int
-	Description string `json:"description,omitempty"`
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Type        string   `json:"type"` // bool|string|int
+	Description string   `json:"description,omitempty"`
 	Options     []string `json:"options,omitempty"`
 }
 
@@ -419,6 +419,12 @@ func settingsSchema() []settingField {
 		{Key: "SPOTIFY_AUDIO_QUEUE", Label: "Spotify: размер очереди", Type: "int", Description: "8"},
 		{Key: "AUDIO_FORMAT", Label: "Формат аудио", Type: "string", Description: "mp3", Options: []string{"mp3", "m4a", "flac", "opus", "wav"}},
 		{Key: "AUDIO_QUALITY", Label: "Качество аудио", Type: "string", Description: "320K", Options: []string{"320K", "256K", "192K", "160K", "128K", "96K", "0"}},
+		{Key: "MEDIA_DOWNLOAD_MAX_MB", Label: "Ссылки: лимит файла (МБ)", Type: "int", Description: "100"},
+		{Key: "TELEGRAM_UPLOAD_MAX_MB", Label: "Telegram: лимит отправки файла (МБ)", Type: "int", Description: "50"},
+		{Key: "MEDIA_DOWNLOAD_MAX_HEIGHT", Label: "Ссылки: максимум качества (высота)", Type: "int", Description: "720", Options: []string{"360", "480", "720"}},
+		{Key: "MEDIA_DOWNLOAD_INTERACTIVE", Label: "Ссылки: выбор аудио/видео", Type: "bool", Description: "true"},
+		{Key: "MEDIA_DOWNLOAD_WORKERS", Label: "Ссылки: воркеры скачивания", Type: "int", Description: "1"},
+		{Key: "MEDIA_DOWNLOAD_QUEUE", Label: "Ссылки: размер очереди", Type: "int", Description: "8"},
 	}
 }
 
@@ -579,6 +585,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-search"
 	case model.ActionTypeSpotifyMusic:
 		return "bi-music-note-beamed"
+	case model.ActionTypeMediaAudio:
+		return "bi-cloud-download"
 	default:
 		return ""
 	}
