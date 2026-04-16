@@ -30,6 +30,7 @@ type settingField struct {
 	Label       string `json:"label"`
 	Type        string `json:"type"` // bool|string|int
 	Description string `json:"description,omitempty"`
+	Options     []string `json:"options,omitempty"`
 }
 
 func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
@@ -416,8 +417,8 @@ func settingsSchema() []settingField {
 		{Key: "SPOTIFY_AUDIO_INTERACTIVE", Label: "Spotify: интерактивный выбор", Type: "bool", Description: "true"},
 		{Key: "SPOTIFY_AUDIO_WORKERS", Label: "Spotify: воркеры скачивания", Type: "int", Description: "1"},
 		{Key: "SPOTIFY_AUDIO_QUEUE", Label: "Spotify: размер очереди", Type: "int", Description: "8"},
-		{Key: "AUDIO_FORMAT", Label: "Формат аудио", Type: "string", Description: "mp3"},
-		{Key: "AUDIO_QUALITY", Label: "Качество аудио", Type: "string", Description: "320K"},
+		{Key: "AUDIO_FORMAT", Label: "Формат аудио", Type: "string", Description: "mp3", Options: []string{"mp3", "m4a", "flac", "opus", "wav"}},
+		{Key: "AUDIO_QUALITY", Label: "Качество аудио", Type: "string", Description: "320K", Options: []string{"320K", "256K", "192K", "160K", "128K", "96K", "0"}},
 	}
 }
 
