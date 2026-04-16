@@ -66,6 +66,15 @@ func TestDownloaderBuildVideoDownloadArgs(t *testing.T) {
 	}
 }
 
+func TestDownloaderBuildProbeArgsWithoutFormat(t *testing.T) {
+	d := Downloader{}
+	args := d.buildProbeArgs("https://instagram.com/reel/abc", "")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, " -f ") || strings.HasPrefix(joined, "-f ") {
+		t.Fatalf("unexpected format flag in probe args: %s", joined)
+	}
+}
+
 func TestNormalizeSupportedURL(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -96,5 +105,17 @@ func TestPickSize(t *testing.T) {
 	meta = probeJSON{RequestedFormats: []formatRecord{{Filesize: &v1}, {FilesizeApprox: &v2}}}
 	if got := pickSize(meta); got != 33 {
 		t.Fatalf("unexpected size from requested formats: %d", got)
+	}
+}
+
+func TestInferMediaKindByPath(t *testing.T) {
+	if got := inferMediaKindByPath("/tmp/a.jpg"); got != MediaKindPhoto {
+		t.Fatalf("jpg should be photo, got %q", got)
+	}
+	if got := inferMediaKindByPath("/tmp/a.mp4"); got != MediaKindVideo {
+		t.Fatalf("mp4 should be video, got %q", got)
+	}
+	if got := inferMediaKindByPath("/tmp/a.mp3"); got != MediaKindAudio {
+		t.Fatalf("mp3 should be audio, got %q", got)
 	}
 }

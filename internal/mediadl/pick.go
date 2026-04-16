@@ -15,6 +15,7 @@ import (
 const (
 	ModeAudio = "audio"
 	ModeVideo = "video"
+	ModeAuto  = "auto"
 )
 
 type ChoiceRequest struct {

@@ -1311,6 +1311,11 @@ func main() {
 	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
 	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
+	if created, err := ensureSpotifyLinkTrigger(store); err != nil {
+		log.Printf("ensure spotify link trigger failed: %v", err)
+	} else if created > 0 {
+		log.Printf("spotify link trigger created: %d", created)
+	}
 	if created, err := ensureMediaLinkTriggers(store); err != nil {
 		log.Printf("ensure media link triggers failed: %v", err)
 	} else if created > 0 {
@@ -1846,6 +1851,45 @@ func main() {
 			if query == "" {
 				continue
 			}
+			if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				track, err := spotifyMusicClient.GetTrack(ctx, trackID)
+				cancel()
+				if err != nil {
+					log.Printf("spotify get track failed id=%s err=%v", trackID, err)
+					reportChatFailure(bot, msg.Chat.ID, "ошибка загрузки трека Spotify", err)
+					continue
+				}
+				replyTo := 0
+				if tr.Reply || tr.TriggerMode == "command_reply" {
+					replyTo = msg.MessageID
+				}
+				req := pick.PickRequest{
+					TrackID:      track.ID,
+					Artist:       track.Artist,
+					Title:        track.Title,
+					ChatID:       msg.Chat.ID,
+					ReplyTo:      replyTo,
+					SourceMsgID:  msg.MessageID,
+					DeleteSource: tr != nil && tr.DeleteSource,
+					UserID:       msg.From.ID,
+				}
+				task := spotifyPickTask{
+					SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+					Req:      req,
+					DL:       spotifyDownloader,
+					Msg:      msg,
+					Trigger:  tr,
+					Idle:     idleTracker,
+					ReportTo: msg.Chat.ID,
+				}
+				if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
+					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
+					continue
+				}
+				log.Printf("send spotify/audio queued by link trigger=%d replyTo=%d track=%q", tr.ID, replyTo, clipText(spotifymusic.BuildSearchQuery(track), 180))
+				continue
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			tracks, err := spotifyMusicClient.SearchTracks(ctx, query, 10)
 			cancel()
@@ -1934,8 +1978,8 @@ func main() {
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
-			// SoundCloud is audio-only for this bot flow; skip interactive prompt.
-			useInteractive := mediaInteractive && mediaService != "soundcloud"
+			// SoundCloud is audio-only and Instagram is auto media-type in this bot flow.
+			useInteractive := mediaInteractive && mediaService != "soundcloud" && mediaService != "instagram"
 			if useInteractive {
 				req := mediadl.ChoiceRequest{
 					URL:          targetURL,
@@ -1964,10 +2008,14 @@ func main() {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				continue
 			}
+			mode := mediadl.ModeAudio
+			if mediaService == "instagram" {
+				mode = mediadl.ModeAuto
+			}
 			task := mediaDownloadTask{
 				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
 				URL:      targetURL,
-				Mode:     mediadl.ModeAudio,
+				Mode:     mode,
 				DL:       mediaDownloader,
 				Msg:      msg,
 				Trigger:  tr,
@@ -1978,7 +2026,7 @@ func main() {
 				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("media download queue is full"))
 				continue
 			}
-			log.Printf("send media/audio queued trigger=%d replyTo=%d service=%s url=%q", tr.ID, replyTo, mediaService, clipText(targetURL, 160))
+			log.Printf("send media queued trigger=%d replyTo=%d mode=%s service=%s url=%q", tr.ID, replyTo, mode, mediaService, clipText(targetURL, 160))
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -2231,6 +2279,34 @@ func sendVideoFromFile(ctx sendContext, filePath, caption string) error {
 	return nil
 }
 
+func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
+	filePath = strings.TrimSpace(filePath)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return errors.New("invalid photo file send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	m := tgbotapi.NewPhoto(ctx.ChatID, tgbotapi.FilePath(filePath))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send photo file ok chat=%d msg=%d replyTo=%d caption=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Caption, 120))
+	}
+	return nil
+}
+
 func buildMediaAudioTitle(title, sourceURL string) string {
 	title = strings.TrimSpace(title)
 	_ = sourceURL
@@ -2272,6 +2348,34 @@ func buildMediaVideoCaption(path, title, sourceURL, service string) string {
 		stats = fmt.Sprintf("%s %.2fMB", emoji, sizeMB)
 	} else {
 		stats = emoji
+	}
+	head := strings.TrimSpace(title)
+	if sourceURL != "" {
+		if head == "" {
+			head = buildSourceLinkHTML(sourceURL, "ссылка")
+		} else {
+			head = buildSourceLinkHTML(sourceURL, head)
+		}
+	} else {
+		head = html.EscapeString(head)
+	}
+	if strings.TrimSpace(head) == "" {
+		return stats
+	}
+	return head + "\n" + stats
+}
+
+func buildMediaPhotoCaption(path, title, sourceURL, service string) string {
+	title = strings.TrimSpace(title)
+	sourceURL = strings.TrimSpace(sourceURL)
+	sizeMB := 0.0
+	if st, err := os.Stat(path); err == nil && st != nil {
+		sizeMB = float64(st.Size()) / 1_000_000.0
+	}
+	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
+	stats := emoji
+	if sizeMB > 0 {
+		stats = fmt.Sprintf("%s %.2fMB", emoji, sizeMB)
 	}
 	head := strings.TrimSpace(title)
 	if sourceURL != "" {
@@ -2668,6 +2772,37 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl mediadl.D
 			title = strings.TrimSpace(rawURL)
 		}
 		return sendVideoFromFile(sendCtx, videoPath, buildMediaVideoCaption(videoPath, title, res.SourceURL, res.Service))
+	}
+	if mode == mediadl.ModeAuto {
+		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
+		cancelDl()
+		if err != nil {
+			return err
+		}
+		if st, stErr := os.Stat(res.FilePath); stErr == nil {
+			log.Printf("media auto downloaded chat=%d kind=%s path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.MediaKind, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
+		}
+		defer func() {
+			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
+				log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+			}
+		}()
+		title := strings.TrimSpace(res.Title)
+		if title == "" {
+			title = strings.TrimSpace(rawURL)
+		}
+		switch res.MediaKind {
+		case mediadl.MediaKindPhoto:
+			return sendPhotoFromFile(sendCtx, res.FilePath, buildMediaPhotoCaption(res.FilePath, title, res.SourceURL, res.Service))
+		case mediadl.MediaKindAudio:
+			return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL), res.SourceURL, res.Service)
+		default:
+			if err := ensureTelegramUploadLimit(res.FilePath); err != nil {
+				return err
+			}
+			return sendVideoFromFile(sendCtx, res.FilePath, buildMediaVideoCaption(res.FilePath, title, res.SourceURL, res.Service))
+		}
 	}
 	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
 	res, err := dl.DownloadAudioFromURL(dlCtx, rawURL)
@@ -3895,6 +4030,37 @@ func ensureMediaLinkTriggers(store *Store) (int, error) {
 		created++
 	}
 	return created, nil
+}
+
+func ensureSpotifyLinkTrigger(store *Store) (int, error) {
+	if store == nil {
+		return 0, errors.New("store is nil")
+	}
+	spec := Trigger{
+		UID:          "system-spotify-track-link-audio",
+		Title:        "Скачать аудио: Spotify ссылка",
+		Enabled:      true,
+		TriggerMode:  TriggerModeAll,
+		AdminMode:    AdminModeAnybody,
+		MatchType:    MatchTypeRegex,
+		MatchText:    `(?:https?://open\.spotify\.com/track/[A-Za-z0-9]+(?:\?[^\s]*)?|spotify:track:[A-Za-z0-9]+)`,
+		ActionType:   ActionTypeSpotifyMusic,
+		Reply:        true,
+		Preview:      false,
+		DeleteSource: false,
+		Chance:       100,
+	}
+	id, err := store.getIDByUID(spec.UID)
+	if err != nil {
+		return 0, err
+	}
+	if id > 0 {
+		return 0, nil
+	}
+	if err := store.SaveTrigger(spec); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) map[string]string {

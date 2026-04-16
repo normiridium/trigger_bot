@@ -18,6 +18,12 @@ import (
 var ErrUnsupportedURL = errors.New("unsupported media url")
 var ErrTooLarge = errors.New("media file is too large")
 
+const (
+	MediaKindAudio = "audio"
+	MediaKindVideo = "video"
+	MediaKindPhoto = "photo"
+)
+
 type Downloader struct {
 	YTDLPBin      string
 	ProxySocks    string
@@ -42,6 +48,7 @@ type DownloadResult struct {
 	FilePath   string
 	Title      string
 	Artist     string
+	MediaKind  string
 	SizeBytes  int64
 	Duration   float64
 	Service    string
@@ -104,6 +111,7 @@ func (d Downloader) DownloadAudioFromURL(ctx context.Context, rawURL string) (Do
 		FilePath:   path,
 		Title:      probe.Title,
 		Artist:     probe.Artist,
+		MediaKind:  MediaKindAudio,
 		SizeBytes:  st.Size(),
 		Duration:   probe.Duration,
 		Service:    probe.Service,
@@ -142,6 +150,46 @@ func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (Do
 		FilePath:   path,
 		Title:      probe.Title,
 		Artist:     probe.Artist,
+		MediaKind:  MediaKindVideo,
+		SizeBytes:  st.Size(),
+		Duration:   probe.Duration,
+		Service:    probe.Service,
+		SourceURL:  probe.SourceURL,
+		Restricted: probe.Restricted,
+	}, nil
+}
+
+func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string) (DownloadResult, error) {
+	probe, err := d.probeWithFormat(ctx, rawURL, "")
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	if limit := d.maxSizeMB(); limit > 0 && probe.SizeBytes > int64(limit)*1024*1024 {
+		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
+	}
+	tmpDir, err := os.MkdirTemp("", "media-auto-*")
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
+	args := d.buildGenericDownloadArgs(probe.SourceURL, outTpl)
+	path, err := d.runDownload(ctx, args)
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return DownloadResult{}, fmt.Errorf("downloaded file missing: %w", err)
+	}
+	if limit := d.maxSizeMB(); limit > 0 && st.Size() > int64(limit)*1024*1024 {
+		_ = os.Remove(path)
+		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, st.Size(), limit)
+	}
+	return DownloadResult{
+		FilePath:   path,
+		Title:      probe.Title,
+		Artist:     probe.Artist,
+		MediaKind:  inferMediaKindByPath(path),
 		SizeBytes:  st.Size(),
 		Duration:   probe.Duration,
 		Service:    probe.Service,
@@ -267,8 +315,10 @@ func (d Downloader) buildProbeArgs(url, formatSelector string) []string {
 		"--no-warnings",
 		"--extractor-args", d.extractorArgs(),
 		"--dump-single-json",
-		"-f", formatSelector,
 		url,
+	}
+	if strings.TrimSpace(formatSelector) != "" {
+		args = append(args[:len(args)-1], "-f", formatSelector, url)
 	}
 	if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
 		args = append([]string{"--proxy", "socks5://" + proxy}, args...)
@@ -303,6 +353,25 @@ func (d Downloader) buildVideoDownloadArgs(url, outTpl string) []string {
 	args := []string{
 		"-f", d.videoFormatSelector(),
 		"--merge-output-format", "mp4",
+		"--no-playlist",
+		"--quiet",
+		"--no-warnings",
+		"--extractor-args", d.extractorArgs(),
+		"--print", "after_move:__FILE__%(filepath)s",
+		"-o", outTpl,
+	}
+	if maxMB := d.maxSizeMB(); maxMB > 0 {
+		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
+	}
+	args = append(args, url)
+	if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
+		args = append([]string{"--proxy", "socks5://" + proxy}, args...)
+	}
+	return args
+}
+
+func (d Downloader) buildGenericDownloadArgs(url, outTpl string) []string {
+	args := []string{
 		"--no-playlist",
 		"--quiet",
 		"--no-warnings",
@@ -418,4 +487,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func inferMediaKindByPath(path string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(strings.TrimSpace(path)), "."))
+	switch ext {
+	case "jpg", "jpeg", "png", "webp", "avif":
+		return MediaKindPhoto
+	case "mp4", "m4v", "mov", "webm", "mkv":
+		return MediaKindVideo
+	case "mp3", "m4a", "flac", "wav", "opus", "ogg":
+		return MediaKindAudio
+	default:
+		return MediaKindVideo
+	}
 }
