@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -141,6 +142,13 @@ func TestExtractSupportedMediaURL(t *testing.T) {
 	}
 }
 
+func TestExtractSupportedMediaURL_SecondMatch(t *testing.T) {
+	in := "смотри https://example.org/one и вот https://youtu.be/abc"
+	if got := extractSupportedMediaURL(in); got != "https://youtu.be/abc" {
+		t.Fatalf("expected second supported url, got %q", got)
+	}
+}
+
 func TestVideoFallbackHeights(t *testing.T) {
 	cases := []struct {
 		in   int
@@ -160,6 +168,19 @@ func TestVideoFallbackHeights(t *testing.T) {
 			if got[i] != tc.want[i] {
 				t.Fatalf("videoFallbackHeights(%d) = %v, want %v", tc.in, got, tc.want)
 			}
+		}
+	}
+}
+
+func TestVideoFallbackHeightsAbove720(t *testing.T) {
+	got := videoFallbackHeights(1080)
+	want := []int{1080, 720, 480, 360}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected fallback len: got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("videoFallbackHeights(1080)=%v want=%v", got, want)
 		}
 	}
 }
@@ -184,6 +205,16 @@ func TestBuildSourceLinkHTML(t *testing.T) {
 	got := buildSourceLinkHTML("https://instagram.com/reel/abc", "ссылка")
 	if !strings.Contains(got, `<a href="https://instagram.com/reel/abc">ссылка</a>`) {
 		t.Fatalf("unexpected source link html: %q", got)
+	}
+}
+
+func TestBuildSourceLinkHTMLEscape(t *testing.T) {
+	got := buildSourceLinkHTML(`https://x.test/?a=1&b=2`, `A&B`)
+	if !strings.Contains(got, "A&amp;B") {
+		t.Fatalf("expected escaped label, got %q", got)
+	}
+	if !strings.Contains(got, "a=1&amp;b=2") {
+		t.Fatalf("expected escaped href, got %q", got)
 	}
 }
 
@@ -217,6 +248,85 @@ func TestExtractImageFileID(t *testing.T) {
 	}
 	if got := extractImageFileID(docMsg); got != "docimg" {
 		t.Fatalf("expected image document id, got %q", got)
+	}
+}
+
+func TestExtractImageFileID_NonImageDocument(t *testing.T) {
+	docMsg := &tgbotapi.Message{
+		Document: &tgbotapi.Document{
+			FileID:   "docfile",
+			MimeType: "application/pdf",
+		},
+	}
+	if got := extractImageFileID(docMsg); got != "" {
+		t.Fatalf("expected empty for non-image document, got %q", got)
+	}
+}
+
+func TestFirstNonEmptyUserText(t *testing.T) {
+	msg := &tgbotapi.Message{Caption: "из подписи"}
+	if got := firstNonEmptyUserText(msg); got != "из подписи" {
+		t.Fatalf("expected caption fallback, got %q", got)
+	}
+}
+
+func TestBuildMediaPhotoCaption(t *testing.T) {
+	f, err := os.CreateTemp("", "photo-cap-*.jpg")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := f.Name()
+	_, _ = f.Write([]byte(strings.Repeat("a", 1024*64)))
+	_ = f.Close()
+	defer os.Remove(path)
+
+	caption := buildMediaPhotoCaption(path, "Demo", "https://instagram.com/reel/abc", "instagram")
+	if !strings.Contains(caption, `<a href="https://instagram.com/reel/abc">Demo</a>`) {
+		t.Fatalf("expected linked title in caption, got %q", caption)
+	}
+	if !strings.Contains(caption, "MB") {
+		t.Fatalf("expected size in caption, got %q", caption)
+	}
+}
+
+func TestMediaModeAndInteractivity(t *testing.T) {
+	mode, interactive := mediaModeAndInteractivity("soundcloud", true)
+	if mode != "audio" || interactive {
+		t.Fatalf("soundcloud must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("instagram", true)
+	if mode != "auto" || interactive {
+		t.Fatalf("instagram must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("youtube", true)
+	if mode != "audio" || !interactive {
+		t.Fatalf("youtube should keep interactive when enabled, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("youtube", false)
+	if mode != "audio" || interactive {
+		t.Fatalf("youtube should keep interactive=false, got mode=%q interactive=%v", mode, interactive)
+	}
+}
+
+func TestBuildMediaVideoCaption(t *testing.T) {
+	f, err := os.CreateTemp("", "video-cap-*.mp4")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := f.Name()
+	_, _ = f.Write([]byte(strings.Repeat("a", 1024*64)))
+	_ = f.Close()
+	defer os.Remove(path)
+
+	caption := buildMediaVideoCaption(path, "My Reel", "https://instagram.com/reel/abc", "instagram")
+	if !strings.Contains(caption, `<a href="https://instagram.com/reel/abc">My Reel</a>`) {
+		t.Fatalf("expected linked title in caption, got %q", caption)
+	}
+	if !strings.Contains(caption, "MB") {
+		t.Fatalf("expected size in caption, got %q", caption)
+	}
+	if !strings.Contains(caption, "5463238270693416950") {
+		t.Fatalf("expected instagram camera emoji in caption, got %q", caption)
 	}
 }
 
