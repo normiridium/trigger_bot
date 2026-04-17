@@ -101,3 +101,55 @@ func TestEngineSelectAdminMode(t *testing.T) {
 		t.Fatalf("expected fallback trigger for non-admin, got %#v", got)
 	}
 }
+
+func TestTriggerModeReplyToSelfNoMedia_TextReplyMatches(t *testing.T) {
+	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
+	msg := &tgbotapi.Message{
+		MessageID: 200,
+		From:      &tgbotapi.User{ID: 100},
+		Text:      "текстовый ответ",
+		ReplyToMessage: &tgbotapi.Message{
+			MessageID: 100,
+			From:      &tgbotapi.User{ID: 999, IsBot: true, UserName: "olenyam_bot"},
+		},
+	}
+	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
+	if !TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected text reply to self-bot to match")
+	}
+}
+
+func TestTriggerModeReplyToSelfNoMedia_MediaReplySkipped(t *testing.T) {
+	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
+	msg := &tgbotapi.Message{
+		MessageID: 201,
+		From:      &tgbotapi.User{ID: 100},
+		Photo:     []tgbotapi.PhotoSize{{FileID: "abc"}},
+		ReplyToMessage: &tgbotapi.Message{
+			MessageID: 100,
+			From:      &tgbotapi.User{ID: 999, IsBot: true, UserName: "olenyam_bot"},
+		},
+	}
+	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
+	if TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected media reply to be skipped")
+	}
+}
+
+func TestTriggerModeReplyToSelfNoMedia_ReplyToMediaMessageSkipped(t *testing.T) {
+	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
+	msg := &tgbotapi.Message{
+		MessageID: 202,
+		From:      &tgbotapi.User{ID: 100},
+		Text:      "клевая песня",
+		ReplyToMessage: &tgbotapi.Message{
+			MessageID: 100,
+			From:      &tgbotapi.User{ID: 999, IsBot: true, UserName: "olenyam_bot"},
+			Audio:     &tgbotapi.Audio{FileID: "aud"},
+		},
+	}
+	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
+	if TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected reply to media message to be skipped")
+	}
+}

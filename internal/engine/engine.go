@@ -135,6 +135,20 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 			return false
 		}
 		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
+	case "only_replies_to_combot_no_media":
+		// Same as reply-to-self mode but ignores media on both sides:
+		// the incoming message and the message being replied to.
+		// Needed for text-only conversations with the bot.
+		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+			return false
+		}
+		if bot == nil {
+			return false
+		}
+		if hasMessageMedia(msg) || hasMessageMedia(msg.ReplyToMessage) {
+			return false
+		}
+		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
 	case "never_on_replies":
 		return msg.ReplyToMessage == nil
 	case "command_reply":
@@ -142,4 +156,26 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 	default:
 		return true
 	}
+}
+
+func hasMessageMedia(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if len(msg.Photo) > 0 || msg.Audio != nil || msg.Video != nil || msg.Animation != nil || msg.Voice != nil || msg.VideoNote != nil {
+		return true
+	}
+	if msg.Document != nil {
+		mime := msg.Document.MimeType
+		if len(mime) >= 6 && mime[:6] == "image/" {
+			return true
+		}
+		if len(mime) >= 6 && mime[:6] == "audio/" {
+			return true
+		}
+		if len(mime) >= 6 && mime[:6] == "video/" {
+			return true
+		}
+	}
+	return false
 }

@@ -16,12 +16,13 @@ type MatchType = model.MatchType
 type ActionType = model.ActionType
 
 const (
-	TriggerModeAll               = model.TriggerModeAll
-	TriggerModeOnlyReplies       = model.TriggerModeOnlyReplies
-	TriggerModeOnlyRepliesToBot  = model.TriggerModeOnlyRepliesToBot
-	TriggerModeOnlyRepliesToSelf = model.TriggerModeOnlyRepliesToSelf
-	TriggerModeNeverOnReplies    = model.TriggerModeNeverOnReplies
-	TriggerModeCommandReply      = model.TriggerModeCommandReply
+	TriggerModeAll                      = model.TriggerModeAll
+	TriggerModeOnlyReplies              = model.TriggerModeOnlyReplies
+	TriggerModeOnlyRepliesToBot         = model.TriggerModeOnlyRepliesToBot
+	TriggerModeOnlyRepliesToSelf        = model.TriggerModeOnlyRepliesToSelf
+	TriggerModeOnlyRepliesToSelfNoMedia = model.TriggerModeOnlyRepliesToSelfNoMedia
+	TriggerModeNeverOnReplies           = model.TriggerModeNeverOnReplies
+	TriggerModeCommandReply             = model.TriggerModeCommandReply
 )
 
 const (

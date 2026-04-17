@@ -40,12 +40,13 @@ type ResponseTemplate struct {
 type TriggerMode string
 
 const (
-	TriggerModeAll               TriggerMode = "all"
-	TriggerModeOnlyReplies       TriggerMode = "only_replies"
-	TriggerModeOnlyRepliesToBot  TriggerMode = "only_replies_to_any_bot"
-	TriggerModeOnlyRepliesToSelf TriggerMode = "only_replies_to_combot"
-	TriggerModeNeverOnReplies    TriggerMode = "never_on_replies"
-	TriggerModeCommandReply      TriggerMode = "command_reply"
+	TriggerModeAll                      TriggerMode = "all"
+	TriggerModeOnlyReplies              TriggerMode = "only_replies"
+	TriggerModeOnlyRepliesToBot         TriggerMode = "only_replies_to_any_bot"
+	TriggerModeOnlyRepliesToSelf        TriggerMode = "only_replies_to_combot"
+	TriggerModeOnlyRepliesToSelfNoMedia TriggerMode = "only_replies_to_combot_no_media"
+	TriggerModeNeverOnReplies           TriggerMode = "never_on_replies"
+	TriggerModeCommandReply             TriggerMode = "command_reply"
 )
 
 var TriggerModeValues = []TriggerMode{
@@ -53,6 +54,7 @@ var TriggerModeValues = []TriggerMode{
 	TriggerModeOnlyReplies,
 	TriggerModeOnlyRepliesToBot,
 	TriggerModeOnlyRepliesToSelf,
+	TriggerModeOnlyRepliesToSelfNoMedia,
 	TriggerModeNeverOnReplies,
 	TriggerModeCommandReply,
 }
@@ -67,6 +69,8 @@ func (m TriggerMode) String() string {
 		return "Только реплаи на любого бота"
 	case TriggerModeOnlyRepliesToSelf:
 		return "Реплай к боту триггера"
+	case TriggerModeOnlyRepliesToSelfNoMedia:
+		return "Реплай к боту триггера (без медиа)"
 	case TriggerModeNeverOnReplies:
 		return "Не срабатывать на реплаи"
 	case TriggerModeCommandReply:

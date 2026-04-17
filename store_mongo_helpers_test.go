@@ -142,3 +142,10 @@ func TestTriggerDocRoundTripFromRaw(t *testing.T) {
 		t.Fatalf("unexpected match_type in doc map: %#v", doc["match_type"])
 	}
 }
+
+func TestNormalizeTriggerMode_NoMediaMode(t *testing.T) {
+	got := normalizeTriggerMode("only_replies_to_combot_no_media")
+	if got != TriggerModeOnlyRepliesToSelfNoMedia {
+		t.Fatalf("normalizeTriggerMode returned %q", got)
+	}
+}
