@@ -199,6 +199,27 @@ func TestMediaServiceEmoji(t *testing.T) {
 	}
 }
 
+func TestExtractImageFileID(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Photo: []tgbotapi.PhotoSize{
+			{FileID: "small", FileSize: 10},
+			{FileID: "large", FileSize: 99},
+		},
+	}
+	if got := extractImageFileID(msg); got != "large" {
+		t.Fatalf("expected largest photo id, got %q", got)
+	}
+	docMsg := &tgbotapi.Message{
+		Document: &tgbotapi.Document{
+			FileID:   "docimg",
+			MimeType: "image/png",
+		},
+	}
+	if got := extractImageFileID(docMsg); got != "docimg" {
+		t.Fatalf("expected image document id, got %q", got)
+	}
+}
+
 func TestBuildPromptFromMessageTemplateAndFallback(t *testing.T) {
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},

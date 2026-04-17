@@ -1648,7 +1648,7 @@ func main() {
 			continue
 		}
 
-		text := strings.TrimSpace(msg.Text)
+		text := strings.TrimSpace(firstNonEmptyUserText(msg))
 		if text == "" {
 			continue
 		}
@@ -3403,6 +3403,46 @@ func buildPromptFromMessage(ctx templateContext, promptTemplate string) string {
 	return prompt + "\n\nСообщение пользователя:\n" + replacements["{{message}}"]
 }
 
+func resolveMessageImageURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string, bool) {
+	if bot == nil || msg == nil {
+		return "", false
+	}
+	if fileID := extractImageFileID(msg); fileID != "" {
+		if url, err := bot.GetFileDirectURL(fileID); err == nil && strings.TrimSpace(url) != "" {
+			return strings.TrimSpace(url), true
+		}
+	}
+	if msg.ReplyToMessage != nil {
+		if fileID := extractImageFileID(msg.ReplyToMessage); fileID != "" {
+			if url, err := bot.GetFileDirectURL(fileID); err == nil && strings.TrimSpace(url) != "" {
+				return strings.TrimSpace(url), true
+			}
+		}
+	}
+	return "", false
+}
+
+func extractImageFileID(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if len(msg.Photo) > 0 {
+		best := msg.Photo[0]
+		for _, p := range msg.Photo {
+			if p.FileSize > best.FileSize {
+				best = p
+			}
+		}
+		return strings.TrimSpace(best.FileID)
+	}
+	if msg.Document != nil {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Document.MimeType)), "image/") {
+			return strings.TrimSpace(msg.Document.FileID)
+		}
+	}
+	return ""
+}
+
 var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
 var templateExprPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
@@ -4695,11 +4735,27 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 		log.Printf("gpt request model=%s prompt=%q", model, clipText(prompt, 1800))
 	}
 
+	systemPrompt := "Ты вежливый помощник для чата. Отвечай на русском, кратко и по теме."
+	userMessage := map[string]interface{}{"role": "user", "content": prompt}
+	if imageURL, ok := resolveMessageImageURL(ctx.Bot, ctx.Msg); ok {
+		userMessage["content"] = []map[string]interface{}{
+			{"type": "text", "text": prompt},
+			{
+				"type": "image_url",
+				"image_url": map[string]string{
+					"url": imageURL,
+				},
+			},
+		}
+		if debugGPTLogEnabled {
+			log.Printf("gpt request multimodal image_url=%q", clipText(imageURL, 200))
+		}
+	}
 	payload := map[string]interface{}{
 		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": "Ты вежливый помощник для чата. Отвечай на русском, кратко и по теме."},
-			{"role": "user", "content": prompt},
+		"messages": []map[string]interface{}{
+			{"role": "system", "content": systemPrompt},
+			userMessage,
 		},
 	}
 	body, _ := json.Marshal(payload)
