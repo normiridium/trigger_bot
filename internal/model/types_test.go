@@ -6,6 +6,9 @@ func TestTriggerModeString(t *testing.T) {
 	if got := TriggerModeAll.String(); got == "" {
 		t.Fatalf("empty string for TriggerModeAll")
 	}
+	if got := TriggerModeOnlyRepliesToSelfNoMedia.String(); got == "" {
+		t.Fatalf("empty string for TriggerModeOnlyRepliesToSelfNoMedia")
+	}
 	if got := TriggerMode("custom").String(); got != "custom" {
 		t.Fatalf("unexpected fallback string: %q", got)
 	}

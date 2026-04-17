@@ -125,6 +125,8 @@ func normalizeTriggerMode(v string) TriggerMode {
 		return TriggerModeOnlyRepliesToBot
 	case "only_replies_to_combot":
 		return TriggerModeOnlyRepliesToSelf
+	case "only_replies_to_combot_no_media":
+		return TriggerModeOnlyRepliesToSelfNoMedia
 	case "never_on_replies":
 		return TriggerModeNeverOnReplies
 	case "command_reply":

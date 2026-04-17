@@ -528,6 +528,8 @@ func iconForTriggerMode(v model.TriggerMode) string {
 		return "bi-robot"
 	case model.TriggerModeOnlyRepliesToSelf:
 		return "bi-reply-fill"
+	case model.TriggerModeOnlyRepliesToSelfNoMedia:
+		return "bi-chat-text"
 	case model.TriggerModeNeverOnReplies:
 		return "bi-chat"
 	case model.TriggerModeCommandReply:
