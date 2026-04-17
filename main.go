@@ -1507,6 +1507,7 @@ func main() {
 						hasSpotify := false
 						hasYouTube := false
 						hasInstagram := false
+						hasTikTok := false
 						hasSoundCloud := false
 						for _, it := range items {
 							if !it.Enabled {
@@ -1517,6 +1518,8 @@ func main() {
 								hasYouTube = true
 							case "system-media-instagram-link-audio":
 								hasInstagram = true
+							case "system-media-tiktok-link-audio":
+								hasTikTok = true
 							case "system-media-soundcloud-link-audio":
 								hasSoundCloud = true
 							}
@@ -1547,6 +1550,9 @@ func main() {
 						}
 						if hasInstagram {
 							mediaServices = append(mediaServices, "Instagram")
+						}
+						if hasTikTok {
+							mediaServices = append(mediaServices, "TikTok")
 						}
 						if hasSoundCloud {
 							mediaServices = append(mediaServices, "SoundCloud")
@@ -2020,6 +2026,31 @@ func main() {
 				continue
 			}
 			log.Printf("send media queued trigger=%d replyTo=%d mode=%s service=%s url=%q", tr.ID, replyTo, mode, mediaService, clipText(targetURL, 160))
+		case "media_tiktok_download":
+			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
+			targetURL := extractSupportedMediaURLByService(query, "tiktok")
+			if targetURL == "" {
+				continue
+			}
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			task := mediaDownloadTask{
+				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				URL:      targetURL,
+				Mode:     mediadl.ModeAuto,
+				DL:       mediaDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     idleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if mediaQueue == nil || !mediaQueue.enqueue(task) {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("media download queue is full"))
+				continue
+			}
+			log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -2189,7 +2220,7 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 	}
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
-	if caption := buildAudioCaption(tmpPath); caption != "" {
+	if caption := buildAudioCaption(tmpPath, ""); caption != "" {
 		m.Caption = caption
 		m.ParseMode = "HTML"
 	}
@@ -2222,7 +2253,7 @@ func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sour
 	}
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
-	if caption := buildAudioCaption(filePath); caption != "" {
+	if caption := buildAudioCaption(filePath, service); caption != "" {
 		if strings.TrimSpace(sourceURL) != "" {
 			head := buildSourceLinkHTML(sourceURL, m.Title)
 			if strings.TrimSpace(head) == "" {
@@ -2300,9 +2331,10 @@ func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
 	return nil
 }
 
-func buildMediaAudioTitle(title, sourceURL string) string {
+func buildMediaAudioTitle(title, sourceURL, service string) string {
 	title = strings.TrimSpace(title)
 	_ = sourceURL
+	_ = service
 	return clipText(title, 120)
 }
 
@@ -2313,13 +2345,24 @@ func mediaServiceEmoji(service, mode string) string {
 		switch service {
 		case "instagram":
 			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+		case "tiktok":
+			return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 		case "soundcloud":
 			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 		default:
 			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 		}
 	}
-	return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+	switch service {
+	case "youtube":
+		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
+	case "instagram":
+		return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+	case "tiktok":
+		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
+	default:
+		return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+	}
 }
 
 func buildMediaVideoCaption(path, title, sourceURL, service string) string {
@@ -2789,7 +2832,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl mediadl.D
 		case mediadl.MediaKindPhoto:
 			return sendPhotoFromFile(sendCtx, res.FilePath, buildMediaPhotoCaption(res.FilePath, title, res.SourceURL, res.Service))
 		case mediadl.MediaKindAudio:
-			return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL), res.SourceURL, res.Service)
+			return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 		default:
 			if err := ensureTelegramUploadLimit(res.FilePath); err != nil {
 				return err
@@ -2815,7 +2858,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl mediadl.D
 	if title == "" {
 		title = strings.TrimSpace(rawURL)
 	}
-	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL), res.SourceURL, res.Service)
+	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 }
 
 func videoFallbackHeights(maxHeight int) []int {
@@ -2845,7 +2888,7 @@ func videoFallbackHeights(maxHeight int) []int {
 	return out
 }
 
-func buildAudioCaption(path string) string {
+func buildAudioCaption(path string, service string) string {
 	stats, ok := probeAudioStats(path)
 	if !ok || stats.SizeBytes <= 0 {
 		return ""
@@ -2856,7 +2899,7 @@ func buildAudioCaption(path string) string {
 	if bitrateKbps <= 0 && stats.DurationSec > 0 {
 		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
 	}
-	emoji := `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
+	emoji := mediaServiceEmoji(service, mediadl.ModeAudio)
 	if dur == "" || bitrateKbps <= 0 {
 		return fmt.Sprintf("%s %.2f MB", emoji, sizeMB)
 	}
@@ -3974,7 +4017,7 @@ func mediaModeAndInteractivity(service string, interactive bool) (mode string, u
 	switch service {
 	case "soundcloud":
 		return mediadl.ModeAudio, false
-	case "instagram":
+	case "instagram", "tiktok":
 		return mediadl.ModeAuto, false
 	default:
 		return mediadl.ModeAudio, interactive
@@ -3995,6 +4038,24 @@ func extractSupportedMediaURL(input string) string {
 	matches := supportedMediaURLRe.FindAllString(input, 8)
 	for _, raw := range matches {
 		if norm, _, ok := mediadl.NormalizeSupportedURL(raw); ok {
+			return norm
+		}
+	}
+	return ""
+}
+
+func extractSupportedMediaURLByService(input string, service string) string {
+	service = strings.ToLower(strings.TrimSpace(service))
+	if service == "" {
+		return extractSupportedMediaURL(input)
+	}
+	matches := supportedMediaURLRe.FindAllString(input, 8)
+	for _, raw := range matches {
+		norm, gotService, ok := mediadl.NormalizeSupportedURL(raw)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(gotService), service) {
 			return norm
 		}
 	}
@@ -4044,6 +4105,20 @@ func ensureMediaLinkTriggers(store *Store) (int, error) {
 			Chance:       100,
 		},
 		{
+			UID:          "system-media-tiktok-link-audio",
+			Title:        "Скачать аудио: TikTok ссылка",
+			Enabled:      true,
+			TriggerMode:  TriggerModeAll,
+			AdminMode:    AdminModeAnybody,
+			MatchType:    MatchTypeRegex,
+			MatchText:    `https?://(?:www\.|m\.)?(?:tiktok\.com/[^\s]+|vm\.tiktok\.com/[^\s]+|vt\.tiktok\.com/[^\s]+)`,
+			ActionType:   ActionTypeMediaTikTok,
+			Reply:        true,
+			Preview:      false,
+			DeleteSource: false,
+			Chance:       100,
+		},
+		{
 			UID:          "system-media-soundcloud-link-audio",
 			Title:        "Скачать аудио: SoundCloud ссылка",
 			Enabled:      true,
@@ -4067,6 +4142,19 @@ func ensureMediaLinkTriggers(store *Store) (int, error) {
 		// Do not overwrite existing system triggers on every restart:
 		// admins can tune reply/delete_source/chance/etc in UI.
 		if id > 0 {
+			// One-time migration: TikTok should use dedicated action type.
+			if strings.TrimSpace(spec.UID) == "system-media-tiktok-link-audio" {
+				existing, err := store.GetTrigger(id)
+				if err != nil {
+					return created, err
+				}
+				if existing != nil && existing.ActionType != ActionTypeMediaTikTok {
+					existing.ActionType = ActionTypeMediaTikTok
+					if err := store.SaveTrigger(*existing); err != nil {
+						return created, err
+					}
+				}
+			}
 			continue
 		}
 		if err := store.SaveTrigger(spec); err != nil {
@@ -4448,6 +4536,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		return
 	case "media_link_audio":
 		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("скачивание по ссылке не поддерживается для события входа"))
+		return
+	case "media_tiktok_download":
+		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("скачивание по ссылке не поддерживается для события входа"))
 		return
 	default:
 		replyTo := 0

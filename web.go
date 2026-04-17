@@ -589,6 +589,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-music-note-beamed"
 	case model.ActionTypeMediaAudio:
 		return "bi-cloud-download"
+	case model.ActionTypeMediaTikTok:
+		return "bi-tiktok"
 	default:
 		return ""
 	}

@@ -49,4 +49,5 @@ const (
 	ActionTypeSearchImage  = model.ActionTypeSearchImage
 	ActionTypeSpotifyMusic = model.ActionTypeSpotifyMusic
 	ActionTypeMediaAudio   = model.ActionTypeMediaAudio
+	ActionTypeMediaTikTok  = model.ActionTypeMediaTikTok
 )

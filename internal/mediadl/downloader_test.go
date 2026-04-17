@@ -84,6 +84,8 @@ func TestNormalizeSupportedURL(t *testing.T) {
 		{in: "https://www.youtube.com/watch?v=abc", service: "youtube", ok: true},
 		{in: "https://youtu.be/abc", service: "youtube", ok: true},
 		{in: "https://www.instagram.com/reel/abc/", service: "instagram", ok: true},
+		{in: "https://www.tiktok.com/@artist/video/123456789", service: "tiktok", ok: true},
+		{in: "https://vm.tiktok.com/ZM123abc/", service: "tiktok", ok: true},
 		{in: "https://soundcloud.com/artist/track", service: "soundcloud", ok: true},
 		{in: "https://example.org/video", service: "", ok: false},
 	}
