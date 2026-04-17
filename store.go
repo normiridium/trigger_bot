@@ -161,6 +161,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeSpotifyMusic
 	case "media_link_audio":
 		return ActionTypeMediaAudio
+	case "media_tiktok_download":
+		return ActionTypeMediaTikTok
 	default:
 		return ActionTypeSend
 	}

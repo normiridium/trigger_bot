@@ -149,3 +149,10 @@ func TestNormalizeTriggerMode_NoMediaMode(t *testing.T) {
 		t.Fatalf("normalizeTriggerMode returned %q", got)
 	}
 }
+
+func TestNormalizeActionType_TikTok(t *testing.T) {
+	got := normalizeActionType("media_tiktok_download")
+	if got != ActionTypeMediaTikTok {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}

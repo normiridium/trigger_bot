@@ -132,6 +132,7 @@ func TestExtractSupportedMediaURL(t *testing.T) {
 	}{
 		{in: "скачай https://www.youtube.com/watch?v=abc123", want: "https://www.youtube.com/watch?v=abc123"},
 		{in: "линк https://instagram.com/reel/ABCDEF/?igsh=123", want: "https://instagram.com/reel/ABCDEF/?igsh=123"},
+		{in: "вот https://www.tiktok.com/@artist/video/123456789", want: "https://www.tiktok.com/@artist/video/123456789"},
 		{in: "https://soundcloud.com/artist/track", want: "https://soundcloud.com/artist/track"},
 		{in: "https://example.org/video", want: ""},
 	}
@@ -146,6 +147,16 @@ func TestExtractSupportedMediaURL_SecondMatch(t *testing.T) {
 	in := "смотри https://example.org/one и вот https://youtu.be/abc"
 	if got := extractSupportedMediaURL(in); got != "https://youtu.be/abc" {
 		t.Fatalf("expected second supported url, got %q", got)
+	}
+}
+
+func TestExtractSupportedMediaURLByService(t *testing.T) {
+	in := "смотри https://youtu.be/abc и https://www.tiktok.com/@artist/video/123"
+	if got := extractSupportedMediaURLByService(in, "tiktok"); got != "https://www.tiktok.com/@artist/video/123" {
+		t.Fatalf("expected tiktok url, got %q", got)
+	}
+	if got := extractSupportedMediaURLByService(in, "instagram"); got != "" {
+		t.Fatalf("expected empty for missing service, got %q", got)
 	}
 }
 
@@ -195,7 +206,7 @@ func TestTargetVideoBitrateKbps(t *testing.T) {
 }
 
 func TestBuildMediaAudioTitle(t *testing.T) {
-	got := buildMediaAudioTitle("Track Name", "https://youtu.be/abc")
+	got := buildMediaAudioTitle("Track Name", "https://youtu.be/abc", "youtube")
 	if got != "Track Name" {
 		t.Fatalf("unexpected media audio title: %q", got)
 	}
@@ -221,6 +232,9 @@ func TestBuildSourceLinkHTMLEscape(t *testing.T) {
 func TestMediaServiceEmoji(t *testing.T) {
 	if got := mediaServiceEmoji("youtube", "video"); !strings.Contains(got, "5463206079913533096") {
 		t.Fatalf("unexpected youtube video emoji: %q", got)
+	}
+	if got := mediaServiceEmoji("youtube", "audio"); !strings.Contains(got, "5463206079913533096") {
+		t.Fatalf("unexpected youtube audio emoji: %q", got)
 	}
 	if got := mediaServiceEmoji("instagram", "video"); !strings.Contains(got, "5463238270693416950") {
 		t.Fatalf("unexpected instagram video emoji: %q", got)
@@ -297,6 +311,10 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 	mode, interactive = mediaModeAndInteractivity("instagram", true)
 	if mode != "auto" || interactive {
 		t.Fatalf("instagram must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("tiktok", true)
+	if mode != "auto" || interactive {
+		t.Fatalf("tiktok must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity("youtube", true)
 	if mode != "audio" || !interactive {
