@@ -1979,7 +1979,7 @@ func main() {
 				replyTo = msg.MessageID
 			}
 			// SoundCloud is audio-only and Instagram is auto media-type in this bot flow.
-			useInteractive := mediaInteractive && mediaService != "soundcloud" && mediaService != "instagram"
+			mode, useInteractive := mediaModeAndInteractivity(mediaService, mediaInteractive)
 			if useInteractive {
 				req := mediadl.ChoiceRequest{
 					URL:          targetURL,
@@ -2001,16 +2001,9 @@ func main() {
 					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки выбора формата", err)
 					continue
 				}
-				if tr != nil && tr.DeleteSource && msg.MessageID > 0 {
-					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: msg.Chat.ID, MessageID: msg.MessageID})
-				}
 				log.Printf("send media pick keyboard trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
 				continue
-			}
-			mode := mediadl.ModeAudio
-			if mediaService == "instagram" {
-				mode = mediadl.ModeAuto
 			}
 			task := mediaDownloadTask{
 				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
@@ -3974,6 +3967,18 @@ func buildMediaDownloadQueryFromMessage(ctx templateContext, queryTemplate strin
 		return strings.TrimSpace(firstNonEmptyUserText(ctx.Msg))
 	}
 	return strings.TrimSpace(query)
+}
+
+func mediaModeAndInteractivity(service string, interactive bool) (mode string, useInteractive bool) {
+	service = strings.ToLower(strings.TrimSpace(service))
+	switch service {
+	case "soundcloud":
+		return mediadl.ModeAudio, false
+	case "instagram":
+		return mediadl.ModeAuto, false
+	default:
+		return mediadl.ModeAudio, interactive
+	}
 }
 
 func firstNonEmptyUserText(msg *tgbotapi.Message) string {
