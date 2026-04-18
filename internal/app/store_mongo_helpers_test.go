@@ -156,3 +156,10 @@ func TestNormalizeActionType_TikTok(t *testing.T) {
 		t.Fatalf("normalizeActionType returned %q", got)
 	}
 }
+
+func TestNormalizeActionType_X(t *testing.T) {
+	got := normalizeActionType("media_x_download")
+	if got != ActionTypeMediaX {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}

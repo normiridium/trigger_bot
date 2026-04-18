@@ -591,6 +591,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-cloud-download"
 	case model.ActionTypeMediaTikTok:
 		return "bi-tiktok"
+	case model.ActionTypeMediaX:
+		return "bi-twitter-x"
 	default:
 		return ""
 	}

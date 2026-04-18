@@ -50,4 +50,5 @@ const (
 	ActionTypeSpotifyMusic = model.ActionTypeSpotifyMusic
 	ActionTypeMediaAudio   = model.ActionTypeMediaAudio
 	ActionTypeMediaTikTok  = model.ActionTypeMediaTikTok
+	ActionTypeMediaX       = model.ActionTypeMediaX
 )

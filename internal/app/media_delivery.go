@@ -52,6 +52,12 @@ func reply(ctx sendContext, text string, preview bool) {
 
 func sendHTML(ctx sendContext, html string, preview bool) bool {
 	html = normalizeTelegramLineBreaks(html)
+	if strings.TrimSpace(html) == "" {
+		if debugTriggerLogEnabled {
+			log.Printf("send html skipped chat=%d replyTo=%d: empty text", ctx.ChatID, ctx.ReplyTo)
+		}
+		return false
+	}
 	m := tgbotapi.NewMessage(ctx.ChatID, html)
 	m.ParseMode = "HTML"
 	m.DisableWebPagePreview = !preview
@@ -172,7 +178,7 @@ func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error 
 	}
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
-	if caption := buildAudioCaption(tmpPath, ""); caption != "" {
+	if caption := buildAudioCaption(tmpPath, "", audioURL); caption != "" {
 		m.Caption = caption
 		m.ParseMode = "HTML"
 	}
@@ -205,14 +211,7 @@ func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sour
 	}
 	m.Performer = strings.TrimSpace(performer)
 	m.Title = strings.TrimSpace(title)
-	if caption := buildAudioCaption(filePath, service); caption != "" {
-		if strings.TrimSpace(sourceURL) != "" {
-			head := buildSourceLinkHTML(sourceURL, m.Title)
-			if strings.TrimSpace(head) == "" {
-				head = buildSourceLinkHTML(sourceURL, "ссылка")
-			}
-			caption = strings.TrimSpace(head + "\n" + caption)
-		}
+	if caption := buildAudioCaption(filePath, service, sourceURL); caption != "" {
 		m.Caption = caption
 		m.ParseMode = "HTML"
 	}
@@ -299,6 +298,8 @@ func mediaServiceEmoji(service, mode string) string {
 			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
 		case "tiktok":
 			return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
+		case "x":
+			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 		case "soundcloud":
 			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 		default:
@@ -312,6 +313,8 @@ func mediaServiceEmoji(service, mode string) string {
 		return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
 	case "tiktok":
 		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
+	case "x":
+		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 	default:
 		return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 	}

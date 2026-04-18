@@ -134,6 +134,7 @@ func TestExtractSupportedMediaURL(t *testing.T) {
 		{in: "линк https://instagram.com/reel/ABCDEF/?igsh=123", want: "https://instagram.com/reel/ABCDEF/?igsh=123"},
 		{in: "вот https://www.tiktok.com/@artist/video/123456789", want: "https://www.tiktok.com/@artist/video/123456789"},
 		{in: "https://soundcloud.com/artist/track", want: "https://soundcloud.com/artist/track"},
+		{in: "смотри https://x.com/artist/status/1234567890", want: "https://x.com/artist/status/1234567890"},
 		{in: "https://example.org/video", want: ""},
 	}
 	for _, tc := range cases {
@@ -157,6 +158,9 @@ func TestExtractSupportedMediaURLByService(t *testing.T) {
 	}
 	if got := extractSupportedMediaURLByService(in, "instagram"); got != "" {
 		t.Fatalf("expected empty for missing service, got %q", got)
+	}
+	if got := extractSupportedMediaURLByService("x https://twitter.com/acct/status/1", "x"); got != "https://twitter.com/acct/status/1" {
+		t.Fatalf("expected x url, got %q", got)
 	}
 }
 
@@ -212,6 +216,20 @@ func TestBuildMediaAudioTitle(t *testing.T) {
 	}
 }
 
+func TestTriggerDisplayName(t *testing.T) {
+	tr := &Trigger{ID: 7, Title: "  Мой триггер  ", MatchText: "abc"}
+	if got := triggerDisplayName(tr); got != "Мой триггер" {
+		t.Fatalf("unexpected trigger display name: %q", got)
+	}
+	tr = &Trigger{ID: 8, Title: " ", MatchText: "   message   "}
+	if got := triggerDisplayName(tr); got != "message" {
+		t.Fatalf("unexpected fallback trigger name: %q", got)
+	}
+	if got := triggerDisplayName(nil); got != "без названия" {
+		t.Fatalf("unexpected nil trigger name: %q", got)
+	}
+}
+
 func TestBuildSourceLinkHTML(t *testing.T) {
 	got := buildSourceLinkHTML("https://instagram.com/reel/abc", "ссылка")
 	if !strings.Contains(got, `<a href="https://instagram.com/reel/abc">ссылка</a>`) {
@@ -226,6 +244,28 @@ func TestBuildSourceLinkHTMLEscape(t *testing.T) {
 	}
 	if !strings.Contains(got, "a=1&amp;b=2") {
 		t.Fatalf("expected escaped href, got %q", got)
+	}
+}
+
+func TestBuildAudioCaption_AttachesSourceLink(t *testing.T) {
+	f, err := os.CreateTemp("", "audio-cap-*.mp3")
+	if err != nil {
+		t.Fatalf("create temp audio: %v", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.WriteString("fake-mp3-content-for-caption-test"); err != nil {
+		_ = f.Close()
+		t.Fatalf("write temp audio: %v", err)
+	}
+	_ = f.Close()
+
+	caption := buildAudioCaption(path, "youtube", "https://youtu.be/abc")
+	if !strings.Contains(caption, `<a href="https://youtu.be/abc">`) {
+		t.Fatalf("expected source link in caption, got %q", caption)
+	}
+	if strings.Contains(caption, "\n") {
+		t.Fatalf("audio caption must stay single-line, got %q", caption)
 	}
 }
 
@@ -315,6 +355,10 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 	mode, interactive = mediaModeAndInteractivity("tiktok", true)
 	if mode != "auto" || interactive {
 		t.Fatalf("tiktok must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("x", true)
+	if mode != "video" || interactive {
+		t.Fatalf("x must force video/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity("youtube", true)
 	if mode != "audio" || !interactive {

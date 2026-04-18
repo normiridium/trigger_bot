@@ -163,6 +163,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeMediaAudio
 	case "media_tiktok_download":
 		return ActionTypeMediaTikTok
+	case "media_x_download":
+		return ActionTypeMediaX
 	default:
 		return ActionTypeSend
 	}

@@ -451,11 +451,12 @@ func videoFallbackHeights(maxHeight int) []int {
 	return out
 }
 
-func buildAudioCaption(path string, service string) string {
+func buildAudioCaption(path string, service string, sourceURL string) string {
 	stats, ok := probeAudioStats(path)
 	if !ok || stats.SizeBytes <= 0 {
 		return ""
 	}
+	sourceURL = strings.TrimSpace(sourceURL)
 	sizeMB := float64(stats.SizeBytes) / 1_000_000.0
 	dur := pick.FormatDuration(stats.DurationSec)
 	bitrateKbps := stats.BitrateKbps
@@ -463,10 +464,17 @@ func buildAudioCaption(path string, service string) string {
 		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
 	}
 	emoji := mediaServiceEmoji(service, mediadl.ModeAudio)
+	durToken := dur
+	if durToken != "" && sourceURL != "" {
+		durToken = buildSourceLinkHTML(sourceURL, durToken)
+	}
 	if dur == "" || bitrateKbps <= 0 {
+		if sourceURL != "" {
+			return fmt.Sprintf("%s %s | %.2fMB", emoji, buildSourceLinkHTML(sourceURL, "ссылка"), sizeMB)
+		}
 		return fmt.Sprintf("%s %.2f MB", emoji, sizeMB)
 	}
-	return fmt.Sprintf("%s %s | %.2fMB | %dKbps", emoji, dur, sizeMB, bitrateKbps)
+	return fmt.Sprintf("%s %s | %.2fMB | %dKbps", emoji, durToken, sizeMB, bitrateKbps)
 }
 
 type audioStats struct {

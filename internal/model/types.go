@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|media_link_audio|media_tiktok_download
+	ActionType    ActionType         // send|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|media_link_audio|media_tiktok_download|media_x_download
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -161,6 +161,7 @@ const (
 	ActionTypeSpotifyMusic ActionType = "spotify_music_audio"
 	ActionTypeMediaAudio   ActionType = "media_link_audio"
 	ActionTypeMediaTikTok  ActionType = "media_tiktok_download"
+	ActionTypeMediaX       ActionType = "media_x_download"
 )
 
 var ActionTypeValues = []ActionType{
@@ -172,6 +173,7 @@ var ActionTypeValues = []ActionType{
 	ActionTypeSpotifyMusic,
 	ActionTypeMediaAudio,
 	ActionTypeMediaTikTok,
+	ActionTypeMediaX,
 }
 
 func (m ActionType) String() string {
@@ -192,6 +194,8 @@ func (m ActionType) String() string {
 		return "Скачать медиа по ссылке (аудио/видео)"
 	case ActionTypeMediaTikTok:
 		return "Скачать с TikTok"
+	case ActionTypeMediaX:
+		return "Скачать с X (Twitter)"
 	default:
 		return string(m)
 	}
