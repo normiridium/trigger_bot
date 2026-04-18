@@ -656,6 +656,26 @@ func TestParseModerationCommandBan(t *testing.T) {
 	}
 }
 
+func TestParseModerationCommandBanSlashAndMention(t *testing.T) {
+	raw := "/ban@olenyam_bot @user 6d"
+	req, ok, err := parseModerationCommand(raw)
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected recognized slash command")
+	}
+	if req.Action != "ban" || req.Silent {
+		t.Fatalf("unexpected action/silent: %#v", req)
+	}
+	if len(req.Targets) != 1 || req.Targets[0] != "@user" {
+		t.Fatalf("unexpected targets: %#v", req.Targets)
+	}
+	if req.Duration != 6*24*time.Hour || req.DurationRaw != "6d" {
+		t.Fatalf("unexpected duration: %s raw=%q", req.Duration, req.DurationRaw)
+	}
+}
+
 func TestParseModerationCommandReadonlyAlias(t *testing.T) {
 	req, ok, err := parseModerationCommand("!ro 30m")
 	if err != nil {
@@ -692,5 +712,24 @@ func TestParseModerationCommandReloadAdmins(t *testing.T) {
 	}
 	if len(req.Targets) != 0 || req.Duration != 0 || req.Reason != "" {
 		t.Fatalf("unexpected fields for reload command: %#v", req)
+	}
+}
+
+func TestHumanModerationDurationRU(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		raw  string
+		want string
+	}{
+		{d: 6 * 24 * time.Hour, raw: "6d", want: "6 дней"},
+		{d: 2 * time.Hour, raw: "2h", want: "2 часа"},
+		{d: 1 * time.Hour, raw: "1h", want: "1 час"},
+		{d: 30 * time.Minute, raw: "30m", want: "30 минут"},
+		{d: 14 * 24 * time.Hour, raw: "2w", want: "2 недели"},
+	}
+	for _, tc := range cases {
+		if got := humanModerationDurationRU(tc.d, tc.raw); got != tc.want {
+			t.Fatalf("humanModerationDurationRU(%s, %q)=%q want=%q", tc.d, tc.raw, got, tc.want)
+		}
 	}
 }
