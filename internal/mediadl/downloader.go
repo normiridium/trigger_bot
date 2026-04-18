@@ -34,6 +34,14 @@ type Downloader struct {
 	MaxHeight     int
 }
 
+func (d Downloader) ConfiguredMaxSizeMB() int {
+	return d.MaxSizeMB
+}
+
+func (d Downloader) ConfiguredMaxHeight() int {
+	return d.MaxHeight
+}
+
 type ProbeResult struct {
 	Title      string
 	Artist     string
