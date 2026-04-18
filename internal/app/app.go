@@ -277,6 +277,35 @@ func deleteTriggerSourceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr 
 	}
 }
 
+func triggerDisplayName(tr *Trigger) string {
+	if tr == nil {
+		return "без названия"
+	}
+	title := strings.TrimSpace(tr.Title)
+	if title != "" {
+		return title
+	}
+	title = strings.TrimSpace(tr.MatchText)
+	if title != "" {
+		return clipText(title, 80)
+	}
+	return "без названия"
+}
+
+func reportEmptyTriggerMessage(bot *tgbotapi.BotAPI, chatID int64, tr *Trigger) {
+	if bot == nil || chatID == 0 || tr == nil {
+		return
+	}
+	title := html.EscapeString(triggerDisplayName(tr))
+	text := fmt.Sprintf("⚠️ Триггер #%d «%s»: задано пустое сообщение.", tr.ID, title)
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = "HTML"
+	_, err := bot.Send(m)
+	if err != nil && debugTriggerLogEnabled {
+		log.Printf("send trigger empty-message warning failed trigger=%d chat=%d err=%v", tr.ID, chatID, err)
+	}
+}
+
 var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P<id>\d+)"?\s*>"?(?P<fallback>.*?)"?</tg-emoji>"?`)
 var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
@@ -1429,6 +1458,7 @@ func Run() {
 						hasInstagram := false
 						hasTikTok := false
 						hasSoundCloud := false
+						hasX := false
 						for _, it := range items {
 							if !it.Enabled {
 								continue
@@ -1442,9 +1472,14 @@ func Run() {
 								hasTikTok = true
 							case "system-media-soundcloud-link-audio":
 								hasSoundCloud = true
+							case "system-media-x-link-video":
+								hasX = true
 							}
 							if strings.TrimSpace(string(it.ActionType)) == "spotify_music_audio" {
 								hasSpotify = true
+							}
+							if strings.TrimSpace(string(it.ActionType)) == "media_x_download" {
+								hasX = true
 							}
 							title := strings.TrimSpace(it.Title)
 							if title == "" {
@@ -1476,6 +1511,9 @@ func Run() {
 						}
 						if hasSoundCloud {
 							mediaServices = append(mediaServices, "SoundCloud")
+						}
+						if hasX {
+							mediaServices = append(mediaServices, "X")
 						}
 						if len(mediaServices) > 0 {
 							featureLines = append(featureLines, "— скачивать аудио/видео по ссылкам: "+strings.Join(mediaServices, ", "))
@@ -1971,12 +2009,41 @@ func Run() {
 				continue
 			}
 			log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
+		case "media_x_download":
+			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
+			targetURL := extractSupportedMediaURLByService(query, "x")
+			if targetURL == "" {
+				continue
+			}
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			task := mediaDownloadTask{
+				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				URL:      targetURL,
+				Mode:     mediadl.ModeVideo,
+				DL:       mediaDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     idleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if mediaQueue == nil || !mediaQueue.enqueue(task) {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания X-видео", errors.New("media download queue is full"))
+				continue
+			}
+			log.Printf("send x video queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		default:
 			replyTo := 0
 			if tr.Reply || tr.TriggerMode == "command_reply" {
 				replyTo = msg.MessageID
 			}
 			out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+			if strings.TrimSpace(out) == "" {
+				reportEmptyTriggerMessage(bot, msg.Chat.ID, tr)
+				continue
+			}
 			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
 			if ok := sendHTML(sendCtx, out, tr.Preview); ok {
 				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
@@ -2211,6 +2278,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	case "media_tiktok_download":
 		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("скачивание по ссылке не поддерживается для события входа"))
 		return
+	case "media_x_download":
+		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания X-видео", errors.New("скачивание по ссылке не поддерживается для события входа"))
+		return
 	default:
 		replyTo := 0
 		if tr.Reply || tr.TriggerMode == "command_reply" {
@@ -2218,6 +2288,10 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
 		out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+		if strings.TrimSpace(out) == "" {
+			reportEmptyTriggerMessage(deps.Bot, msg.Chat.ID, tr)
+			return
+		}
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
 		if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())

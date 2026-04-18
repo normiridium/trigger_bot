@@ -39,6 +39,9 @@ func TestActionTypeString(t *testing.T) {
 	if got := ActionTypeMediaTikTok.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeMediaTikTok")
 	}
+	if got := ActionTypeMediaX.String(); got == "" {
+		t.Fatalf("empty string for ActionTypeMediaX")
+	}
 	if got := ActionType("x").String(); got != "x" {
 		t.Fatalf("unexpected fallback string: %q", got)
 	}
