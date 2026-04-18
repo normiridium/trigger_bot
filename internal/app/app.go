@@ -867,9 +867,86 @@ func parseModerationDurationToken(raw string) (time.Duration, bool) {
 	}
 }
 
+func normalizeModerationCommandToken(raw string) string {
+	cmd := strings.ToLower(strings.TrimSpace(raw))
+	if cmd == "" {
+		return ""
+	}
+	if at := strings.IndexByte(cmd, '@'); at >= 0 {
+		cmd = strings.TrimSpace(cmd[:at])
+	}
+	return cmd
+}
+
+func ruPlural(n int, one, few, many string) string {
+	n = absInt(n)
+	lastTwo := n % 100
+	if lastTwo >= 11 && lastTwo <= 14 {
+		return many
+	}
+	switch n % 10 {
+	case 1:
+		return one
+	case 2, 3, 4:
+		return few
+	default:
+		return many
+	}
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func humanModerationDurationRU(d time.Duration, raw string) string {
+	if d <= 0 {
+		return strings.TrimSpace(raw)
+	}
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw != "" {
+		if parsed, ok := parseModerationDurationToken(raw); ok && parsed == d {
+			switch raw[len(raw)-1] {
+			case 'm':
+				n, _ := strconv.Atoi(raw[:len(raw)-1])
+				return fmt.Sprintf("%d %s", n, ruPlural(n, "минута", "минуты", "минут"))
+			case 'h':
+				n, _ := strconv.Atoi(raw[:len(raw)-1])
+				return fmt.Sprintf("%d %s", n, ruPlural(n, "час", "часа", "часов"))
+			case 'd':
+				n, _ := strconv.Atoi(raw[:len(raw)-1])
+				return fmt.Sprintf("%d %s", n, ruPlural(n, "день", "дня", "дней"))
+			case 'w':
+				n, _ := strconv.Atoi(raw[:len(raw)-1])
+				return fmt.Sprintf("%d %s", n, ruPlural(n, "неделя", "недели", "недель"))
+			}
+		}
+	}
+	if d%(7*24*time.Hour) == 0 {
+		n := int(d / (7 * 24 * time.Hour))
+		return fmt.Sprintf("%d %s", n, ruPlural(n, "неделя", "недели", "недель"))
+	}
+	if d%(24*time.Hour) == 0 {
+		n := int(d / (24 * time.Hour))
+		return fmt.Sprintf("%d %s", n, ruPlural(n, "день", "дня", "дней"))
+	}
+	if d%time.Hour == 0 {
+		n := int(d / time.Hour)
+		return fmt.Sprintf("%d %s", n, ruPlural(n, "час", "часа", "часов"))
+	}
+	if d%time.Minute == 0 {
+		n := int(d / time.Minute)
+		return fmt.Sprintf("%d %s", n, ruPlural(n, "минута", "минуты", "минут"))
+	}
+	n := int(d.Round(time.Second) / time.Second)
+	return fmt.Sprintf("%d %s", n, ruPlural(n, "секунда", "секунды", "секунд"))
+}
+
 func parseModerationCommand(text string) (moderationRequest, bool, error) {
 	raw := strings.TrimSpace(text)
-	if raw == "" || !strings.HasPrefix(raw, "!") {
+	if raw == "" || (!strings.HasPrefix(raw, "!") && !strings.HasPrefix(raw, "/")) {
 		return moderationRequest{}, false, nil
 	}
 	firstLine := raw
@@ -882,36 +959,36 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 	if len(parts) == 0 {
 		return moderationRequest{}, false, nil
 	}
-	cmd := strings.ToLower(strings.TrimSpace(parts[0]))
+	cmd := normalizeModerationCommandToken(parts[0])
 	args := parts[1:]
 	out := moderationRequest{Reason: reason}
 
 	switch cmd {
-	case "!ban":
+	case "!ban", "/ban":
 		out.Action = "ban"
-	case "!sban":
+	case "!sban", "/sban":
 		out.Action = "ban"
 		out.Silent = true
-	case "!unban":
+	case "!unban", "/unban":
 		out.Action = "unban"
-	case "!sunban":
+	case "!sunban", "/sunban":
 		out.Action = "unban"
 		out.Silent = true
-	case "!mute":
+	case "!mute", "/mute":
 		out.Action = "mute"
-	case "!smute":
+	case "!smute", "/smute":
 		out.Action = "mute"
 		out.Silent = true
-	case "!unmute":
+	case "!unmute", "/unmute":
 		out.Action = "unmute"
-	case "!kick":
+	case "!kick", "/kick":
 		out.Action = "kick"
-	case "!skick":
+	case "!skick", "/skick":
 		out.Action = "kick"
 		out.Silent = true
-	case "!readonly", "!ro", "!channelmode":
+	case "!readonly", "!ro", "!channelmode", "/readonly", "/ro", "/channelmode":
 		out.Action = "readonly"
-	case "!reload_admins":
+	case "!reload_admins", "/reload_admins":
 		out.Action = "reload_admins"
 	default:
 		return moderationRequest{}, false, nil
@@ -1075,7 +1152,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 			b.WriteString(state)
 			if req.DurationRaw != "" && turnOn {
 				b.WriteString(" на ")
-				b.WriteString(html.EscapeString(req.DurationRaw))
+				b.WriteString(html.EscapeString(humanModerationDurationRU(req.Duration, req.DurationRaw)))
 			}
 			if req.Reason != "" {
 				b.WriteString(" — ")
@@ -1207,7 +1284,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 	b.WriteString(strings.Join(targetLinks, ", "))
 	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
 		b.WriteString(" на ")
-		b.WriteString(html.EscapeString(req.DurationRaw))
+		b.WriteString(html.EscapeString(humanModerationDurationRU(req.Duration, req.DurationRaw)))
 	}
 	if req.Reason != "" {
 		b.WriteString(" — ")
@@ -1431,7 +1508,7 @@ func Run() {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
 						"Команды: /start /help /emojiid /spsearch\n" +
-						"Мод-команды: !ban !unban !mute !unmute !kick !readonly !reload_admins (+ тихие !sban !smute !skick)\n\n" +
+						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
 						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
