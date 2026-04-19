@@ -12,6 +12,9 @@ trigger_admin_bot
 # debug logs
 *.log
 
+# test artifacts
+cover.out
+
 # editor/system
 .DS_Store
 .idea/
