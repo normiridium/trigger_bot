@@ -72,6 +72,11 @@ type customEmojiHit struct {
 	Fallback string
 }
 
+type stickerCodeHit struct {
+	FileID string
+	SetID  string
+}
+
 func getUpdatesChanWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) <-chan updateWithEmojiMeta {
 	ch := make(chan updateWithEmojiMeta, 100)
 	go func() {
@@ -200,4 +205,22 @@ func buildTGEmojiSnippet(id, fallback string) string {
 		fallback = "🙂"
 	}
 	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, id, fallback)
+}
+
+func extractStickerCode(msg *tgbotapi.Message) (stickerCodeHit, bool) {
+	if msg == nil || msg.Sticker == nil {
+		return stickerCodeHit{}, false
+	}
+	fileID := strings.TrimSpace(msg.Sticker.FileID)
+	if fileID == "" {
+		return stickerCodeHit{}, false
+	}
+	return stickerCodeHit{
+		FileID: fileID,
+		SetID:  strings.TrimSpace(msg.Sticker.SetName),
+	}, true
+}
+
+func buildStickerPairCode(hit stickerCodeHit) string {
+	return strings.TrimSpace(hit.FileID) + ":" + strings.TrimSpace(hit.SetID)
 }

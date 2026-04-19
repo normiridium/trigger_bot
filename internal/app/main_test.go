@@ -550,6 +550,37 @@ func TestContainsTelegramHTMLMarkup(t *testing.T) {
 	}
 }
 
+func TestExtractStickerCode(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Sticker: &tgbotapi.Sticker{
+			FileID:  "sticker_file_id",
+			SetName: "my_set_name",
+		},
+	}
+	hit, ok := extractStickerCode(msg)
+	if !ok {
+		t.Fatalf("expected sticker code hit")
+	}
+	if hit.FileID != "sticker_file_id" {
+		t.Fatalf("unexpected file id: %q", hit.FileID)
+	}
+	if hit.SetID != "my_set_name" {
+		t.Fatalf("unexpected set id: %q", hit.SetID)
+	}
+	if got := buildStickerPairCode(hit); got != "sticker_file_id:my_set_name" {
+		t.Fatalf("unexpected pair code: %q", got)
+	}
+}
+
+func TestExtractStickerCodeEmpty(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Sticker: &tgbotapi.Sticker{},
+	}
+	if _, ok := extractStickerCode(msg); ok {
+		t.Fatalf("expected no sticker code hit when file id is empty")
+	}
+}
+
 func TestMarkdownToTelegramHTMLLite(t *testing.T) {
 	in := "Код:\n```python\nprint('hi')\n```\nИ `x=1` и [сайт](https://example.com)"
 	got := markdownToTelegramHTMLLite(in)
