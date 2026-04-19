@@ -23,6 +23,7 @@ import (
 	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
+	"trigger-admin-bot/internal/yandexmusic"
 )
 
 var chatErrorLogEnabled bool
@@ -1381,7 +1382,25 @@ func Run() {
 		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 	}
-	mediaMaxMB := envInt("MEDIA_DOWNLOAD_MAX_MB", 100)
+	yandexDownloader := yandexmusic.Downloader{
+		Token:         strings.TrimSpace(firstNonEmptyEnv("YA_MUSIC_TOKEN", "YANDEX_MUSIC_TOKEN")),
+		Quality:       envInt("YANDEX_MUSIC_QUALITY", 1),
+		TimeoutSec:    envInt("YANDEX_MUSIC_TIMEOUT_SEC", 45),
+		Tries:         envInt("YANDEX_MUSIC_TRIES", 6),
+		RetryDelaySec: envInt("YANDEX_MUSIC_RETRY_DELAY_SEC", 2),
+	}
+	telegramUploadMaxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
+	if telegramUploadMaxMB <= 0 {
+		telegramUploadMaxMB = 50
+	}
+	mediaMaxMB := envInt("MEDIA_DOWNLOAD_MAX_MB", telegramUploadMaxMB)
+	if mediaMaxMB <= 0 {
+		mediaMaxMB = telegramUploadMaxMB
+	}
+	if mediaMaxMB > telegramUploadMaxMB {
+		log.Printf("MEDIA_DOWNLOAD_MAX_MB=%d capped to TELEGRAM_UPLOAD_MAX_MB=%d", mediaMaxMB, telegramUploadMaxMB)
+		mediaMaxMB = telegramUploadMaxMB
+	}
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:      strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		ProxySocks:    strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
@@ -1393,6 +1412,7 @@ func Run() {
 	}
 	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
+	yandexMusicQueue := newYandexMusicQueue(envInt("YANDEX_MUSIC_WORKERS", 1), envInt("YANDEX_MUSIC_QUEUE", 4))
 	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
@@ -1450,6 +1470,8 @@ func Run() {
 			SpotifyMusic:      spotifyMusicClient,
 			SpotifyDownloader: spotifyDownloader,
 			SpotifyQueue:      spotifyQueue,
+			YandexDownloader:  yandexDownloader,
+			YandexQueue:       yandexMusicQueue,
 			MediaDownloader:   mediaDownloader,
 			MediaQueue:        mediaQueue,
 			MediaInteractive:  mediaInteractive,
@@ -1582,6 +1604,7 @@ func Run() {
 					if items, err := store.ListTriggers(); err == nil {
 						enabled := make([]string, 0, len(items))
 						hasSpotify := false
+						hasYandexMusic := false
 						hasYouTube := false
 						hasInstagram := false
 						hasTikTok := false
@@ -1606,6 +1629,9 @@ func Run() {
 							if strings.TrimSpace(string(it.ActionType)) == "spotify_music_audio" {
 								hasSpotify = true
 							}
+							if strings.TrimSpace(string(it.ActionType)) == "yandex_music_audio" {
+								hasYandexMusic = true
+							}
 							if strings.TrimSpace(string(it.ActionType)) == "media_x_download" {
 								hasX = true
 							}
@@ -1626,6 +1652,9 @@ func Run() {
 						featureLines := []string{"Что умею:"}
 						if hasSpotify {
 							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
+						}
+						if hasYandexMusic {
+							featureLines = append(featureLines, "— скачивать музыку из Яндекс.Музыки по ссылке")
 						}
 						mediaServices := make([]string, 0, 3)
 						if hasYouTube {
@@ -1654,6 +1683,9 @@ func Run() {
 						}
 						if hasSpotify {
 							usageLines = append(usageLines, "— для Spotify: /spsearch <запрос>")
+						}
+						if hasYandexMusic {
+							usageLines = append(usageLines, "— для Яндекс.Музыки: отправьте ссылку music.yandex.ru")
 						}
 						usageLines = append(usageLines, "— если нужен ID кастомного эмодзи: /emojiid")
 						usageLines = append(usageLines, "— если нужен код стикера: отправьте /stickerid в ответ на стикер")
@@ -1924,6 +1956,8 @@ type triggerActionDeps struct {
 	SpotifyMusic      SpotifyMusicPort
 	SpotifyDownloader SpotifyDownloadPort
 	SpotifyQueue      *spotifyPickQueue
+	YandexDownloader  YandexMusicDownloadPort
+	YandexQueue       *yandexMusicQueue
 	MediaDownloader   MediaDownloadPort
 	MediaQueue        *mediaDownloadQueue
 	MediaInteractive  bool
@@ -2288,6 +2322,33 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		if debugTriggerLogEnabled {
 			log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+		}
+		return
+	case "yandex_music_audio":
+		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		targetURL := extractYandexMusicURL(query)
+		if targetURL == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		task := yandexMusicTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			URL:      targetURL,
+			DL:       deps.YandexDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.YandexQueue == nil || !deps.YandexQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания Yandex Music", errors.New("yandex music queue is full"))
+			return
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send yandex music queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		}
 		return
 	case "media_link_audio":

@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 
-	"trigger-admin-bot/internal/model"
 	"trigger-admin-bot/internal/mediadl"
+	"trigger-admin-bot/internal/model"
 	"trigger-admin-bot/internal/spotifymusic"
 )
 
@@ -34,6 +34,11 @@ type SpotifyMusicPort interface {
 // SpotifyDownloadPort describes spotify audio download operation used by workers.
 type SpotifyDownloadPort interface {
 	DownloadByQuery(ctx context.Context, query string) (string, error)
+}
+
+// YandexMusicDownloadPort describes yandex music audio download operation used by workers.
+type YandexMusicDownloadPort interface {
+	DownloadByURL(ctx context.Context, rawURL string) (string, error)
 }
 
 // MediaDownloadPort describes media download operations (audio/video/auto) used by workers.

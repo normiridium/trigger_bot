@@ -170,3 +170,10 @@ func TestNormalizeActionType_SendSticker(t *testing.T) {
 		t.Fatalf("normalizeActionType returned %q", got)
 	}
 }
+
+func TestNormalizeActionType_YandexMusic(t *testing.T) {
+	got := normalizeActionType("yandex_music_audio")
+	if got != ActionTypeYandexMusic {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}

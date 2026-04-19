@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"math/rand"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -619,6 +620,26 @@ func extractSupportedMediaURLByService(input string, service string) string {
 		}
 		if strings.EqualFold(strings.TrimSpace(gotService), service) {
 			return norm
+		}
+	}
+	return ""
+}
+
+func extractYandexMusicURL(input string) string {
+	matches := supportedMediaURLRe.FindAllString(input, 8)
+	for _, raw := range matches {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		host := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(u.Hostname())), "www.")
+		if host != "music.yandex.ru" && host != "music.yandex.com" {
+			continue
+		}
+		path := strings.ToLower(strings.TrimSpace(u.Path))
+		// Allow only track links.
+		if strings.Contains(path, "/track/") {
+			return strings.TrimSpace(raw)
 		}
 	}
 	return ""
