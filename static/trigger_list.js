@@ -30,6 +30,10 @@ let templatesCache = [];
 let templatesLoadInFlight = false;
 let settingsLoadInFlight = false;
 let settingsCache = {fields: [], values: {}};
+let emojiHelperTimer = null;
+let emojiHelperLastID = '';
+let emojiHelperSelectedID = '';
+let emojiHelperCacheSeed = Date.now();
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -44,6 +48,7 @@ async function initTriggerPage(){
   bindMatchTextToggle();
   bindMiniToolbarFallback();
   ensureResponseEditor();
+  bindEmojiHelperListeners();
   const form = document.getElementById('trigger_form');
   if(form && !form.dataset.boundSubmit){
     form.addEventListener('submit', submitTriggerForm);
@@ -538,6 +543,149 @@ function escapeHtml(v){
     .replace(/'/g, '&#39;');
 }
 
+function extractCustomEmojiTagsFromText(text){
+  const src = String(text || '');
+  const re = /<\s*tg-emoji[^>]*emoji-id\s*=\s*["']?(\d{3,})["']?[^>]*>/ig;
+  const out = [];
+  let m;
+  while((m = re.exec(src)) !== null){
+    const id = String(m[1] || '').trim();
+    if(!id){ continue; }
+    out.push({id, start: Number(m.index || 0), end: Number(m.index || 0) + String(m[0] || '').length});
+    if(out.length >= 64){ break; }
+  }
+  return out;
+}
+
+function getResponseCursorOffset(){
+  const editor = getEditorView();
+  if(editor && editor.state && editor.state.selection && editor.state.selection.main){
+    return Number(editor.state.selection.main.head || 0);
+  }
+  const ta = getResponseTextArea();
+  return ta ? Number(ta.selectionStart || 0) : 0;
+}
+
+function pickEmojiIDByCursor(tags, cursor){
+  if(!Array.isArray(tags) || tags.length === 0){ return ''; }
+  const pos = Number.isFinite(cursor) ? cursor : 0;
+  for(const t of tags){
+    if(pos >= Number(t.start || 0) && pos <= Number(t.end || 0)){
+      return String(t.id || '');
+    }
+  }
+  return String(tags[0].id || '');
+}
+
+function bindEmojiHelperListeners(){
+  const ta = getResponseTextArea();
+  if(ta && !ta.dataset.emojiHelperBound){
+    ta.addEventListener('input', scheduleEmojiSetHelperRefresh);
+    ta.addEventListener('keyup', scheduleEmojiSetHelperRefresh);
+    ta.addEventListener('click', scheduleEmojiSetHelperRefresh);
+    ta.dataset.emojiHelperBound = '1';
+  }
+  if(!document.body.dataset.emojiHelperEditorBound){
+    window.addEventListener('response-editor-change', scheduleEmojiSetHelperRefresh);
+    window.addEventListener('response-editor-selection', scheduleEmojiSetHelperRefresh);
+    document.body.dataset.emojiHelperEditorBound = '1';
+  }
+}
+
+function scheduleEmojiSetHelperRefresh(){
+  if(emojiHelperTimer){ clearTimeout(emojiHelperTimer); }
+  emojiHelperTimer = setTimeout(() => {
+    emojiHelperTimer = null;
+    refreshEmojiSetHelper();
+  }, 180);
+}
+
+function hideEmojiSetHelper(){
+  const box = document.getElementById('emoji_set_helper');
+  if(!box){ return; }
+  box.classList.add('d-none');
+  box.innerHTML = '';
+  emojiHelperLastID = '';
+  emojiHelperSelectedID = '';
+}
+
+function renderEmojiSetHelperLoading(id){
+  const box = document.getElementById('emoji_set_helper');
+  if(!box){ return; }
+  box.classList.remove('d-none');
+  box.innerHTML = `<div class="emoji-helper-title">Набор эмодзи для <code>${escapeHtml(id)}</code>…</div>`;
+}
+
+function renderEmojiSetHelperError(msg){
+  const box = document.getElementById('emoji_set_helper');
+  if(!box){ return; }
+  box.classList.remove('d-none');
+  box.innerHTML = `<div class="emoji-helper-title text-danger">${escapeHtml(msg || 'Не удалось загрузить набор эмодзи')}</div>`;
+}
+
+function renderEmojiSetHelper(data){
+  const box = document.getElementById('emoji_set_helper');
+  if(!box){ return; }
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if(items.length === 0){
+    hideEmojiSetHelper();
+    return;
+  }
+  const title = String(data?.title || data?.set_name || 'Набор эмодзи');
+  const head = `<div class="emoji-helper-title">${escapeHtml(title)} — нажми, чтобы вставить</div>`;
+  const chips = items.map((it) => {
+    const id = String(it?.custom_emoji_id || '').trim();
+    if(!id){ return ''; }
+    const emoji = String(it?.emoji || '🙂');
+    const preview = String(it?.preview_url || '').trim();
+    const previewURL = preview ? withTokenNoCache(preview) : '';
+    const selectedClass = id === emojiHelperSelectedID ? ' emoji-chip-selected' : '';
+    return `<button type="button" class="emoji-chip${selectedClass}" data-emoji-id="${escapeHtml(id)}" data-emoji-fallback="${escapeHtml(emoji)}" data-preview-url="${escapeHtml(previewURL)}" title="${escapeHtml(id)}"><img alt="${escapeHtml(emoji)}" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
+  }).join('');
+  box.classList.remove('d-none');
+  box.innerHTML = `${head}<div class="emoji-helper-grid">${chips}</div>`;
+  box.querySelectorAll('.emoji-chip[data-emoji-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = String(btn.getAttribute('data-emoji-id') || '').trim();
+      const fallback = String(btn.getAttribute('data-emoji-fallback') || '🙂').trim() || '🙂';
+      if(!id){ return; }
+      insertTextAtCursor(getResponseTextArea(), `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`);
+      scheduleEmojiSetHelperRefresh();
+    });
+  });
+}
+
+async function refreshEmojiSetHelper(){
+  const text = getResponseValue();
+  const tags = extractCustomEmojiTagsFromText(text);
+  if(tags.length === 0){
+    hideEmojiSetHelper();
+    return;
+  }
+  const selectedID = pickEmojiIDByCursor(tags, getResponseCursorOffset());
+  if(!selectedID){
+    hideEmojiSetHelper();
+    return;
+  }
+  if(selectedID === emojiHelperLastID){
+    return;
+  }
+  emojiHelperSelectedID = selectedID;
+  emojiHelperLastID = selectedID;
+  renderEmojiSetHelperLoading(selectedID);
+  try{
+    const r = await fetch(withTokenNoCache('/trigger_bot/emoji_set?emoji_id=' + encodeURIComponent(selectedID)));
+    if(!r.ok){
+      const txt = await r.text();
+      throw new Error(txt || ('HTTP ' + r.status));
+    }
+    const data = await r.json();
+    renderEmojiSetHelper(data);
+  } catch(err){
+    renderEmojiSetHelperError(err && err.message ? err.message : String(err));
+  }
+}
+
 function ensureResponseEditor(){
   if(responseEditorReady){ return; }
   if(typeof window.initResponseEditor !== 'function'){ return; }
@@ -571,10 +719,12 @@ function setResponseValue(val){
   if(editor){
     const docLen = editor.state.doc.length;
     editor.dispatch({changes: {from: 0, to: docLen, insert: text}});
+    scheduleEmojiSetHelperRefresh();
     return;
   }
   const ta = document.getElementById('f_response_text');
   if(ta){ ta.value = text; }
+  scheduleEmojiSetHelperRefresh();
 }
 
 function getResponseValue(){
@@ -1071,6 +1221,7 @@ function insertTextAtCursor(el, text){
       selection: {anchor: sel.from + String(text).length}
     });
     editor.focus();
+    scheduleEmojiSetHelperRefresh();
     return;
   }
   if(!el){ return; }
@@ -1081,6 +1232,7 @@ function insertTextAtCursor(el, text){
   const caret = start + text.length;
   el.focus();
   el.setSelectionRange(caret, caret);
+  scheduleEmojiSetHelperRefresh();
 }
 
 function wrapResponseSelection(before, after){
@@ -1329,6 +1481,13 @@ function withToken(path){
   if(!token){ return path; }
   const u = new URL(path, window.location.origin);
   u.searchParams.set('token', token);
+  return u.pathname + u.search;
+}
+
+function withTokenNoCache(path){
+  const p = withToken(path);
+  const u = new URL(p, window.location.origin);
+  u.searchParams.set('_ts', String(emojiHelperCacheSeed));
   return u.pathname + u.search;
 }
 

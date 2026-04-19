@@ -1,0 +1,234 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+)
+
+type emojiProxyService struct {
+	Token  string
+	Client *http.Client
+}
+
+type emojiItem struct {
+	CustomEmojiID string `json:"custom_emoji_id"`
+	Emoji         string `json:"emoji"`
+	SetName       string `json:"set_name"`
+	FileID        string `json:"file_id"`
+	ThumbFileID   string `json:"thumb_file_id"`
+}
+
+type emojiSet struct {
+	SetName string      `json:"set_name"`
+	Title   string      `json:"title"`
+	Items   []emojiItem `json:"items"`
+}
+
+type tgSticker struct {
+	CustomEmojiID string `json:"custom_emoji_id"`
+	SetName       string `json:"set_name"`
+	Emoji         string `json:"emoji"`
+	FileID        string `json:"file_id"`
+	Thumb         *struct {
+		FileID string `json:"file_id"`
+	} `json:"thumb"`
+}
+
+type tgStickerSet struct {
+	Name     string      `json:"name"`
+	Title    string      `json:"title"`
+	Stickers []tgSticker `json:"stickers"`
+}
+
+type tgResp[T any] struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+	Result      T      `json:"result"`
+}
+
+func (s emojiProxyService) Enabled() bool {
+	return strings.TrimSpace(s.Token) != ""
+}
+
+func (s emojiProxyService) ResolveSetByEmojiID(ctx context.Context, id string) (emojiSet, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return emojiSet{}, errors.New("emoji id is empty")
+	}
+	if !s.Enabled() {
+		return emojiSet{}, errors.New("telegram token is empty")
+	}
+	stickers, err := s.getCustomEmojiStickers(ctx, []string{id})
+	if err != nil {
+		return emojiSet{}, err
+	}
+	if len(stickers) == 0 {
+		return emojiSet{}, errors.New("emoji not found")
+	}
+	setName := strings.TrimSpace(stickers[0].SetName)
+	if setName == "" {
+		item := mapSticker(stickers[0])
+		return emojiSet{Items: []emojiItem{item}}, nil
+	}
+	set, err := s.getStickerSet(ctx, setName)
+	if err != nil {
+		item := mapSticker(stickers[0])
+		item.SetName = setName
+		return emojiSet{SetName: setName, Title: setName, Items: []emojiItem{item}}, nil
+	}
+	items := make([]emojiItem, 0, len(set.Stickers))
+	for _, st := range set.Stickers {
+		if strings.TrimSpace(st.CustomEmojiID) == "" {
+			continue
+		}
+		items = append(items, mapSticker(st))
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CustomEmojiID < items[j].CustomEmojiID
+	})
+	return emojiSet{
+		SetName: strings.TrimSpace(set.Name),
+		Title:   strings.TrimSpace(set.Title),
+		Items:   items,
+	}, nil
+}
+
+func mapSticker(st tgSticker) emojiItem {
+	out := emojiItem{
+		CustomEmojiID: strings.TrimSpace(st.CustomEmojiID),
+		Emoji:         strings.TrimSpace(st.Emoji),
+		SetName:       strings.TrimSpace(st.SetName),
+		FileID:        strings.TrimSpace(st.FileID),
+	}
+	if st.Thumb != nil {
+		out.ThumbFileID = strings.TrimSpace(st.Thumb.FileID)
+	}
+	return out
+}
+
+func (s emojiProxyService) getCustomEmojiStickers(ctx context.Context, ids []string) ([]tgSticker, error) {
+	payload := map[string]any{"custom_emoji_ids": ids}
+	var out []tgSticker
+	if err := s.call(ctx, "getCustomEmojiStickers", payload, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s emojiProxyService) getStickerSet(ctx context.Context, name string) (tgStickerSet, error) {
+	payload := map[string]any{"name": strings.TrimSpace(name)}
+	var out tgStickerSet
+	if err := s.call(ctx, "getStickerSet", payload, &out); err != nil {
+		return tgStickerSet{}, err
+	}
+	return out, nil
+}
+
+func (s emojiProxyService) ResolveFileURL(ctx context.Context, fileID string) (string, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return "", errors.New("file id is empty")
+	}
+	var out struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := s.call(ctx, "getFile", map[string]any{"file_id": fileID}, &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.FilePath) == "" {
+		return "", errors.New("telegram returned empty file_path")
+	}
+	return fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", strings.TrimSpace(s.Token), strings.TrimLeft(out.FilePath, "/")), nil
+}
+
+func (s emojiProxyService) FetchFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	u, err := s.ResolveFileURL(ctx, fileID)
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, "", fmt.Errorf("telegram file status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	ctype := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	return body, ctype, nil
+}
+
+func (s emojiProxyService) call(ctx context.Context, method string, payload map[string]any, out any) error {
+	if !s.Enabled() {
+		return errors.New("telegram token is empty")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+	}
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/%s", strings.TrimSpace(s.Token), strings.TrimSpace(method))
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram %s status=%d: %s", method, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var parsed tgResp[json.RawMessage]
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return err
+	}
+	if !parsed.OK {
+		if strings.TrimSpace(parsed.Description) == "" {
+			parsed.Description = "telegram api error"
+		}
+		return errors.New(parsed.Description)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(parsed.Result, out)
+}
+
+func (s emojiProxyService) httpClient() *http.Client {
+	if s.Client != nil {
+		return s.Client
+	}
+	return &http.Client{Timeout: 15 * time.Second}
+}
