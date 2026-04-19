@@ -35,6 +35,19 @@ type emojiSet struct {
 	Items   []emojiItem `json:"items"`
 }
 
+type stickerItem struct {
+	SetName     string `json:"set_name"`
+	Emoji       string `json:"emoji"`
+	FileID      string `json:"file_id"`
+	ThumbFileID string `json:"thumb_file_id"`
+}
+
+type stickerSet struct {
+	SetName string        `json:"set_name"`
+	Title   string        `json:"title"`
+	Items   []stickerItem `json:"items"`
+}
+
 type tgSticker struct {
 	CustomEmojiID string `json:"custom_emoji_id"`
 	SetName       string `json:"set_name"`
@@ -98,6 +111,40 @@ func (s emojiProxyService) ResolveSetByEmojiID(ctx context.Context, id string) (
 		return items[i].CustomEmojiID < items[j].CustomEmojiID
 	})
 	return emojiSet{
+		SetName: strings.TrimSpace(set.Name),
+		Title:   strings.TrimSpace(set.Title),
+		Items:   items,
+	}, nil
+}
+
+func (s emojiProxyService) ResolveStickerSetByName(ctx context.Context, setName string) (stickerSet, error) {
+	setName = strings.TrimSpace(setName)
+	if setName == "" {
+		return stickerSet{}, errors.New("sticker set name is empty")
+	}
+	if !s.Enabled() {
+		return stickerSet{}, errors.New("telegram token is empty")
+	}
+	set, err := s.getStickerSet(ctx, setName)
+	if err != nil {
+		return stickerSet{}, err
+	}
+	items := make([]stickerItem, 0, len(set.Stickers))
+	for _, st := range set.Stickers {
+		item := stickerItem{
+			SetName: strings.TrimSpace(st.SetName),
+			Emoji:   strings.TrimSpace(st.Emoji),
+			FileID:  strings.TrimSpace(st.FileID),
+		}
+		if st.Thumb != nil {
+			item.ThumbFileID = strings.TrimSpace(st.Thumb.FileID)
+		}
+		if item.FileID == "" {
+			continue
+		}
+		items = append(items, item)
+	}
+	return stickerSet{
 		SetName: strings.TrimSpace(set.Name),
 		Title:   strings.TrimSpace(set.Title),
 		Items:   items,
