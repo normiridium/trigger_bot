@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -23,6 +24,7 @@ import (
 type WebAdmin struct {
 	store      *Store
 	adminToken string
+	emojiProxy emojiProxyService
 }
 
 type settingField struct {
@@ -34,7 +36,13 @@ type settingField struct {
 }
 
 func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
-	return &WebAdmin{store: store, adminToken: strings.TrimSpace(adminToken)}
+	return &WebAdmin{
+		store:      store,
+		adminToken: strings.TrimSpace(adminToken),
+		emojiProxy: emojiProxyService{
+			Token: strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", "")),
+		},
+	}
 }
 
 func (w *WebAdmin) authOK(r *http.Request) bool {
@@ -73,6 +81,8 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
+	mux.HandleFunc("/trigger_bot/emoji_set", w.withAuth(w.emojiSetJSON))
+	mux.HandleFunc("/trigger_bot/emoji_proxy/file", w.withAuth(w.emojiFileProxy))
 	mux.HandleFunc("/trigger_bot/templates", w.withAuth(w.templatesJSON))
 	mux.HandleFunc("/trigger_bot/template_get", w.withAuth(w.templateGetJSON))
 	mux.HandleFunc("/trigger_bot/template_save", w.withAuth(w.templateSavePost))
@@ -187,6 +197,106 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 	}{
 		Items: items,
 	})
+}
+
+func (w *WebAdmin) emojiSetJSON(rw http.ResponseWriter, r *http.Request) {
+	emojiID := strings.TrimSpace(r.URL.Query().Get("emoji_id"))
+	if emojiID == "" {
+		http.Error(rw, "emoji_id required", http.StatusBadRequest)
+		return
+	}
+	if !w.emojiProxy.Enabled() {
+		http.Error(rw, "TELEGRAM_BOT_TOKEN is not configured", http.StatusFailedDependency)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	set, err := w.emojiProxy.ResolveSetByEmojiID(ctx, emojiID)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadGateway)
+		return
+	}
+	type item struct {
+		CustomEmojiID string `json:"custom_emoji_id"`
+		Emoji         string `json:"emoji"`
+		SetName       string `json:"set_name"`
+		PreviewURL    string `json:"preview_url"`
+		ThumbURL      string `json:"thumb_url"`
+	}
+	outItems := make([]item, 0, len(set.Items))
+	for _, it := range set.Items {
+		previewURL := ""
+		thumbURL := ""
+		if strings.TrimSpace(it.ThumbFileID) != "" {
+			thumbURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(it.ThumbFileID))
+			previewURL = thumbURL
+		} else if strings.TrimSpace(it.FileID) != "" {
+			previewURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(it.FileID))
+			thumbURL = previewURL
+		}
+		outItems = append(outItems, item{
+			CustomEmojiID: strings.TrimSpace(it.CustomEmojiID),
+			Emoji:         strings.TrimSpace(it.Emoji),
+			SetName:       strings.TrimSpace(it.SetName),
+			PreviewURL:    previewURL,
+			ThumbURL:      thumbURL,
+		})
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK      bool   `json:"ok"`
+		SetName string `json:"set_name"`
+		Title   string `json:"title"`
+		Items   []item `json:"items"`
+	}{
+		OK:      true,
+		SetName: strings.TrimSpace(set.SetName),
+		Title:   strings.TrimSpace(set.Title),
+		Items:   outItems,
+	})
+}
+
+func (w *WebAdmin) emojiFileProxy(rw http.ResponseWriter, r *http.Request) {
+	fileID := strings.TrimSpace(r.URL.Query().Get("file_id"))
+	if fileID == "" {
+		http.Error(rw, "file_id required", http.StatusBadRequest)
+		return
+	}
+	if !w.emojiProxy.Enabled() {
+		http.Error(rw, "TELEGRAM_BOT_TOKEN is not configured", http.StatusFailedDependency)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	body, ctype, err := w.emojiProxy.FetchFile(ctx, fileID)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadGateway)
+		return
+	}
+	ctype = detectContentTypeOrDefault(body, ctype, "application/octet-stream")
+	rw.Header().Set("Content-Type", ctype)
+	rw.Header().Set("Cache-Control", "public, max-age=3600")
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write(body)
+}
+
+func detectContentTypeOrDefault(body []byte, current, fallback string) string {
+	ctype := strings.TrimSpace(current)
+	if ctype != "" && ctype != "application/octet-stream" {
+		return ctype
+	}
+	if len(body) > 0 {
+		if sniffed := strings.TrimSpace(http.DetectContentType(body)); sniffed != "" && sniffed != "application/octet-stream" {
+			return sniffed
+		}
+	}
+	if strings.TrimSpace(ctype) != "" {
+		return ctype
+	}
+	if strings.TrimSpace(fallback) == "" {
+		return "application/octet-stream"
+	}
+	return fallback
 }
 
 func (w *WebAdmin) templatesJSON(rw http.ResponseWriter, r *http.Request) {

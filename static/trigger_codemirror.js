@@ -54,12 +54,21 @@ async function loadCodeMirror(){
 
 function createEditor(textarea, container){
   const startDoc = textarea.value || '';
+  const changeListener = cm.EditorView.updateListener.of((vu) => {
+    if(vu.docChanged){
+      window.dispatchEvent(new Event("response-editor-change"));
+    }
+    if(vu.selectionSet){
+      window.dispatchEvent(new Event("response-editor-selection"));
+    }
+  });
   const state = cm.EditorState.create({
     doc: startDoc,
     extensions: [
       cm.history(),
       cm.keymap.of([...cm.defaultKeymap, ...cm.historyKeymap]),
       cm.html(),
+      changeListener,
       cm.EditorView.lineWrapping,
       cm.EditorView.theme({
         "&": {height: "100%"},
