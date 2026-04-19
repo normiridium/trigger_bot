@@ -1507,7 +1507,7 @@ func Run() {
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						"Команды: /start /help /emojiid /spsearch\n" +
+						"Команды: /start /help /emojiid /stickerid /spsearch\n" +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -1605,6 +1605,7 @@ func Run() {
 							usageLines = append(usageLines, "— для Spotify: /spsearch <запрос>")
 						}
 						usageLines = append(usageLines, "— если нужен ID кастомного эмодзи: /emojiid")
+						usageLines = append(usageLines, "— если нужен код стикера: отправьте /stickerid в ответ на стикер")
 						usageInfo = strings.Join(usageLines, "\n")
 					}
 					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
@@ -1632,6 +1633,21 @@ func Run() {
 				for _, hit := range hits {
 					snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
 					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+				}
+				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+				continue
+			case "stickerid", "sticker_id":
+				stickerHit, stickerOK := extractStickerCode(msg)
+				if !stickerOK && msg != nil && msg.ReplyToMessage != nil {
+					stickerHit, stickerOK = extractStickerCode(msg.ReplyToMessage)
+				}
+				if !stickerOK {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Стикер не найден. Отправьте стикер или ответьте этой командой на стикер.", false)
+					continue
+				}
+				lines := []string{
+					"Коды стикера:",
+					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
@@ -1679,6 +1695,14 @@ func Run() {
 			}
 			if entityCount > 0 {
 				reply(cmdSendCtx.WithReply(msg.MessageID), "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+				continue
+			}
+			if stickerHit, ok := extractStickerCode(msg); ok {
+				lines := []string{
+					"Коды стикера:",
+					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
+				}
+				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
 			}
 		}
