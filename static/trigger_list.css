@@ -216,6 +216,13 @@ tr.dragging-row {
   border-color: #f8fafc;
   box-shadow: 0 0 0 1px #f8fafc inset;
 }
+#sticker_set_helper .emoji-helper-grid {
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+}
+#sticker_set_helper .emoji-chip {
+  height: 64px;
+  width: 64px;
+}
 .match-text-wrap {
   display: flex;
   align-items: stretch;
