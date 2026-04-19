@@ -20,6 +20,7 @@ import (
 	"trigger-admin-bot/internal/engine"
 	"trigger-admin-bot/internal/gpt"
 	"trigger-admin-bot/internal/mediadl"
+	"trigger-admin-bot/internal/musicpick"
 	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
@@ -1492,6 +1493,26 @@ func Run() {
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
+			if musicpick.HandleChoiceCallback(
+				bot,
+				update.Update.CallbackQuery,
+				func(chatID int64, title string, err error) {
+					reportChatFailure(bot, chatID, title, err)
+				},
+				func(ctx context.Context, req musicpick.ChoiceRequest, provider string) error {
+					return processMusicProviderChoice(ctx, musicProviderDeps{
+						Bot:               bot,
+						SpotifyMusic:      spotifyMusicClient,
+						SpotifyDownloader: spotifyDownloader,
+						SpotifyQueue:      spotifyQueue,
+						YandexDownloader:  yandexDownloader,
+						YandexQueue:       yandexMusicQueue,
+						IdleTracker:       idleTracker,
+					}, req, provider)
+				},
+			) {
+				continue
+			}
 			if pick.HandlePickCallback(
 				bot,
 				update.Update.CallbackQuery,
@@ -1500,6 +1521,22 @@ func Run() {
 				},
 				func(ctx context.Context, req pick.PickRequest) error {
 					_ = ctx
+					if strings.EqualFold(strings.TrimSpace(req.Provider), "yandex") {
+						targetURL := strings.TrimSpace(req.SourceURL)
+						if targetURL == "" {
+							return errors.New("empty yandex track url")
+						}
+						task := yandexMusicTask{
+							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+							URL:      targetURL,
+							DL:       yandexDownloader,
+							ReportTo: req.ChatID,
+						}
+						if yandexMusicQueue == nil || !yandexMusicQueue.enqueue(task) {
+							return errors.New("yandex music queue is full")
+						}
+						return nil
+					}
 					task := spotifyPickTask{
 						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
 						Req:      req,
@@ -1604,6 +1641,7 @@ func Run() {
 					if items, err := store.ListTriggers(); err == nil {
 						enabled := make([]string, 0, len(items))
 						hasSpotify := false
+						hasUnifiedMusic := false
 						hasYandexMusic := false
 						hasYouTube := false
 						hasInstagram := false
@@ -1629,6 +1667,9 @@ func Run() {
 							if strings.TrimSpace(string(it.ActionType)) == "spotify_music_audio" {
 								hasSpotify = true
 							}
+							if strings.TrimSpace(string(it.ActionType)) == "music_audio" {
+								hasUnifiedMusic = true
+							}
 							if strings.TrimSpace(string(it.ActionType)) == "yandex_music_audio" {
 								hasYandexMusic = true
 							}
@@ -1650,7 +1691,9 @@ func Run() {
 							triggerInfo = "Активные триггеры: пока не настроены."
 						}
 						featureLines := []string{"Что умею:"}
-						if hasSpotify {
+						if hasUnifiedMusic {
+							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify или Яндекс.Музыка")
+						} else if hasSpotify {
 							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
 						}
 						if hasYandexMusic {
@@ -1681,7 +1724,9 @@ func Run() {
 						if len(mediaServices) > 0 {
 							usageLines = append(usageLines, "— отправьте ссылку, и я предложу формат (аудио/видео)")
 						}
-						if hasSpotify {
+						if hasUnifiedMusic {
+							usageLines = append(usageLines, "— напишите: включи/поставь/найди трек ..., затем выберите сервис")
+						} else if hasSpotify {
 							usageLines = append(usageLines, "— для Spotify: /spsearch <запрос>")
 						}
 						if hasYandexMusic {
@@ -1971,6 +2016,126 @@ type triggerHandlerDeps struct {
 	Store      TriggerStorePort
 	AdminCache *adminStatusCache
 	ChatRecent *chatRecentStore
+}
+
+type musicProviderDeps struct {
+	Bot               *tgbotapi.BotAPI
+	SpotifyMusic      SpotifyMusicPort
+	SpotifyDownloader SpotifyDownloadPort
+	SpotifyQueue      *spotifyPickQueue
+	YandexDownloader  YandexMusicDownloadPort
+	YandexQueue       *yandexMusicQueue
+	IdleTracker       *trigger.IdleTracker
+}
+
+func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req musicpick.ChoiceRequest, provider string) error {
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return errors.New("empty music query")
+	}
+	replyTo := req.ReplyTo
+	switch provider {
+	case musicpick.ProviderSpotify:
+		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
+			return errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены")
+		}
+		searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		tracks, err := deps.SpotifyMusic.SearchTracks(searchCtx, query, 10)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if len(tracks) == 0 {
+			return errors.New("ничего не найдено в Spotify")
+		}
+		if envBool("SPOTIFY_AUDIO_INTERACTIVE", true) {
+			maxResults := 10
+			if len(tracks) > maxResults {
+				tracks = tracks[:maxResults]
+			}
+			pickTracks := make([]pick.PickTrack, 0, len(tracks))
+			for _, track := range tracks {
+				pickTracks = append(pickTracks, pick.PickTrack{
+					ID:          track.ID,
+					Artist:      track.Artist,
+					Title:       track.Title,
+					DurationSec: track.DurationSec,
+				})
+			}
+			msg := &tgbotapi.Message{
+				Chat: &tgbotapi.Chat{ID: req.ChatID},
+				From: &tgbotapi.User{ID: req.UserID},
+			}
+			m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (Spotify):")
+			m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
+			if replyTo > 0 {
+				m.ReplyToMessageID = replyTo
+				m.AllowSendingWithoutReply = true
+			}
+			_, err := deps.Bot.Send(m)
+			return err
+		}
+		task := spotifyPickTask{
+			SendCtx: sendContext{Bot: deps.Bot, ChatID: req.ChatID, ReplyTo: replyTo},
+			Req: pick.PickRequest{
+				TrackID:      tracks[0].ID,
+				Artist:       tracks[0].Artist,
+				Title:        tracks[0].Title,
+				ChatID:       req.ChatID,
+				ReplyTo:      replyTo,
+				SourceMsgID:  req.SourceMsgID,
+				DeleteSource: req.DeleteSource,
+				UserID:       req.UserID,
+			},
+			DL:       deps.SpotifyDownloader,
+			ReportTo: req.ChatID,
+		}
+		if deps.SpotifyQueue == nil || !deps.SpotifyQueue.enqueue(task) {
+			return errors.New("spotify queue is full")
+		}
+		return nil
+	case musicpick.ProviderYandex:
+		searchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		tracks, err := deps.YandexDownloader.SearchTracks(searchCtx, query, 10)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if len(tracks) == 0 {
+			return errors.New("ничего не найдено в Yandex Music")
+		}
+		pickTracks := make([]pick.PickTrack, 0, len(tracks))
+		for _, track := range tracks {
+			pickTracks = append(pickTracks, pick.PickTrack{
+				ID:          strconv.FormatInt(track.ID, 10),
+				Provider:    "yandex",
+				SourceURL:   strings.TrimSpace(track.URL),
+				Artist:      track.Artist,
+				Title:       track.Title,
+				DurationSec: track.DurationSec,
+			})
+		}
+		msg := &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: req.ChatID},
+			From: &tgbotapi.User{ID: req.UserID},
+		}
+		m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (Yandex Music):")
+		m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
+		if replyTo > 0 {
+			m.ReplyToMessageID = replyTo
+			m.AllowSendingWithoutReply = true
+		}
+		_, err = deps.Bot.Send(m)
+		if err != nil {
+			return err
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(req.ChatID, time.Now())
+		}
+		return nil
+	default:
+		return errors.New("unknown music provider")
+	}
 }
 
 func filterUnusedTriggers(all []Trigger, used map[int64]struct{}) []Trigger {
@@ -2322,6 +2487,86 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		if debugTriggerLogEnabled {
 			log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+		}
+		return
+	case "music_audio":
+		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		if query == "" {
+			query = strings.TrimSpace(firstNonEmptyUserText(msg))
+		}
+		query = strings.TrimSpace(query)
+		if query == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		// Fast paths for direct links.
+		if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
+			if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			track, err := deps.SpotifyMusic.GetTrack(ctx, trackID)
+			cancel()
+			if err != nil {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка загрузки трека Spotify", err)
+				return
+			}
+			task := spotifyPickTask{
+				SendCtx: sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				Req: pick.PickRequest{
+					TrackID:      track.ID,
+					Artist:       track.Artist,
+					Title:        track.Title,
+					ChatID:       msg.Chat.ID,
+					ReplyTo:      replyTo,
+					SourceMsgID:  msg.MessageID,
+					DeleteSource: tr.DeleteSource,
+					UserID:       msg.From.ID,
+				},
+				DL:       deps.SpotifyDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.SpotifyQueue == nil || !deps.SpotifyQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
+				return
+			}
+			return
+		}
+		if targetURL := extractYandexMusicURL(query); targetURL != "" {
+			task := yandexMusicTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				URL:      targetURL,
+				DL:       deps.YandexDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.YandexQueue == nil || !deps.YandexQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания Yandex Music", errors.New("yandex music queue is full"))
+				return
+			}
+			return
+		}
+		m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Где искать трек?")
+		m.ReplyMarkup = musicpick.BuildChoiceKeyboard(msg, replyTo, msg.MessageID, tr.DeleteSource, query)
+		if replyTo > 0 {
+			m.ReplyToMessageID = replyTo
+			m.AllowSendingWithoutReply = true
+		}
+		if _, err := deps.Bot.Send(m); err != nil {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка выбора музыкального сервиса", err)
+			return
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 		}
 		return
 	case "yandex_music_audio":

@@ -34,11 +34,17 @@ type ArtistBrief struct {
 	Name string `json:"name"`
 }
 
+type AlbumBrief struct {
+	ID int `json:"id"`
+}
+
 type Track struct {
-	ID        YMInt64       `json:"id"`
-	Title     string        `json:"title"`
-	Available bool          `json:"available"`
-	Artists   []ArtistBrief `json:"artists"`
+	ID         YMInt64       `json:"id"`
+	Title      string        `json:"title"`
+	Available  bool          `json:"available"`
+	DurationMs int64         `json:"durationMs"`
+	Artists    []ArtistBrief `json:"artists"`
+	Albums     []AlbumBrief  `json:"albums"`
 }
 
 type DownloadInfo struct {
@@ -47,4 +53,12 @@ type DownloadInfo struct {
 	URLs    []string `json:"urls"`
 	Key     string   `json:"key"`
 	Bitrate int      `json:"bitrate"`
+}
+
+type SearchTrack struct {
+	ID          int64
+	Artist      string
+	Title       string
+	URL         string
+	DurationSec float64
 }

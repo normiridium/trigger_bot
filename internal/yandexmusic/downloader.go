@@ -20,6 +20,68 @@ type Downloader struct {
 	RetryDelaySec int
 }
 
+func (d Downloader) SearchTracks(ctx context.Context, query string, limit int) ([]SearchTrack, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty yandex music search query")
+	}
+	token := strings.TrimSpace(d.Token)
+	if token == "" {
+		return nil, errors.New("YA_MUSIC_TOKEN is not set")
+	}
+	timeoutSec := d.TimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 45
+	}
+	tries := d.Tries
+	if tries <= 0 {
+		tries = 6
+	}
+	retryDelaySec := d.RetryDelaySec
+	if retryDelaySec <= 0 {
+		retryDelaySec = 2
+	}
+	client := NewClient(token, timeoutSec, tries, retryDelaySec)
+	results, err := client.SearchTracks(ctx, query, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	out := make([]SearchTrack, 0, len(results))
+	for _, t := range results {
+		id := int64(t.ID)
+		if id <= 0 {
+			continue
+		}
+		artist := ""
+		if len(t.Artists) > 0 {
+			artist = strings.TrimSpace(t.Artists[0].Name)
+		}
+		title := strings.TrimSpace(t.Title)
+		albumID := 0
+		if len(t.Albums) > 0 {
+			albumID = t.Albums[0].ID
+		}
+		url := buildTrackURL(id, albumID)
+		out = append(out, SearchTrack{
+			ID:          id,
+			Artist:      artist,
+			Title:       title,
+			URL:         url,
+			DurationSec: float64(t.DurationMs) / 1000.0,
+		})
+	}
+	return out, nil
+}
+
 func (d Downloader) DownloadByURL(ctx context.Context, rawURL string) (string, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
@@ -171,6 +233,13 @@ func safeName(s string) string {
 		s = s[:64]
 	}
 	return s
+}
+
+func buildTrackURL(trackID int64, albumID int) string {
+	if albumID > 0 {
+		return "https://music.yandex.ru/album/" + strconv.Itoa(albumID) + "/track/" + strconv.FormatInt(trackID, 10)
+	}
+	return "https://music.yandex.ru/track/" + strconv.FormatInt(trackID, 10)
 }
 
 func buildTrackBaseName(trackID int64, track *Track) string {

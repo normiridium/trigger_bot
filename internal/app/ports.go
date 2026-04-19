@@ -6,6 +6,7 @@ import (
 	"trigger-admin-bot/internal/mediadl"
 	"trigger-admin-bot/internal/model"
 	"trigger-admin-bot/internal/spotifymusic"
+	"trigger-admin-bot/internal/yandexmusic"
 )
 
 // TriggerStorePort describes trigger/template reads required by runtime handlers.
@@ -39,6 +40,7 @@ type SpotifyDownloadPort interface {
 // YandexMusicDownloadPort describes yandex music audio download operation used by workers.
 type YandexMusicDownloadPort interface {
 	DownloadByURL(ctx context.Context, rawURL string) (string, error)
+	SearchTracks(ctx context.Context, query string, limit int) ([]yandexmusic.SearchTrack, error)
 }
 
 // MediaDownloadPort describes media download operations (audio/video/auto) used by workers.
