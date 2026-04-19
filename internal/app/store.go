@@ -149,6 +149,8 @@ func normalizeAdminMode(v string) AdminMode {
 
 func normalizeActionType(v string) ActionType {
 	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "send_sticker":
+		return ActionTypeSendSticker
 	case "delete":
 		return ActionTypeDelete
 	case "gpt_prompt":

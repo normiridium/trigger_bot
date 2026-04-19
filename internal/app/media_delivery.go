@@ -105,6 +105,29 @@ func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 	return true
 }
 
+func sendSticker(ctx sendContext, fileID string) bool {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки стикера", errors.New("empty sticker file_id"))
+		return false
+	}
+	m := tgbotapi.NewSticker(ctx.ChatID, tgbotapi.FileID(fileID))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		log.Printf("send sticker failed: %v", err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки стикера", err)
+		return false
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send sticker ok chat=%d msg=%d replyTo=%d file_id=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(fileID, 120))
+	}
+	return true
+}
+
 type generatedImage struct {
 	URL   string
 	Bytes []byte

@@ -523,6 +523,12 @@ function setSel(id,val){
       ? `<i class=\"bi ${escapeHtml(icon)} me-2\"></i>${escapeHtml(label)}`
       : escapeHtml(label);
   }
+  if(id === 'f_match_type'){
+    applyMatchTypeUI();
+  }
+  if(id === 'f_action_type'){
+    applyActionTypeUI();
+  }
 }
 
 function findEnumInfo(id, value){
@@ -1401,6 +1407,21 @@ function applyMatchTypeUI(){
     if(cs){ cs.disabled = false; }
     inp.disabled = false;
   }
+}
+
+function applyActionTypeUI(){
+  const action = String(document.getElementById('f_action_type')?.value || 'send').toLowerCase();
+  const response = document.getElementById('f_response_text');
+  if(!response){ return; }
+  if(action === 'send_sticker'){
+    response.placeholder = 'Код стикера: file_id:set_id (или только file_id)';
+    return;
+  }
+  if(action === 'gpt_prompt'){
+    response.placeholder = 'Промпт для ChatGPT';
+    return;
+  }
+  response.placeholder = 'Текст ответа / промпт';
 }
 
 function toggleMatchTextArea(){

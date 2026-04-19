@@ -717,6 +717,8 @@ func iconForActionType(v model.ActionType) string {
 	switch v {
 	case model.ActionTypeSend:
 		return "bi-send"
+	case model.ActionTypeSendSticker:
+		return "bi-file-earmark-image"
 	case model.ActionTypeDelete:
 		return "bi-trash"
 	case model.ActionTypeGPTPrompt:
