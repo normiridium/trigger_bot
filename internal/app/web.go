@@ -82,6 +82,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
 	mux.HandleFunc("/trigger_bot/emoji_set", w.withAuth(w.emojiSetJSON))
+	mux.HandleFunc("/trigger_bot/sticker_set", w.withAuth(w.stickerSetJSON))
 	mux.HandleFunc("/trigger_bot/emoji_proxy/file", w.withAuth(w.emojiFileProxy))
 	mux.HandleFunc("/trigger_bot/emoji_proxy/preview", w.withAuth(w.emojiPreviewProxy))
 	mux.HandleFunc("/trigger_bot/templates", w.withAuth(w.templatesJSON))
@@ -246,6 +247,60 @@ func (w *WebAdmin) emojiSetJSON(rw http.ResponseWriter, r *http.Request) {
 			SetName:       strings.TrimSpace(it.SetName),
 			PreviewURL:    previewURL,
 			ThumbURL:      thumbURL,
+		})
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK      bool   `json:"ok"`
+		SetName string `json:"set_name"`
+		Title   string `json:"title"`
+		Items   []item `json:"items"`
+	}{
+		OK:      true,
+		SetName: strings.TrimSpace(set.SetName),
+		Title:   strings.TrimSpace(set.Title),
+		Items:   outItems,
+	})
+}
+
+func (w *WebAdmin) stickerSetJSON(rw http.ResponseWriter, r *http.Request) {
+	setName := strings.TrimSpace(r.URL.Query().Get("set_name"))
+	if setName == "" {
+		http.Error(rw, "set_name required", http.StatusBadRequest)
+		return
+	}
+	if !w.emojiProxy.Enabled() {
+		http.Error(rw, "TELEGRAM_BOT_TOKEN is not configured", http.StatusFailedDependency)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	set, err := w.emojiProxy.ResolveStickerSetByName(ctx, setName)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadGateway)
+		return
+	}
+	type item struct {
+		SetName    string `json:"set_name"`
+		Emoji      string `json:"emoji"`
+		Code       string `json:"code"`
+		PreviewURL string `json:"preview_url"`
+		ThumbURL   string `json:"thumb_url"`
+	}
+	outItems := make([]item, 0, len(set.Items))
+	for _, it := range set.Items {
+		previewURL := "/trigger_bot/emoji_proxy/preview?file_id=" + url.QueryEscape(strings.TrimSpace(it.FileID))
+		thumbURL := previewURL
+		if strings.TrimSpace(it.ThumbFileID) != "" {
+			thumbURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(it.ThumbFileID))
+		}
+		code := strings.TrimSpace(it.FileID) + ":" + strings.TrimSpace(set.SetName)
+		outItems = append(outItems, item{
+			SetName:    strings.TrimSpace(it.SetName),
+			Emoji:      strings.TrimSpace(it.Emoji),
+			Code:       code,
+			PreviewURL: previewURL,
+			ThumbURL:   thumbURL,
 		})
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -784,6 +839,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		Reply         bool               `json:"reply"`
 		Preview       bool               `json:"preview"`
 		DeleteSource  bool               `json:"delete_source"`
+		PassThrough   bool               `json:"pass_through"`
 		Chance        int                `json:"chance"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -805,6 +861,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		Reply:         payload.Reply,
 		Preview:       payload.Preview,
 		DeleteSource:  payload.DeleteSource,
+		PassThrough:   payload.PassThrough,
 		Chance:        payload.Chance,
 	}
 	if err := w.store.SaveTrigger(t); err != nil {

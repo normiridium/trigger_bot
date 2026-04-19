@@ -1449,6 +1449,10 @@ func Run() {
 			GPTDebouncer:      gptDebouncer,
 			SpotifyMusic:      spotifyMusicClient,
 			SpotifyDownloader: spotifyDownloader,
+			SpotifyQueue:      spotifyQueue,
+			MediaDownloader:   mediaDownloader,
+			MediaQueue:        mediaQueue,
+			MediaInteractive:  mediaInteractive,
 			TemplateLookup:    templateLookup,
 		},
 		Allowed:    allowedChats,
@@ -1796,112 +1800,71 @@ func Run() {
 		if debugTriggerLogEnabled {
 			log.Printf("triggers loaded (cached): %d", len(items))
 		}
-		tr := triggerEngine.Select(engine.SelectInput{
+		matchedAny := false
+		used := make(map[int64]struct{}, 4)
+
+		primary := triggerEngine.Select(engine.SelectInput{
 			Bot:      bot,
 			Msg:      msg,
 			Text:     text,
-			Triggers: items,
+			Triggers: filterNonPassThroughTriggers(items),
 			IsAdminFn: func() bool {
 				return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 			},
 		})
-		if tr == nil {
+		if primary != nil {
+			matchedAny = true
+			used[primary.ID] = struct{}{}
 			if debugTriggerLogEnabled {
-				log.Printf("no trigger matched for msg=%d", msg.MessageID)
+				log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
 			}
-			if idleTracker != nil {
-				autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, items, func() bool {
-					return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
-				})
-				if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
-					ctx := ""
-					if isOlenyamTrigger(autoTr) {
-						ctx = recentBefore
-					}
-					rawTemplate := pickResponseVariantText(autoTr.ResponseText)
-					resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
-					trCopy := *autoTr
-					trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
-					task := gpt.PromptTask{
-						Bot:            bot,
-						Trigger:        trCopy,
-						Msg:            msg,
-						RecentContext:  ctx,
-						TemplateLookup: templateLookup,
-						IdleMarkActivity: func(chatID int64, now time.Time) {
-							if idleTracker != nil {
-								idleTracker.MarkActivity(chatID, now)
-							}
-						},
-						ChatID: msg.Chat.ID,
-					}
-					if gptDebouncer != nil {
-						gptDebouncer.Schedule(msg.Chat.ID, task)
-					} else {
-						executeGPTPromptTask(task)
-					}
-					if debugTriggerLogEnabled {
-						log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
-					}
-					continue
-				}
-			}
-			continue
-		}
-		msgForTrigger := msg
-		rawTemplate := pickResponseVariantText(tr.ResponseText)
-		resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
-		tmplCtx := newTemplateContext(bot, msgForTrigger, tr, templateLookup)
-		if debugTriggerLogEnabled {
-			log.Printf("pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
+			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, primary, recentBefore)
 		}
 
-		switch tr.ActionType {
-		case "send_sticker":
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
+		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
+		for len(used) < len(items) {
+			tr := triggerEngine.Select(engine.SelectInput{
+				Bot:      bot,
+				Msg:      msg,
+				Text:     text,
+				Triggers: filterPassThroughTriggers(filterUnusedTriggers(items, used)),
+				IsAdminFn: func() bool {
+					return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+				},
+			})
+			if tr == nil {
+				break
 			}
-			stickerRaw := buildResponseFromMessage(tmplCtx, resolvedTemplate)
-			stickerID := extractStickerFileIDFromTemplate(stickerRaw)
-			if stickerID == "" {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки стикера", errors.New("empty or invalid sticker file_id in response_text"))
-				continue
-			}
-			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-			if ok := sendSticker(sendCtx, stickerID); ok {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				deleteTriggerSourceMessage(bot, msg, tr)
-			}
+			matchedAny = true
+			used[tr.ID] = struct{}{}
 			if debugTriggerLogEnabled {
-				log.Printf("send sticker attempted trigger=%d replyTo=%d file_id=%q", tr.ID, replyTo, clipText(stickerID, 120))
+				log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 			}
-		case "delete":
-			cfg := tgbotapi.DeleteMessageConfig{
-				ChatID:    msg.Chat.ID,
-				MessageID: msg.MessageID,
-			}
-			if _, err := bot.Request(cfg); err != nil {
-				log.Printf("delete message failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка удаления сообщения", err)
-			} else {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				if debugTriggerLogEnabled {
-					log.Printf("delete ok msg=%d by trigger=%d", msg.MessageID, tr.ID)
+			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, tr, recentBefore)
+		}
+		if matchedAny {
+			continue
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("no trigger matched for msg=%d", msg.MessageID)
+		}
+		if idleTracker != nil {
+			autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, items, func() bool {
+				return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+			})
+			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
+				ctx := ""
+				if isOlenyamTrigger(autoTr) {
+					ctx = recentBefore
 				}
-			}
-		case "gpt_prompt":
-			ctx := ""
-			if isOlenyamTrigger(tr) {
-				ctx = recentBefore
-			}
-			if gptDebouncer != nil {
-				trCopy := *tr
+				rawTemplate := pickResponseVariantText(autoTr.ResponseText)
+				resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
+				trCopy := *autoTr
 				trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
-				gptDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
+				task := gpt.PromptTask{
 					Bot:            bot,
 					Trigger:        trCopy,
-					Msg:            msgForTrigger,
+					Msg:            msg,
 					RecentContext:  ctx,
 					TemplateLookup: templateLookup,
 					IdleMarkActivity: func(chatID int64, now time.Time) {
@@ -1910,316 +1873,19 @@ func Run() {
 						}
 					},
 					ChatID: msg.Chat.ID,
-				})
+				}
+				if gptDebouncer != nil {
+					gptDebouncer.Schedule(msg.Chat.ID, task)
+				} else {
+					executeGPTPromptTask(task)
+				}
 				if debugTriggerLogEnabled {
-					log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
+					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
 				}
 				continue
-			}
-			trCopy := *tr
-			trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
-			executeGPTPromptTask(gpt.PromptTask{
-				Bot:            bot,
-				Trigger:        trCopy,
-				Msg:            msgForTrigger,
-				RecentContext:  ctx,
-				TemplateLookup: templateLookup,
-				IdleMarkActivity: func(chatID int64, now time.Time) {
-					if idleTracker != nil {
-						idleTracker.MarkActivity(chatID, now)
-					}
-				},
-				ChatID: msg.Chat.ID,
-			})
-		case "gpt_image":
-			img, err := generateChatGPTImage(tmplCtx, resolvedTemplate)
-			if err != nil {
-				log.Printf("gpt image failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка генерации картинки в ChatGPT", err)
-				continue
-			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-			if ok := sendPhoto(sendCtx, img, "CW: сгенерено нейросетью", true); ok {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				deleteTriggerSourceMessage(bot, msg, tr)
-			}
-			if debugTriggerLogEnabled {
-				log.Printf("send gpt/image attempted trigger=%d replyTo=%d", tr.ID, replyTo)
-			}
-		case "search_image":
-			query := buildImageSearchQueryFromMessage(tmplCtx, resolvedTemplate)
-			img, err := searchImageInSerpAPI(query)
-			if err != nil {
-				log.Printf("search image failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска картинки", err)
-				continue
-			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-			if ok := sendPhoto(sendCtx, img, "", false); ok {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				deleteTriggerSourceMessage(bot, msg, tr)
-			}
-			if debugTriggerLogEnabled {
-				log.Printf("send search/image attempted trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 220))
-			}
-		case "spotify_music_audio":
-			if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
-				continue
-			}
-			query := buildSpotifyMusicQueryFromMessage(tmplCtx, resolvedTemplate)
-			if query == "" {
-				query = strings.TrimSpace(msg.Text)
-			}
-			if query == "" {
-				continue
-			}
-			if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				track, err := spotifyMusicClient.GetTrack(ctx, trackID)
-				cancel()
-				if err != nil {
-					log.Printf("spotify get track failed id=%s err=%v", trackID, err)
-					reportChatFailure(bot, msg.Chat.ID, "ошибка загрузки трека Spotify", err)
-					continue
-				}
-				replyTo := 0
-				if tr.Reply || tr.TriggerMode == "command_reply" {
-					replyTo = msg.MessageID
-				}
-				req := pick.PickRequest{
-					TrackID:      track.ID,
-					Artist:       track.Artist,
-					Title:        track.Title,
-					ChatID:       msg.Chat.ID,
-					ReplyTo:      replyTo,
-					SourceMsgID:  msg.MessageID,
-					DeleteSource: tr != nil && tr.DeleteSource,
-					UserID:       msg.From.ID,
-				}
-				task := spotifyPickTask{
-					SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-					Req:      req,
-					DL:       spotifyDownloader,
-					Msg:      msg,
-					Trigger:  tr,
-					Idle:     idleTracker,
-					ReportTo: msg.Chat.ID,
-				}
-				if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
-					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
-					continue
-				}
-				log.Printf("send spotify/audio queued by link trigger=%d replyTo=%d track=%q", tr.ID, replyTo, clipText(spotifymusic.BuildSearchQuery(track), 180))
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			tracks, err := spotifyMusicClient.SearchTracks(ctx, query, 10)
-			cancel()
-			if err != nil {
-				log.Printf("spotify music search failed: %v", err)
-				reportChatFailure(bot, msg.Chat.ID, "ошибка поиска музыки Spotify", err)
-				continue
-			}
-			if len(tracks) == 0 {
-				if debugTriggerLogEnabled {
-					log.Printf("spotify music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
-				}
-				continue
-			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			if envBool("SPOTIFY_AUDIO_INTERACTIVE", true) {
-				maxResults := 10
-				if len(tracks) > maxResults {
-					tracks = tracks[:maxResults]
-				}
-				pickTracks := make([]pick.PickTrack, 0, len(tracks))
-				for _, track := range tracks {
-					pickTracks = append(pickTracks, pick.PickTrack{
-						ID:          track.ID,
-						Artist:      track.Artist,
-						Title:       track.Title,
-						DurationSec: track.DurationSec,
-					})
-				}
-				m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
-				m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr != nil && tr.DeleteSource, pickTracks)
-				if replyTo > 0 {
-					m.ReplyToMessageID = replyTo
-					m.AllowSendingWithoutReply = true
-				}
-				if _, err := bot.Send(m); err != nil {
-					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки списка Spotify", err)
-					continue
-				}
-				if tr != nil && tr.DeleteSource && msg.MessageID > 0 {
-					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-						ChatID:    msg.Chat.ID,
-						MessageID: msg.MessageID,
-					})
-				}
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				continue
-			}
-			req := pick.PickRequest{
-				TrackID:      tracks[0].ID,
-				Artist:       tracks[0].Artist,
-				Title:        tracks[0].Title,
-				ChatID:       msg.Chat.ID,
-				ReplyTo:      replyTo,
-				SourceMsgID:  msg.MessageID,
-				DeleteSource: tr != nil && tr.DeleteSource,
-				UserID:       msg.From.ID,
-			}
-			task := spotifyPickTask{
-				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-				Req:      req,
-				DL:       spotifyDownloader,
-				Msg:      msg,
-				Trigger:  tr,
-				Idle:     idleTracker,
-				ReportTo: msg.Chat.ID,
-			}
-			if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
-				continue
-			}
-			if debugTriggerLogEnabled {
-				log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
-			}
-		case "media_link_audio":
-			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
-			targetURL := extractSupportedMediaURL(query)
-			if targetURL == "" {
-				continue
-			}
-			_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			// SoundCloud is audio-only and Instagram is auto media-type in this bot flow.
-			mode, useInteractive := mediaModeAndInteractivity(mediaService, mediaInteractive)
-			if useInteractive {
-				req := mediadl.ChoiceRequest{
-					URL:          targetURL,
-					ChatID:       msg.Chat.ID,
-					ReplyTo:      replyTo,
-					SourceMsgID:  msg.MessageID,
-					UserID:       msg.From.ID,
-					DeleteSource: tr != nil && tr.DeleteSource,
-				}
-				m := tgbotapi.NewMessage(msg.Chat.ID, "Выбери формат скачивания:")
-				kb := mediadl.BuildChoiceKeyboard(msg, req)
-				m.ReplyMarkup = &kb
-				if replyTo > 0 {
-					m.ReplyToMessageID = replyTo
-					m.AllowSendingWithoutReply = true
-				}
-				log.Printf("media pick keyboard built rows=%d chat=%d replyTo=%d", len(kb.InlineKeyboard), msg.Chat.ID, replyTo)
-				if _, err := bot.Send(m); err != nil {
-					reportChatFailure(bot, msg.Chat.ID, "ошибка отправки выбора формата", err)
-					continue
-				}
-				log.Printf("send media pick keyboard trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				continue
-			}
-			task := mediaDownloadTask{
-				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-				URL:      targetURL,
-				Mode:     mode,
-				DL:       mediaDownloader,
-				Msg:      msg,
-				Trigger:  tr,
-				Idle:     idleTracker,
-				ReportTo: msg.Chat.ID,
-			}
-			if mediaQueue == nil || !mediaQueue.enqueue(task) {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("media download queue is full"))
-				continue
-			}
-			log.Printf("send media queued trigger=%d replyTo=%d mode=%s service=%s url=%q", tr.ID, replyTo, mode, mediaService, clipText(targetURL, 160))
-		case "media_tiktok_download":
-			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
-			targetURL := extractSupportedMediaURLByService(query, "tiktok")
-			if targetURL == "" {
-				continue
-			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			task := mediaDownloadTask{
-				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-				URL:      targetURL,
-				Mode:     mediadl.ModeAuto,
-				DL:       mediaDownloader,
-				Msg:      msg,
-				Trigger:  tr,
-				Idle:     idleTracker,
-				ReportTo: msg.Chat.ID,
-			}
-			if mediaQueue == nil || !mediaQueue.enqueue(task) {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("media download queue is full"))
-				continue
-			}
-			log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
-		case "media_x_download":
-			query := buildMediaDownloadQueryFromMessage(tmplCtx, resolvedTemplate)
-			targetURL := extractSupportedMediaURLByService(query, "x")
-			if targetURL == "" {
-				continue
-			}
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			task := mediaDownloadTask{
-				SendCtx:  sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
-				URL:      targetURL,
-				Mode:     mediadl.ModeVideo,
-				DL:       mediaDownloader,
-				Msg:      msg,
-				Trigger:  tr,
-				Idle:     idleTracker,
-				ReportTo: msg.Chat.ID,
-			}
-			if mediaQueue == nil || !mediaQueue.enqueue(task) {
-				reportChatFailure(bot, msg.Chat.ID, "ошибка скачивания X-видео", errors.New("media download queue is full"))
-				continue
-			}
-			log.Printf("send x video queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
-		default:
-			replyTo := 0
-			if tr.Reply || tr.TriggerMode == "command_reply" {
-				replyTo = msg.MessageID
-			}
-			out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
-			if strings.TrimSpace(out) == "" {
-				reportEmptyTriggerMessage(bot, msg.Chat.ID, tr)
-				continue
-			}
-			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-			if ok := sendHTML(sendCtx, out, tr.Preview); ok {
-				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
-				deleteTriggerSourceMessage(bot, msg, tr)
-			}
-			if debugTriggerLogEnabled {
-				log.Printf("send static/html attempted trigger=%d replyTo=%d", tr.ID, replyTo)
 			}
 		}
+		continue
 	}
 }
 
@@ -2257,6 +1923,10 @@ type triggerActionDeps struct {
 	GPTDebouncer      *gpt.Debouncer
 	SpotifyMusic      SpotifyMusicPort
 	SpotifyDownloader SpotifyDownloadPort
+	SpotifyQueue      *spotifyPickQueue
+	MediaDownloader   MediaDownloadPort
+	MediaQueue        *mediaDownloadQueue
+	MediaInteractive  bool
 	TemplateLookup    func(string) string
 }
 
@@ -2267,6 +1937,48 @@ type triggerHandlerDeps struct {
 	Store      TriggerStorePort
 	AdminCache *adminStatusCache
 	ChatRecent *chatRecentStore
+}
+
+func filterUnusedTriggers(all []Trigger, used map[int64]struct{}) []Trigger {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make([]Trigger, 0, len(all))
+	for i := range all {
+		if _, ok := used[all[i].ID]; ok {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out
+}
+
+func filterPassThroughTriggers(all []Trigger) []Trigger {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make([]Trigger, 0, len(all))
+	for i := range all {
+		if !all[i].PassThrough {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out
+}
+
+func filterNonPassThroughTriggers(all []Trigger) []Trigger {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make([]Trigger, 0, len(all))
+	for i := range all {
+		if all[i].PassThrough {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out
 }
 
 func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
@@ -2453,18 +2165,237 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	case "spotify_music_audio":
 		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
-		} else {
-			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("Spotify музыка не поддерживается для события входа"))
+			return
+		}
+		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		if query == "" {
+			query = strings.TrimSpace(msg.Text)
+		}
+		if query == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			track, err := deps.SpotifyMusic.GetTrack(ctx, trackID)
+			cancel()
+			if err != nil {
+				log.Printf("spotify get track failed id=%s err=%v", trackID, err)
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка загрузки трека Spotify", err)
+				return
+			}
+			task := spotifyPickTask{
+				SendCtx: sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				Req: pick.PickRequest{
+					TrackID:      track.ID,
+					Artist:       track.Artist,
+					Title:        track.Title,
+					ChatID:       msg.Chat.ID,
+					ReplyTo:      replyTo,
+					SourceMsgID:  msg.MessageID,
+					DeleteSource: tr.DeleteSource,
+					UserID:       msg.From.ID,
+				},
+				DL:       deps.SpotifyDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.SpotifyQueue == nil || !deps.SpotifyQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
+				return
+			}
+			if debugTriggerLogEnabled {
+				log.Printf("send spotify/audio queued by link trigger=%d replyTo=%d track=%q", tr.ID, replyTo, clipText(spotifymusic.BuildSearchQuery(track), 180))
+			}
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		tracks, err := deps.SpotifyMusic.SearchTracks(ctx, query, 10)
+		cancel()
+		if err != nil {
+			log.Printf("spotify music search failed: %v", err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка поиска музыки Spotify", err)
+			return
+		}
+		if len(tracks) == 0 {
+			if debugTriggerLogEnabled {
+				log.Printf("spotify music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
+			}
+			return
+		}
+		if envBool("SPOTIFY_AUDIO_INTERACTIVE", true) {
+			maxResults := 10
+			if len(tracks) > maxResults {
+				tracks = tracks[:maxResults]
+			}
+			pickTracks := make([]pick.PickTrack, 0, len(tracks))
+			for _, track := range tracks {
+				pickTracks = append(pickTracks, pick.PickTrack{
+					ID:          track.ID,
+					Artist:      track.Artist,
+					Title:       track.Title,
+					DurationSec: track.DurationSec,
+				})
+			}
+			m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска:")
+			m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr.DeleteSource, pickTracks)
+			if replyTo > 0 {
+				m.ReplyToMessageID = replyTo
+				m.AllowSendingWithoutReply = true
+			}
+			if _, err := deps.Bot.Send(m); err != nil {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки списка Spotify", err)
+				return
+			}
+			if tr.DeleteSource && msg.MessageID > 0 {
+				_, _ = deps.Bot.Request(tgbotapi.DeleteMessageConfig{
+					ChatID:    msg.Chat.ID,
+					MessageID: msg.MessageID,
+				})
+			}
+			if deps.IdleTracker != nil {
+				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
+			return
+		}
+		task := spotifyPickTask{
+			SendCtx: sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			Req: pick.PickRequest{
+				TrackID:      tracks[0].ID,
+				Artist:       tracks[0].Artist,
+				Title:        tracks[0].Title,
+				ChatID:       msg.Chat.ID,
+				ReplyTo:      replyTo,
+				SourceMsgID:  msg.MessageID,
+				DeleteSource: tr.DeleteSource,
+				UserID:       msg.From.ID,
+			},
+			DL:       deps.SpotifyDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.SpotifyQueue == nil || !deps.SpotifyQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио Spotify", errors.New("spotify queue is full"))
+			return
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 		}
 		return
 	case "media_link_audio":
-		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("скачивание по ссылке не поддерживается для события входа"))
+		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		targetURL := extractSupportedMediaURL(query)
+		if targetURL == "" {
+			return
+		}
+		_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		mode, useInteractive := mediaModeAndInteractivity(mediaService, deps.MediaInteractive)
+		if useInteractive {
+			req := mediadl.ChoiceRequest{
+				URL:          targetURL,
+				ChatID:       msg.Chat.ID,
+				ReplyTo:      replyTo,
+				SourceMsgID:  msg.MessageID,
+				UserID:       msg.From.ID,
+				DeleteSource: tr.DeleteSource,
+			}
+			m := tgbotapi.NewMessage(msg.Chat.ID, "Выбери формат скачивания:")
+			kb := mediadl.BuildChoiceKeyboard(msg, req)
+			m.ReplyMarkup = &kb
+			if replyTo > 0 {
+				m.ReplyToMessageID = replyTo
+				m.AllowSendingWithoutReply = true
+			}
+			log.Printf("media pick keyboard built rows=%d chat=%d replyTo=%d", len(kb.InlineKeyboard), msg.Chat.ID, replyTo)
+			if _, err := deps.Bot.Send(m); err != nil {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки выбора формата", err)
+				return
+			}
+			log.Printf("send media pick keyboard trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
+			if deps.IdleTracker != nil {
+				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
+			return
+		}
+		task := mediaDownloadTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			URL:      targetURL,
+			Mode:     mode,
+			DL:       deps.MediaDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.MediaQueue == nil || !deps.MediaQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания аудио", errors.New("media download queue is full"))
+			return
+		}
+		log.Printf("send media queued trigger=%d replyTo=%d mode=%s service=%s url=%q", tr.ID, replyTo, mode, mediaService, clipText(targetURL, 160))
 		return
 	case "media_tiktok_download":
-		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("скачивание по ссылке не поддерживается для события входа"))
+		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		targetURL := extractSupportedMediaURLByService(query, "tiktok")
+		if targetURL == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		task := mediaDownloadTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			URL:      targetURL,
+			Mode:     mediadl.ModeAuto,
+			DL:       deps.MediaDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.MediaQueue == nil || !deps.MediaQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания TikTok", errors.New("media download queue is full"))
+			return
+		}
+		log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		return
 	case "media_x_download":
-		reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания X-видео", errors.New("скачивание по ссылке не поддерживается для события входа"))
+		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		targetURL := extractSupportedMediaURLByService(query, "x")
+		if targetURL == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		task := mediaDownloadTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			URL:      targetURL,
+			Mode:     mediadl.ModeVideo,
+			DL:       deps.MediaDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.MediaQueue == nil || !deps.MediaQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания X-видео", errors.New("media download queue is full"))
+			return
+		}
+		log.Printf("send x video queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		return
 	default:
 		replyTo := 0

@@ -17,6 +17,7 @@ type Trigger struct {
 	Reply         bool
 	Preview       bool
 	DeleteSource  bool
+	PassThrough   bool
 	Chance        int
 	CreatedAt     int64
 	UpdatedAt     int64

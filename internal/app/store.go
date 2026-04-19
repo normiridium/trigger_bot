@@ -356,6 +356,7 @@ type exportTriggerRow struct {
 	SendAsReply      bool               `json:"send_as_reply"`
 	PreviewFirstLink bool               `json:"preview_first_link"`
 	DeleteSourceMsg  bool               `json:"delete_source_message"`
+	PassThrough      bool               `json:"pass_through"`
 	Chance           int                `json:"chance"`
 }
 
@@ -375,6 +376,7 @@ type importTriggerRow struct {
 	SendAsReply      *bool           `json:"send_as_reply"`
 	PreviewFirstLink *bool           `json:"preview_first_link"`
 	DeleteSourceMsg  *bool           `json:"delete_source_message"`
+	PassThrough      *bool           `json:"pass_through"`
 	Chance           *int            `json:"chance"`
 }
 
@@ -417,6 +419,7 @@ func (s *Store) ExportJSON() ([]byte, error) {
 			SendAsReply:      t.Reply,
 			PreviewFirstLink: t.Preview,
 			DeleteSourceMsg:  t.DeleteSource,
+			PassThrough:      t.PassThrough,
 			Chance:           t.Chance,
 		})
 	}
@@ -495,6 +498,10 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 		if it.DeleteSourceMsg != nil {
 			deleteSource = *it.DeleteSourceMsg
 		}
+		passThrough := false
+		if it.PassThrough != nil {
+			passThrough = *it.PassThrough
+		}
 		chance := 100
 		if it.Chance != nil {
 			chance = *it.Chance
@@ -514,6 +521,7 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			Reply:         reply,
 			Preview:       preview,
 			DeleteSource:  deleteSource,
+			PassThrough:   passThrough,
 			Chance:        chance,
 		}
 		if it.Priority != nil {
