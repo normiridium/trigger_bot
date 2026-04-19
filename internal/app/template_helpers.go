@@ -1,14 +1,19 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
+	htmltmpl "html/template"
 	"math/rand"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -183,13 +188,185 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 
 var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
-var templateExprPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
+var legacyTemplateActionRe = regexp.MustCompile(`\{\{[-]?\s*([^{}]+?)\s*[-]?\}\}`)
+var legacyPipeIndexRe = regexp.MustCompile(`\|\s*index\s+(-?\d+)`)
 
 var capturingChoiceCache = struct {
 	mu    sync.RWMutex
 	items map[string][]string
 }{
 	items: make(map[string][]string),
+}
+
+var responseTemplateCache = struct {
+	mu    sync.RWMutex
+	items map[string]*htmltmpl.Template
+}{
+	items: make(map[string]*htmltmpl.Template),
+}
+
+var responseTemplateFuncsMu sync.RWMutex
+
+var responseTemplateFuncs = htmltmpl.FuncMap{
+	"default": func(def string, v interface{}) string {
+		if isTemplateEmptyValue(v) {
+			return strings.TrimSpace(def)
+		}
+		return toTemplateString(v)
+	},
+	"trim": func(v interface{}) string {
+		return strings.TrimSpace(toTemplateString(v))
+	},
+	"lower": func(v interface{}) string {
+		return strings.ToLower(toTemplateString(v))
+	},
+	"upper": func(v interface{}) string {
+		return strings.ToUpper(toTemplateString(v))
+	},
+	"title": func(v interface{}) string {
+		return titleCaseWords(toTemplateString(v))
+	},
+	"replace": func(old, new string, v interface{}) string {
+		return strings.ReplaceAll(toTemplateString(v), old, new)
+	},
+	"truncate": func(limit int, v interface{}) string {
+		s := toTemplateString(v)
+		if limit <= 0 {
+			return ""
+		}
+		runes := []rune(s)
+		if len(runes) <= limit {
+			return s
+		}
+		return strings.TrimSpace(string(runes[:limit]))
+	},
+	"join": func(sep string, v interface{}) string {
+		items := toStringSlice(v)
+		if len(items) == 0 {
+			return ""
+		}
+		return strings.Join(items, sep)
+	},
+	"first": func(v interface{}) string {
+		items := toStringSlice(v)
+		if len(items) == 0 {
+			return ""
+		}
+		return strings.TrimSpace(items[0])
+	},
+	"last": func(v interface{}) string {
+		items := toStringSlice(v)
+		if len(items) == 0 {
+			return ""
+		}
+		return strings.TrimSpace(items[len(items)-1])
+	},
+	"now": func() time.Time {
+		return time.Now()
+	},
+	"date": func(layout string, v interface{}) string {
+		layout = strings.TrimSpace(layout)
+		if layout == "" {
+			layout = time.RFC3339
+		}
+		tm, ok := toTemplateTime(v)
+		if !ok {
+			return ""
+		}
+		return tm.Format(layout)
+	},
+	"split": func(sep, in string) []string {
+		if sep == "" {
+			return []string{strings.TrimSpace(in)}
+		}
+		parts := strings.Split(in, sep)
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	},
+	"contains": func(needle, in string) bool {
+		return strings.Contains(in, needle)
+	},
+	"pick": func(idx int, items []string) string {
+		if idx < 0 || idx >= len(items) {
+			return ""
+		}
+		return strings.TrimSpace(items[idx])
+	},
+	"istrue": func(args ...interface{}) string {
+		if len(args) == 0 {
+			return ""
+		}
+		whenTrue := ""
+		whenFalse := ""
+		var raw interface{}
+		switch len(args) {
+		case 1:
+			raw = args[0]
+		case 2:
+			whenTrue = toTemplateString(args[0])
+			raw = args[1]
+		default:
+			whenTrue = toTemplateString(args[0])
+			whenFalse = toTemplateString(args[1])
+			raw = args[2]
+		}
+		if isTruthy(toTemplateString(raw)) {
+			return whenTrue
+		}
+		return whenFalse
+	},
+	"gender": func(args ...interface{}) string {
+		if len(args) == 0 {
+			return ""
+		}
+		val := toTemplateString(args[len(args)-1])
+		var variants genderVariants
+		if len(args) > 1 {
+			variants.Male = toTemplateString(args[0])
+		}
+		if len(args) > 2 {
+			variants.Female = toTemplateString(args[1])
+		}
+		if len(args) > 3 {
+			variants.Neuter = toTemplateString(args[2])
+		}
+		if len(args) > 4 {
+			variants.Plural = toTemplateString(args[3])
+		}
+		if len(args) > 5 {
+			variants.Unknown = toTemplateString(args[4])
+		}
+		return resolveGenderVariant(val, variants)
+	},
+}
+
+func RegisterResponseTemplateFunc(name string, fn interface{}) {
+	name = strings.TrimSpace(name)
+	if name == "" || fn == nil {
+		return
+	}
+	responseTemplateFuncsMu.Lock()
+	responseTemplateFuncs[name] = fn
+	responseTemplateFuncsMu.Unlock()
+	responseTemplateCache.mu.Lock()
+	responseTemplateCache.items = make(map[string]*htmltmpl.Template)
+	responseTemplateCache.mu.Unlock()
+}
+
+var reservedTemplateWords = map[string]struct{}{
+	"if":       {},
+	"else":     {},
+	"end":      {},
+	"range":    {},
+	"with":     {},
+	"template": {},
+	"block":    {},
+	"define":   {},
+	"nil":      {},
+	"true":     {},
+	"false":    {},
 }
 
 func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) string {
@@ -203,9 +380,9 @@ func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) st
 		"capturing_choice": choice,
 		"capturing_option": choice,
 	}
-	out := applyTemplatePipes(s, vars)
-	for key, val := range vars {
-		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
+	out, err := renderResponseTemplate(s, vars, nil)
+	if err != nil {
+		return applySimpleTemplateVars(s, vars)
 	}
 	return out
 }
@@ -275,171 +452,6 @@ func capturingChoiceCandidates(matchText string) []string {
 	capturingChoiceCache.mu.Unlock()
 
 	return items
-}
-
-func applyTemplatePipes(s string, vars map[string]string) string {
-	if strings.TrimSpace(s) == "" {
-		return s
-	}
-	return templateExprPattern.ReplaceAllStringFunc(s, func(m string) string {
-		expr := strings.TrimSpace(m[2 : len(m)-2])
-		if expr == "" || !strings.Contains(expr, "|") {
-			return m
-		}
-		out, ok := evalTemplatePipe(expr, vars)
-		if !ok {
-			return m
-		}
-		return out
-	})
-}
-
-func evalTemplatePipe(expr string, vars map[string]string) (string, bool) {
-	parts := strings.Split(expr, "|")
-	if len(parts) == 0 {
-		return "", false
-	}
-	base := strings.TrimSpace(parts[0])
-	val, ok := vars[base]
-	if !ok {
-		return "", false
-	}
-	var list []string
-	for _, raw := range parts[1:] {
-		op := strings.TrimSpace(raw)
-		name, argStr := splitPipeOp(op)
-		args := parsePipeArgs(argStr)
-		switch name {
-		case "split":
-			delim := ""
-			if len(args) > 0 {
-				delim = args[0]
-			}
-			if delim == "" {
-				list = []string{val}
-				continue
-			}
-			items := strings.Split(val, delim)
-			for i := range items {
-				items[i] = strings.TrimSpace(items[i])
-			}
-			list = items
-			continue
-		case "index":
-			if len(args) == 0 {
-				return "", true
-			}
-			idx, err := strconv.Atoi(args[0])
-			if err != nil || idx < 0 {
-				return "", true
-			}
-			if list == nil {
-				return "", true
-			}
-			if idx >= len(list) {
-				return "", true
-			}
-			val = list[idx]
-			list = nil
-			continue
-		case "contains":
-			if len(args) == 0 {
-				val = "false"
-				continue
-			}
-			if strings.Contains(val, args[0]) {
-				val = "true"
-			} else {
-				val = "false"
-			}
-			continue
-		case "istrue":
-			if isTruthy(val) {
-				if len(args) > 0 {
-					val = args[0]
-				} else {
-					val = ""
-				}
-			} else {
-				if len(args) > 1 {
-					val = args[1]
-				} else {
-					val = ""
-				}
-			}
-			continue
-		case "gender":
-			var variants genderVariants
-			if len(args) > 0 {
-				variants.Male = args[0]
-			}
-			if len(args) > 1 {
-				variants.Female = args[1]
-			}
-			if len(args) > 2 {
-				variants.Neuter = args[2]
-			}
-			if len(args) > 3 {
-				variants.Plural = args[3]
-			}
-			if len(args) > 4 {
-				variants.Unknown = args[4]
-			}
-			val = resolveGenderVariant(val, variants)
-			continue
-		default:
-			continue
-		}
-	}
-	return strings.TrimSpace(val), true
-}
-
-func splitPipeOp(s string) (string, string) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", ""
-	}
-	if idx := strings.IndexFunc(s, func(r rune) bool { return r == ' ' || r == '\t' }); idx >= 0 {
-		return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx+1:])
-	}
-	return s, ""
-}
-
-func parsePipeArgs(s string) []string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	args := make([]string, 0, 2)
-	for len(s) > 0 {
-		s = strings.TrimLeft(s, " \t")
-		if s == "" {
-			break
-		}
-		if s[0] == '"' {
-			end := strings.Index(s[1:], "\"")
-			if end < 0 {
-				args = append(args, s[1:])
-				break
-			}
-			args = append(args, s[1:1+end])
-			s = s[2+end:]
-			continue
-		}
-		next := len(s)
-		for i, r := range s {
-			if r == ' ' || r == '\t' {
-				next = i
-				break
-			}
-		}
-		args = append(args, s[:next])
-		if next >= len(s) {
-			break
-		}
-		s = s[next:]
-	}
-	return args
 }
 
 func isTruthy(v string) bool {
@@ -564,11 +576,10 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	if strings.TrimSpace(template) == "" {
 		return template
 	}
-	template = expandTemplateCalls(template, ctx.TemplateLookup)
 	vars := buildTemplateVars(ctx)
-	out := applyTemplatePipes(template, vars)
-	for key, val := range vars {
-		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
+	out, err := renderResponseTemplate(template, vars, ctx.TemplateLookup)
+	if err != nil {
+		return applySimpleTemplateVars(template, vars)
 	}
 	return out
 }
@@ -603,6 +614,252 @@ func buildTemplateVars(ctx templateContext) map[string]string {
 	vars["capturing_choice"] = choice
 	vars["capturing_option"] = choice
 	return vars
+}
+
+func renderResponseTemplate(input string, vars map[string]string, lookup func(string) string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return input, nil
+	}
+	resolved := expandTemplateCalls(input, lookup)
+	normalized := normalizeLegacyTemplateSyntax(resolved, vars)
+	tpl, err := cachedResponseTemplate(normalized)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, vars); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(buf.String()), nil
+}
+
+func normalizeLegacyTemplateSyntax(input string, vars map[string]string) string {
+	if strings.TrimSpace(input) == "" {
+		return input
+	}
+	varNames := make(map[string]struct{}, len(vars))
+	for k := range vars {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			varNames[k] = struct{}{}
+		}
+	}
+	out := legacyTemplateActionRe.ReplaceAllStringFunc(input, func(full string) string {
+		m := legacyTemplateActionRe.FindStringSubmatch(full)
+		if len(m) < 2 {
+			return full
+		}
+		action := strings.TrimSpace(m[1])
+		if action == "" {
+			return full
+		}
+		first, rest := splitFirstActionToken(action)
+		if first == "" {
+			return full
+		}
+		if _, reserved := reservedTemplateWords[first]; reserved {
+			return full
+		}
+		if _, ok := varNames[first]; !ok {
+			return full
+		}
+		if strings.HasPrefix(first, ".") || strings.HasPrefix(first, "$") {
+			return full
+		}
+		if rest == "" {
+			return "{{ ." + first + " }}"
+		}
+		return "{{ ." + first + " " + rest + " }}"
+	})
+	out = legacyPipeIndexRe.ReplaceAllString(out, "| pick $1")
+	return out
+}
+
+func splitFirstActionToken(action string) (string, string) {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return "", ""
+	}
+	i := 0
+	for i < len(action) {
+		ch := action[i]
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '|' {
+			break
+		}
+		i++
+	}
+	first := strings.TrimSpace(action[:i])
+	rest := strings.TrimSpace(action[i:])
+	return first, rest
+}
+
+func cachedResponseTemplate(src string) (*htmltmpl.Template, error) {
+	key := strings.TrimSpace(src)
+	if key == "" {
+		key = src
+	}
+	responseTemplateCache.mu.RLock()
+	if t, ok := responseTemplateCache.items[key]; ok {
+		responseTemplateCache.mu.RUnlock()
+		return t, nil
+	}
+	responseTemplateCache.mu.RUnlock()
+
+	responseTemplateFuncsMu.RLock()
+	funcs := make(htmltmpl.FuncMap, len(responseTemplateFuncs))
+	for k, v := range responseTemplateFuncs {
+		funcs[k] = v
+	}
+	responseTemplateFuncsMu.RUnlock()
+	t, err := htmltmpl.New("response").Funcs(funcs).Option("missingkey=zero").Parse(src)
+	if err != nil {
+		return nil, err
+	}
+
+	responseTemplateCache.mu.Lock()
+	if len(responseTemplateCache.items) > 4096 {
+		responseTemplateCache.items = make(map[string]*htmltmpl.Template)
+	}
+	responseTemplateCache.items[key] = t
+	responseTemplateCache.mu.Unlock()
+	return t, nil
+}
+
+func applySimpleTemplateVars(input string, vars map[string]string) string {
+	out := input
+	for key, val := range vars {
+		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
+	}
+	return strings.TrimSpace(out)
+}
+
+func toTemplateString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case []byte:
+		return strings.TrimSpace(string(t))
+	case fmt.Stringer:
+		return strings.TrimSpace(t.String())
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func titleCaseWords(s string) string {
+	words := strings.Fields(strings.TrimSpace(s))
+	if len(words) == 0 {
+		return ""
+	}
+	for i, w := range words {
+		runes := []rune(strings.ToLower(strings.TrimSpace(w)))
+		if len(runes) == 0 {
+			continue
+		}
+		runes[0] = unicode.ToUpper(runes[0])
+		words[i] = string(runes)
+	}
+	return strings.Join(words, " ")
+}
+
+func toStringSlice(v interface{}) []string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			it = strings.TrimSpace(it)
+			if it != "" {
+				out = append(out, it)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			s := toTemplateString(it)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		s := toTemplateString(v)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	}
+}
+
+func isTemplateEmptyValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []string:
+		return len(t) == 0
+	case []interface{}:
+		return len(t) == 0
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Bool:
+		return !rv.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return rv.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return rv.Float() == 0
+	case reflect.Slice, reflect.Array, reflect.Map, reflect.String:
+		return rv.Len() == 0
+	case reflect.Interface, reflect.Pointer:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
+func toTemplateTime(v interface{}) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t, true
+	case *time.Time:
+		if t == nil {
+			return time.Time{}, false
+		}
+		return *t, true
+	case int64:
+		return time.Unix(t, 0), true
+	case int:
+		return time.Unix(int64(t), 0), true
+	case float64:
+		return time.Unix(int64(t), 0), true
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+			"2006-01-02 15:04",
+			"2006-01-02",
+		}
+		for _, layout := range layouts {
+			if tm, err := time.Parse(layout, s); err == nil {
+				return tm, true
+			}
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
 }
 
 func buildImageSearchQueryFromMessage(ctx templateContext, queryTemplate string) string {

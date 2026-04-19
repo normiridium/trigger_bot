@@ -499,6 +499,50 @@ func TestBuildResponseFromMessageCapturingChoice(t *testing.T) {
 	}
 }
 
+func TestBuildResponseFromMessage_CommonTemplateFuncs(t *testing.T) {
+	ctx := templateContext{
+		Msg: &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+			From: &tgbotapi.User{ID: 7, FirstName: "аня", UserName: "anya"},
+			Text: "  Привет Мир  ",
+		},
+	}
+
+	if got := buildResponseFromMessage(ctx, `{{ .missing | default "друг" }}`); got != "друг" {
+		t.Fatalf("default mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | lower }}`); got != "привет мир" {
+		t.Fatalf("trim/lower mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .user_first_name | upper }}`); got != "АНЯ" {
+		t.Fatalf("upper mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | title }}`); got != "Привет Мир" {
+		t.Fatalf("title mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | replace " " "_" }}`); got != "Привет_Мир" {
+		t.Fatalf("replace mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | truncate 6 }}`); got != "Привет" {
+		t.Fatalf("truncate mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | split " " | join "-" }}`); got != "Привет-Мир" {
+		t.Fatalf("join mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | split " " | first }}`); got != "Привет" {
+		t.Fatalf("first mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ .message | trim | split " " | last }}`); got != "Мир" {
+		t.Fatalf("last mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ "2026-04-19T23:00:00Z" | date "2006-01-02" }}`); got != "2026-04-19" {
+		t.Fatalf("date mismatch: %q", got)
+	}
+	if got := buildResponseFromMessage(ctx, `{{ now | date "2006" }}`); got == "" {
+		t.Fatalf("now/date must not be empty")
+	}
+}
+
 func TestResolveGenderVariant(t *testing.T) {
 	variants := genderVariants{
 		Male:    "он",
