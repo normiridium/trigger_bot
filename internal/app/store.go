@@ -161,6 +161,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeSearchImage
 	case "spotify_music_audio":
 		return ActionTypeSpotifyMusic
+	case "yandex_music_audio":
+		return ActionTypeYandexMusic
 	case "media_link_audio":
 		return ActionTypeMediaAudio
 	case "media_tiktok_download":

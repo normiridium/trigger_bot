@@ -234,6 +234,107 @@ func (q *spotifyPickQueue) enqueue(task spotifyPickTask) bool {
 	}
 }
 
+type yandexMusicTask struct {
+	SendCtx  sendContext
+	URL      string
+	DL       YandexMusicDownloadPort
+	Msg      *tgbotapi.Message
+	Trigger  *Trigger
+	Idle     *trigger.IdleTracker
+	ReportTo int64
+}
+
+type yandexMusicQueue struct {
+	ch chan yandexMusicTask
+}
+
+func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
+	if workers < 1 {
+		workers = 1
+	}
+	if size < 1 {
+		size = workers * 2
+	}
+	q := &yandexMusicQueue{ch: make(chan yandexMusicTask, size)}
+	for i := 0; i < workers; i++ {
+		go func() {
+			for task := range q.ch {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				err := processYandexMusic(ctx, task.SendCtx, task.DL, task.URL)
+				cancel()
+				if err != nil {
+					chatID := task.ReportTo
+					if chatID == 0 {
+						chatID = task.SendCtx.ChatID
+					}
+					log.Printf("yandex queue send failed chat=%d err=%v", chatID, err)
+					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", err)
+					continue
+				}
+				if task.Idle != nil {
+					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
+				}
+				if task.Msg != nil && task.Trigger != nil {
+					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+				}
+			}
+		}()
+	}
+	return q
+}
+
+func (q *yandexMusicQueue) enqueue(task yandexMusicTask) bool {
+	if q == nil {
+		return false
+	}
+	select {
+	case q.ch <- task:
+		return true
+	default:
+		return false
+	}
+}
+
+func processYandexMusic(ctx context.Context, sendCtx sendContext, dl YandexMusicDownloadPort, rawURL string) error {
+	if dl == nil {
+		return errors.New("yandex downloader is not configured")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return errors.New("empty yandex music url")
+	}
+	path, err := dl.DownloadByURL(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rmErr := os.RemoveAll(filepath.Dir(path)); rmErr != nil && debugTriggerLogEnabled {
+			log.Printf("yandex temp cleanup failed path=%q err=%v", path, rmErr)
+		}
+	}()
+	performer, title := yandexPerformerTitleFromPath(path)
+	return sendAudioFromFileWithMeta(sendCtx, path, performer, title, rawURL, "yandex_music")
+}
+
+func yandexPerformerTitleFromPath(path string) (string, string) {
+	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(path)))
+	if base == "" {
+		return "", ""
+	}
+	ext := strings.TrimSpace(filepath.Ext(base))
+	name := strings.TrimSpace(strings.TrimSuffix(base, ext))
+	if name == "" {
+		return "", ""
+	}
+	parts := strings.SplitN(name, " - ", 2)
+	if len(parts) == 2 {
+		performer := strings.TrimSpace(parts[0])
+		title := strings.TrimSpace(parts[1])
+		return performer, title
+	}
+	return "", name
+}
+
 type mediaDownloadTask struct {
 	SendCtx  sendContext
 	URL      string

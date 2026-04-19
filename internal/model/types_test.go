@@ -45,6 +45,9 @@ func TestActionTypeString(t *testing.T) {
 	if got := ActionTypeMediaX.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeMediaX")
 	}
+	if got := ActionTypeYandexMusic.String(); got == "" {
+		t.Fatalf("empty string for ActionTypeYandexMusic")
+	}
 	if got := ActionType("x").String(); got != "x" {
 		t.Fatalf("unexpected fallback string: %q", got)
 	}

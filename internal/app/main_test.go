@@ -164,6 +164,24 @@ func TestExtractSupportedMediaURLByService(t *testing.T) {
 	}
 }
 
+func TestExtractYandexMusicURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{in: "трек https://music.yandex.ru/album/123/track/456", want: "https://music.yandex.ru/album/123/track/456"},
+		{in: "трек https://music.yandex.com/track/456", want: "https://music.yandex.com/track/456"},
+		{in: "альбом https://music.yandex.ru/album/12345", want: ""},
+		{in: "плейлист https://music.yandex.ru/users/user/playlists/10", want: ""},
+		{in: "не то https://example.org/album/1/track/2", want: ""},
+	}
+	for _, tc := range cases {
+		if got := extractYandexMusicURL(tc.in); got != tc.want {
+			t.Fatalf("extractYandexMusicURL(%q)=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestVideoFallbackHeights(t *testing.T) {
 	cases := []struct {
 		in   int
