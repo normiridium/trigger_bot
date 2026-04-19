@@ -163,3 +163,10 @@ func TestNormalizeActionType_X(t *testing.T) {
 		t.Fatalf("normalizeActionType returned %q", got)
 	}
 }
+
+func TestNormalizeActionType_SendSticker(t *testing.T) {
+	got := normalizeActionType("send_sticker")
+	if got != ActionTypeSendSticker {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}

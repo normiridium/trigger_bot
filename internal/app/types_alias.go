@@ -43,6 +43,7 @@ const (
 
 const (
 	ActionTypeSend         = model.ActionTypeSend
+	ActionTypeSendSticker  = model.ActionTypeSendSticker
 	ActionTypeDelete       = model.ActionTypeDelete
 	ActionTypeGPTPrompt    = model.ActionTypeGPTPrompt
 	ActionTypeGPTImage     = model.ActionTypeGPTImage

@@ -311,6 +311,8 @@ var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
 var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
 var supportedMediaURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
+var htmlTagStripRe = regexp.MustCompile(`(?is)<[^>]+>`)
+var stickerFileIDTokenRe = regexp.MustCompile(`^[A-Za-z0-9_-]{16,}$`)
 
 func canonicalizeTGEmojiTags(s string) string {
 	if strings.TrimSpace(s) == "" {
@@ -366,6 +368,51 @@ func countTGEmojiTags(s string) int {
 		return 0
 	}
 	return len(tgEmojiCanonicalRe.FindAllString(s, -1))
+}
+
+func extractStickerFileIDFromTemplate(raw string) string {
+	plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(raw, " "))
+	if plain == "" {
+		return ""
+	}
+	fields := strings.Fields(plain)
+	for _, f := range fields {
+		token := strings.TrimSpace(strings.Trim(f, " \t\r\n`\"'.,;:!?()[]{}<>"))
+		if token == "" {
+			continue
+		}
+		if i := strings.Index(token, ":"); i > 0 {
+			token = strings.TrimSpace(token[:i])
+		}
+		if !stickerFileIDTokenRe.MatchString(token) {
+			continue
+		}
+		if !looksLikeTelegramFileID(token) {
+			continue
+		}
+		return token
+	}
+	return ""
+}
+
+func looksLikeTelegramFileID(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasLetter := false
+	hasDigit := false
+	hasSpecial := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '_' || r == '-':
+			hasSpecial = true
+		}
+	}
+	return hasLetter && hasDigit && (hasSpecial || len(s) >= 24)
 }
 
 var mdFenceRe = regexp.MustCompile("(?s)```([a-zA-Z0-9_+-]*)\\n(.*?)```")
@@ -1810,6 +1857,25 @@ func Run() {
 		}
 
 		switch tr.ActionType {
+		case "send_sticker":
+			replyTo := 0
+			if tr.Reply || tr.TriggerMode == "command_reply" {
+				replyTo = msg.MessageID
+			}
+			stickerRaw := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+			stickerID := extractStickerFileIDFromTemplate(stickerRaw)
+			if stickerID == "" {
+				reportChatFailure(bot, msg.Chat.ID, "ошибка отправки стикера", errors.New("empty or invalid sticker file_id in response_text"))
+				continue
+			}
+			sendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+			if ok := sendSticker(sendCtx, stickerID); ok {
+				idleTracker.MarkActivity(msg.Chat.ID, time.Now())
+				deleteTriggerSourceMessage(bot, msg, tr)
+			}
+			if debugTriggerLogEnabled {
+				log.Printf("send sticker attempted trigger=%d replyTo=%d file_id=%q", tr.ID, replyTo, clipText(stickerID, 120))
+			}
 		case "delete":
 			cfg := tgbotapi.DeleteMessageConfig{
 				ChatID:    msg.Chat.ID,
@@ -2276,6 +2342,24 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	rawTemplate := pickResponseVariantText(tr.ResponseText)
 	resolvedTemplate := expandTemplateCalls(rawTemplate, deps.TemplateLookup)
 	switch tr.ActionType {
+	case "send_sticker":
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		stickerRaw := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+		stickerID := extractStickerFileIDFromTemplate(stickerRaw)
+		if stickerID == "" {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки стикера", errors.New("empty or invalid sticker file_id in response_text"))
+			return
+		}
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if ok := sendSticker(sendCtx, stickerID); ok && deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
+		return
 	case "delete":
 		if msg.MessageID == 0 {
 			return

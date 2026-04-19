@@ -581,6 +581,15 @@ func TestExtractStickerCodeEmpty(t *testing.T) {
 	}
 }
 
+func TestExtractStickerFileIDFromTemplate(t *testing.T) {
+	raw := "<code>CAACAgIAAxkBAAMnaeQ1_jOjPuH6zZsuFC1qwh0Q0NYAAntOAAIuXRhLED6vCxOdgOw7BA:Nokotanfx</code>"
+	got := extractStickerFileIDFromTemplate(raw)
+	want := "CAACAgIAAxkBAAMnaeQ1_jOjPuH6zZsuFC1qwh0Q0NYAAntOAAIuXRhLED6vCxOdgOw7BA"
+	if got != want {
+		t.Fatalf("unexpected sticker file id: got=%q want=%q", got, want)
+	}
+}
+
 func TestMarkdownToTelegramHTMLLite(t *testing.T) {
 	in := "Код:\n```python\nprint('hi')\n```\nИ `x=1` и [сайт](https://example.com)"
 	got := markdownToTelegramHTMLLite(in)
