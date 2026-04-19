@@ -138,6 +138,18 @@ func (c *Client) postForm(ctx context.Context, path string, data url.Values, out
 	return c.doJSON(ctx, req, out)
 }
 
+func (c *Client) get(ctx context.Context, path string, params url.Values, out any) error {
+	u := baseURL + path
+	if params != nil {
+		u += "?" + params.Encode()
+	}
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	return c.doJSON(ctx, req, out)
+}
+
 func (c *Client) Track(ctx context.Context, id int64) (*Track, error) {
 	var out []Track
 	err := c.postForm(ctx, "/tracks", url.Values{
@@ -151,6 +163,26 @@ func (c *Client) Track(ctx context.Context, id int64) (*Track, error) {
 		return nil, errors.New("track not found")
 	}
 	return &out[0], nil
+}
+
+func (c *Client) SearchTracks(ctx context.Context, query string, page int) ([]Track, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty search query")
+	}
+	var out struct {
+		Tracks struct {
+			Results []Track `json:"results"`
+		} `json:"tracks"`
+	}
+	if err := c.get(ctx, "/search", url.Values{
+		"text": {query},
+		"type": {"track"},
+		"page": {strconv.Itoa(page)},
+	}, &out); err != nil {
+		return nil, err
+	}
+	return out.Tracks.Results, nil
 }
 
 func (c *Client) GetFileInfo(ctx context.Context, trackID int64, quality string) (*DownloadInfo, error) {

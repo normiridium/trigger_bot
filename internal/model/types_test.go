@@ -45,6 +45,9 @@ func TestActionTypeString(t *testing.T) {
 	if got := ActionTypeMediaX.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeMediaX")
 	}
+	if got := ActionTypeMusic.String(); got == "" {
+		t.Fatalf("empty string for ActionTypeMusic")
+	}
 	if got := ActionTypeYandexMusic.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeYandexMusic")
 	}

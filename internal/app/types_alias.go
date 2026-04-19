@@ -49,6 +49,7 @@ const (
 	ActionTypeGPTImage     = model.ActionTypeGPTImage
 	ActionTypeSearchImage  = model.ActionTypeSearchImage
 	ActionTypeSpotifyMusic = model.ActionTypeSpotifyMusic
+	ActionTypeMusic        = model.ActionTypeMusic
 	ActionTypeYandexMusic  = model.ActionTypeYandexMusic
 	ActionTypeMediaAudio   = model.ActionTypeMediaAudio
 	ActionTypeMediaTikTok  = model.ActionTypeMediaTikTok

@@ -15,7 +15,9 @@ import (
 
 type PickRequest struct {
 	Token        string
+	Provider     string
 	TrackID      string
+	SourceURL    string
 	Artist       string
 	Title        string
 	ChatID       int64
@@ -28,6 +30,8 @@ type PickRequest struct {
 
 type PickTrack struct {
 	ID          string
+	Provider    string
+	SourceURL   string
 	Artist      string
 	Title       string
 	DurationSec float64
@@ -54,7 +58,9 @@ func BuildPickKeyboard(msg *tgbotapi.Message, replyTo int, sourceMsgID int, dele
 			label = track.ID
 		}
 		token := putPick(PickRequest{
+			Provider:     strings.TrimSpace(track.Provider),
 			TrackID:      track.ID,
+			SourceURL:    strings.TrimSpace(track.SourceURL),
 			Artist:       artist,
 			Title:        strings.TrimSpace(track.Title),
 			ChatID:       msg.Chat.ID,
