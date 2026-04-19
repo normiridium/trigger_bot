@@ -512,6 +512,30 @@ func TestResolveGenderVariant(t *testing.T) {
 	}
 }
 
+func TestModerationActionVerbByTag(t *testing.T) {
+	if got := moderationActionVerb("ban", "he"); got != "забанил" {
+		t.Fatalf("male ban verb mismatch: %q", got)
+	}
+	if got := moderationActionVerb("ban", "she"); got != "забанила" {
+		t.Fatalf("female ban verb mismatch: %q", got)
+	}
+	if got := moderationActionVerb("ban", "unknown"); got != "забанил(а)" {
+		t.Fatalf("unknown ban verb mismatch: %q", got)
+	}
+}
+
+func TestModerationReadonlyStateVerbByTag(t *testing.T) {
+	if got := moderationReadonlyStateVerb(true, "he"); got != "включил режим только чтения" {
+		t.Fatalf("male readonly on mismatch: %q", got)
+	}
+	if got := moderationReadonlyStateVerb(false, "she"); got != "выключила режим только чтения" {
+		t.Fatalf("female readonly off mismatch: %q", got)
+	}
+	if got := moderationReadonlyStateVerb(true, "none"); got != "включил(а) режим только чтения" {
+		t.Fatalf("unknown readonly on mismatch: %q", got)
+	}
+}
+
 func TestChatIdleTrackerFlow(t *testing.T) {
 	tr := trigger.NewIdleTracker()
 	chatID := int64(-42)
