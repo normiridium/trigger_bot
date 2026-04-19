@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -184,6 +185,13 @@ var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
 var templateExprPattern = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
+var capturingChoiceCache = struct {
+	mu    sync.RWMutex
+	items map[string][]string
+}{
+	items: make(map[string][]string),
+}
+
 func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) string {
 	if strings.TrimSpace(s) == "" {
 		return s
@@ -207,7 +215,36 @@ func deriveCapturingChoice(matchText, capture string, caseSensitive bool) string
 	if capture == "" || strings.TrimSpace(matchText) == "" {
 		return ""
 	}
-	groups := extractRegexGroups(matchText)
+	candidates := capturingChoiceCandidates(matchText)
+	best := ""
+	bestScore := 0
+	for _, clean := range candidates {
+		score := matchChoiceScore(clean, capture, caseSensitive)
+		if score > bestScore {
+			bestScore = score
+			best = clean
+		}
+	}
+	return best
+}
+
+func capturingChoiceCandidates(matchText string) []string {
+	key := strings.TrimSpace(matchText)
+	if key == "" {
+		return nil
+	}
+	capturingChoiceCache.mu.RLock()
+	if items, ok := capturingChoiceCache.items[key]; ok {
+		out := make([]string, len(items))
+		copy(out, items)
+		capturingChoiceCache.mu.RUnlock()
+		return out
+	}
+	capturingChoiceCache.mu.RUnlock()
+
+	groups := extractRegexGroups(key)
+	seen := make(map[string]struct{}, 16)
+	items := make([]string, 0, 16)
 	for _, g := range groups {
 		if !strings.Contains(g, "|") {
 			continue
@@ -219,12 +256,25 @@ func deriveCapturingChoice(matchText, capture string, caseSensitive bool) string
 			if clean == "" {
 				continue
 			}
-			if containsMatch(clean, capture, caseSensitive) {
-				return clean
+			if _, ok := seen[clean]; ok {
+				continue
 			}
+			seen[clean] = struct{}{}
+			items = append(items, clean)
 		}
 	}
-	return ""
+
+	capturingChoiceCache.mu.Lock()
+	// Bound memory growth under highly dynamic patterns.
+	if len(capturingChoiceCache.items) > 4096 {
+		capturingChoiceCache.items = make(map[string][]string)
+	}
+	cached := make([]string, len(items))
+	copy(cached, items)
+	capturingChoiceCache.items[key] = cached
+	capturingChoiceCache.mu.Unlock()
+
+	return items
 }
 
 func applyTemplatePipes(s string, vars map[string]string) string {
@@ -405,12 +455,29 @@ func isTruthy(v string) bool {
 	}
 }
 
-func containsMatch(candidate, capture string, caseSensitive bool) bool {
+func matchChoiceScore(candidate, capture string, caseSensitive bool) int {
+	rawCandidate := strings.TrimSpace(candidate)
+	if rawCandidate == "" {
+		return 0
+	}
 	if !caseSensitive {
 		candidate = strings.ToLower(candidate)
 		capture = strings.ToLower(capture)
 	}
-	return strings.Contains(candidate, capture) || strings.Contains(capture, candidate)
+	if candidate == capture {
+		return 1000 + len(rawCandidate)
+	}
+	if strings.Contains(candidate, capture) {
+		return 700 + len(rawCandidate)
+	}
+	// Avoid noisy micro-matches like "а", "у", "е" from grammar suffix groups.
+	if len([]rune(strings.TrimSpace(rawCandidate))) < 3 {
+		return 0
+	}
+	if strings.Contains(capture, candidate) {
+		return 300 + len(rawCandidate)
+	}
+	return 0
 }
 
 func trimGroupPrefix(s string) string {

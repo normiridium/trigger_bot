@@ -328,6 +328,26 @@ func triggerDisplayName(tr *Trigger) string {
 	return "без названия"
 }
 
+func triggerResponseDebugText(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger, templateLookup func(string) string) string {
+	if tr == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(pickResponseVariantText(tr.ResponseText))
+	if raw == "" {
+		return ""
+	}
+	resolved := strings.TrimSpace(expandTemplateCalls(raw, templateLookup))
+	if msg == nil {
+		return clipText(resolved, 220)
+	}
+	tmplCtx := newTemplateContext(bot, msg, tr, templateLookup)
+	out := strings.TrimSpace(buildResponseFromMessage(tmplCtx, resolved))
+	if out == "" {
+		out = resolved
+	}
+	return clipText(out, 220)
+}
+
 func reportEmptyTriggerMessage(bot *tgbotapi.BotAPI, chatID int64, tr *Trigger) {
 	if bot == nil || chatID == 0 || tr == nil {
 		return
@@ -1918,7 +1938,11 @@ func Run() {
 			matchedAny = true
 			used[primary.ID] = struct{}{}
 			if debugTriggerLogEnabled {
-				log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
+				if response := triggerResponseDebugText(bot, msg, primary, templateLookup); response != "" {
+					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v response=%q", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough, response)
+				} else {
+					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
+				}
 			}
 			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, primary, recentBefore)
 		}
@@ -1940,7 +1964,11 @@ func Run() {
 			matchedAny = true
 			used[tr.ID] = struct{}{}
 			if debugTriggerLogEnabled {
-				log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
+				if response := triggerResponseDebugText(bot, msg, tr, templateLookup); response != "" {
+					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s response=%q", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType, response)
+				} else {
+					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
+				}
 			}
 			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, tr, recentBefore)
 		}

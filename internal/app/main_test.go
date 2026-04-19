@@ -58,6 +58,18 @@ func TestApplyCapturingTemplateChoicePipeSplitIndex(t *testing.T) {
 	}
 }
 
+func TestApplyCapturingTemplateChoice_PoliticsAvoidsSuffixNoise(t *testing.T) {
+	pattern := `^[^\n]{0,140}((?:Алексей )?Навальный|(?: Илья)? Яшин(?:а|у|ым|е)?)`
+	got := applyCapturingTemplate("{{capturing_choice}}", "Навальный", pattern, false)
+	if got != "Алексей Навальный" && got != "Навальный" {
+		t.Fatalf("unexpected politics choice: %q", got)
+	}
+	got = applyCapturingTemplate("{{capturing_choice}}", "Яшина", pattern, false)
+	if strings.TrimSpace(got) == "а" {
+		t.Fatalf("capturing_choice must not degrade to short suffix: %q", got)
+	}
+}
+
 func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
