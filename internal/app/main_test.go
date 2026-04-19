@@ -216,6 +216,53 @@ func TestBuildMediaAudioTitle(t *testing.T) {
 	}
 }
 
+func TestFilterPassThroughTriggers(t *testing.T) {
+	all := []Trigger{
+		{ID: 1, Title: "normal 1", PassThrough: false},
+		{ID: 2, Title: "pass 1", PassThrough: true},
+		{ID: 3, Title: "normal 2", PassThrough: false},
+		{ID: 4, Title: "pass 2", PassThrough: true},
+	}
+	got := filterPassThroughTriggers(all)
+	if len(got) != 2 {
+		t.Fatalf("unexpected len: got=%d want=2", len(got))
+	}
+	if got[0].ID != 2 || got[1].ID != 4 {
+		t.Fatalf("unexpected ids: got=%v", []int64{got[0].ID, got[1].ID})
+	}
+}
+
+func TestFilterNonPassThroughTriggers(t *testing.T) {
+	all := []Trigger{
+		{ID: 1, Title: "normal 1", PassThrough: false},
+		{ID: 2, Title: "pass 1", PassThrough: true},
+		{ID: 3, Title: "normal 2", PassThrough: false},
+	}
+	got := filterNonPassThroughTriggers(all)
+	if len(got) != 2 {
+		t.Fatalf("unexpected len: got=%d want=2", len(got))
+	}
+	if got[0].ID != 1 || got[1].ID != 3 {
+		t.Fatalf("unexpected ids: got=%v", []int64{got[0].ID, got[1].ID})
+	}
+}
+
+func TestFilterUnusedTriggersThenPassThrough(t *testing.T) {
+	all := []Trigger{
+		{ID: 1, PassThrough: false},
+		{ID: 2, PassThrough: true},
+		{ID: 3, PassThrough: true},
+	}
+	used := map[int64]struct{}{2: {}}
+	got := filterPassThroughTriggers(filterUnusedTriggers(all, used))
+	if len(got) != 1 {
+		t.Fatalf("unexpected len: got=%d want=1", len(got))
+	}
+	if got[0].ID != 3 {
+		t.Fatalf("unexpected id: got=%d want=3", got[0].ID)
+	}
+}
+
 func TestTriggerDisplayName(t *testing.T) {
 	tr := &Trigger{ID: 7, Title: "  Мой триггер  ", MatchText: "abc"}
 	if got := triggerDisplayName(tr); got != "Мой триггер" {

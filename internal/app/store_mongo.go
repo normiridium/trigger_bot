@@ -42,6 +42,7 @@ type mongoTriggerDoc struct {
 	Reply         bool   `bson:"send_as_reply"`
 	Preview       bool   `bson:"preview_first_link"`
 	DeleteSource  bool   `bson:"delete_source_message"`
+	PassThrough   bool   `bson:"pass_through"`
 	Chance        int    `bson:"chance"`
 	CreatedAt     int64  `bson:"created_at"`
 	UpdatedAt     int64  `bson:"updated_at"`
@@ -301,6 +302,7 @@ func triggerToDocMap(t Trigger) bson.M {
 		"send_as_reply":         t.Reply,
 		"preview_first_link":    t.Preview,
 		"delete_source_message": t.DeleteSource,
+		"pass_through":          t.PassThrough,
 		"chance":                sanitizeChance(t.Chance),
 		"created_at":            t.CreatedAt,
 		"updated_at":            t.UpdatedAt,
@@ -335,6 +337,7 @@ func docToTriggerFromRaw(raw bson.M) (Trigger, bool, error) {
 		Reply:         base.Reply,
 		Preview:       base.Preview,
 		DeleteSource:  base.DeleteSource,
+		PassThrough:   base.PassThrough,
 		Chance:        sanitizeChance(base.Chance),
 		CreatedAt:     base.CreatedAt,
 		UpdatedAt:     base.UpdatedAt,
@@ -461,6 +464,7 @@ func (m *mongoBackend) updateTrigger(t Trigger, now int64) error {
 		"send_as_reply":         t.Reply,
 		"preview_first_link":    t.Preview,
 		"delete_source_message": t.DeleteSource,
+		"pass_through":          t.PassThrough,
 		"chance":                sanitizeChance(t.Chance),
 		"updated_at":            now,
 		"regex_error":           t.RegexError,

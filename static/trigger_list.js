@@ -33,6 +33,8 @@ let settingsCache = {fields: [], values: {}};
 let emojiHelperTimer = null;
 let emojiHelperLastID = '';
 let emojiHelperSelectedID = '';
+let stickerHelperLastSet = '';
+let stickerHelperSelectedSet = '';
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -562,6 +564,23 @@ function extractCustomEmojiTagsFromText(text){
   return out;
 }
 
+function extractStickerSetTagsFromText(text){
+  const src = String(text || '');
+  const re = /([A-Za-z0-9_-]{16,}):([A-Za-z][A-Za-z0-9_]{2,})/g;
+  const out = [];
+  let m;
+  while((m = re.exec(src)) !== null){
+    const fileID = String(m[1] || '').trim();
+    const setName = String(m[2] || '').trim();
+    if(!fileID || !setName){ continue; }
+    const start = Number((m.index || 0) + fileID.length + 1);
+    const end = start + setName.length;
+    out.push({fileID, setName, start, end});
+    if(out.length >= 64){ break; }
+  }
+  return out;
+}
+
 function getResponseCursorOffset(){
   const editor = getEditorView();
   if(editor && editor.state && editor.state.selection && editor.state.selection.main){
@@ -602,6 +621,7 @@ function scheduleEmojiSetHelperRefresh(){
   emojiHelperTimer = setTimeout(() => {
     emojiHelperTimer = null;
     refreshEmojiSetHelper();
+    refreshStickerSetHelper();
   }, 180);
 }
 
@@ -671,6 +691,71 @@ function renderEmojiSetHelper(data){
   });
 }
 
+function hideStickerSetHelper(){
+  const box = document.getElementById('sticker_set_helper');
+  if(!box){ return; }
+  box.classList.add('d-none');
+  box.innerHTML = '';
+  stickerHelperLastSet = '';
+  stickerHelperSelectedSet = '';
+}
+
+function renderStickerSetHelperLoading(setName){
+  const box = document.getElementById('sticker_set_helper');
+  if(!box){ return; }
+  box.classList.remove('d-none');
+  box.innerHTML = `<div class="emoji-helper-title">Набор стикеров <code>${escapeHtml(setName)}</code>…</div>`;
+}
+
+function renderStickerSetHelperError(msg){
+  const box = document.getElementById('sticker_set_helper');
+  if(!box){ return; }
+  box.classList.remove('d-none');
+  box.innerHTML = `<div class="emoji-helper-title text-danger">${escapeHtml(msg || 'Не удалось загрузить набор стикеров')}</div>`;
+}
+
+function renderStickerSetHelper(data){
+  const box = document.getElementById('sticker_set_helper');
+  if(!box){ return; }
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if(items.length === 0){
+    hideStickerSetHelper();
+    return;
+  }
+  const setName = String(data?.set_name || '').trim();
+  const title = String(data?.title || setName || 'Набор стикеров');
+  const head = `<div class="emoji-helper-title">${escapeHtml(title)} — нажми, чтобы вставить код</div>`;
+  const chips = items.map((it) => {
+    const code = String(it?.code || '').trim();
+    const preview = String(it?.preview_url || '').trim();
+    const thumb = String(it?.thumb_url || '').trim();
+    if(!code){ return ''; }
+    const previewURL = preview ? withToken(preview) : '';
+    const thumbURL = thumb ? withToken(thumb) : previewURL;
+    const selectedClass = setName && setName === stickerHelperSelectedSet ? ' emoji-chip-selected' : '';
+    return `<button type="button" class="emoji-chip${selectedClass}" data-sticker-code="${escapeHtml(code)}" data-preview-url="${escapeHtml(previewURL)}" data-thumb-url="${escapeHtml(thumbURL)}" title="${escapeHtml(code)}"><img alt="sticker" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
+  }).join('');
+  box.classList.remove('d-none');
+  box.innerHTML = `${head}<div class="emoji-helper-grid">${chips}</div>`;
+  box.querySelectorAll('.emoji-chip[data-sticker-code]').forEach((btn) => {
+    const img = btn.querySelector('img');
+    const thumbURL = String(btn.getAttribute('data-thumb-url') || '').trim();
+    if(img){
+      img.addEventListener('error', () => {
+        if(thumbURL && img.src !== thumbURL){
+          img.src = thumbURL;
+        }
+      });
+    }
+    btn.addEventListener('click', () => {
+      const code = String(btn.getAttribute('data-sticker-code') || '').trim();
+      if(!code){ return; }
+      insertTextAtCursor(getResponseTextArea(), code);
+      scheduleEmojiSetHelperRefresh();
+    });
+  });
+}
+
 async function refreshEmojiSetHelper(){
   const text = getResponseValue();
   const tags = extractCustomEmojiTagsFromText(text);
@@ -699,6 +784,41 @@ async function refreshEmojiSetHelper(){
     renderEmojiSetHelper(data);
   } catch(err){
     renderEmojiSetHelperError(err && err.message ? err.message : String(err));
+  }
+}
+
+async function refreshStickerSetHelper(){
+  const text = getResponseValue();
+  const tags = extractStickerSetTagsFromText(text);
+  if(tags.length === 0){
+    hideStickerSetHelper();
+    return;
+  }
+  const pick = tags.find((t) => {
+    const pos = getResponseCursorOffset();
+    return pos >= Number(t.start || 0) && pos <= Number(t.end || 0);
+  }) || tags[0];
+  const setName = String(pick?.setName || '').trim();
+  if(!setName){
+    hideStickerSetHelper();
+    return;
+  }
+  if(setName === stickerHelperLastSet){
+    return;
+  }
+  stickerHelperSelectedSet = setName;
+  stickerHelperLastSet = setName;
+  renderStickerSetHelperLoading(setName);
+  try{
+    const r = await fetch(withToken('/trigger_bot/sticker_set?set_name=' + encodeURIComponent(setName)));
+    if(!r.ok){
+      const txt = await r.text();
+      throw new Error(txt || ('HTTP ' + r.status));
+    }
+    const data = await r.json();
+    renderStickerSetHelper(data);
+  } catch(err){
+    renderStickerSetHelperError(err && err.message ? err.message : String(err));
   }
 }
 
@@ -1136,7 +1256,7 @@ async function submitTriggerForm(event){
   const prevResponseText = getResponseValue();
   syncResponseToTextarea();
   syncSwitch('f_enabled');
-  syncSwitch('f_case_sensitive');
+  syncSwitch('f_pass_through');
   syncSwitch('f_reply');
   syncSwitch('f_preview');
   syncSwitch('f_delete_source');
@@ -1165,7 +1285,7 @@ async function submitTriggerForm(event){
       action_type: String(document.getElementById('f_action_type')?.value || 'send'),
       chance: Number(document.getElementById('f_chance')?.value || 100),
       enabled: document.getElementById('f_enabled')?.value === '1',
-      case_sensitive: document.getElementById('f_case_sensitive')?.value === '1',
+      pass_through: document.getElementById('f_pass_through')?.value === '1',
       reply: document.getElementById('f_reply')?.value === '1',
       preview: document.getElementById('f_preview')?.value === '1',
       delete_source: document.getElementById('f_delete_source')?.value === '1',
@@ -1372,8 +1492,6 @@ function applyMatchTypeUI(){
   const inp = document.getElementById('f_match_text');
   const area = document.getElementById('f_match_text_area');
   const toggle = document.querySelector('.match-text-toggle');
-  const cs = document.getElementById('f_case_sensitive_switch');
-  const csHidden = document.getElementById('f_case_sensitive');
   if(!mt || !lbl || !inp){ return; }
   if(mt.value === 'idle'){
     lbl.textContent = 'Время простоя (мин)';
@@ -1383,8 +1501,6 @@ function applyMatchTypeUI(){
     inp.placeholder = 'например, 120';
     if(area){ area.classList.add('d-none'); }
     if(toggle){ toggle.disabled = true; }
-    if(cs){ cs.disabled = true; cs.checked = false; }
-    if(csHidden){ csHidden.value = '0'; }
     inp.disabled = false;
   } else if(mt.value === 'new_member'){
     lbl.textContent = 'Текст триггера';
@@ -1394,8 +1510,6 @@ function applyMatchTypeUI(){
     inp.placeholder = 'не используется';
     if(area){ area.classList.add('d-none'); }
     if(toggle){ toggle.disabled = true; }
-    if(cs){ cs.disabled = true; cs.checked = false; }
-    if(csHidden){ csHidden.value = '0'; }
     inp.disabled = true;
   } else {
     lbl.textContent = 'Текст триггера';
@@ -1404,7 +1518,6 @@ function applyMatchTypeUI(){
     inp.removeAttribute('step');
     inp.placeholder = 'Текст триггера';
     if(toggle){ toggle.disabled = false; }
-    if(cs){ cs.disabled = false; }
     inp.disabled = false;
   }
 }
@@ -1584,7 +1697,7 @@ function fillForm(t){
   setMatchTextValue(pick(t,'match_text','MatchText',''));
   setSel('f_action_type', pick(t,'action_type','ActionType','send'));
   setBool('f_enabled', !!pick(t,'enabled','Enabled',true));
-  setBool('f_case_sensitive', !!pick(t,'case_sensitive','CaseSensitive',false));
+  setBool('f_pass_through', !!pick(t,'pass_through','PassThrough',false));
   setBool('f_reply', !!pick(t,'reply','Reply',true));
   setBool('f_preview', !!pick(t,'preview','Preview',false));
   setBool('f_delete_source', !!pick(t,'delete_source','DeleteSource',false));
@@ -1600,7 +1713,7 @@ async function openNew(){
     admin_mode: 'anybody',
     match_text: '',
     match_type: 'full',
-    case_sensitive: false,
+    pass_through: false,
     action_type: 'send',
     response_text: '',
     reply: true,
