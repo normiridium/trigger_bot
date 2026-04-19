@@ -120,6 +120,40 @@ type moderationRequest struct {
 	Reason      string
 }
 
+func genderedModerationVerb(tag, male, female, unknown string) string {
+	return resolveGenderVariant(tag, genderVariants{
+		Male:    male,
+		Female:  female,
+		Neuter:  unknown,
+		Plural:  unknown,
+		Unknown: unknown,
+	})
+}
+
+func moderationActionVerb(action, senderTag string) string {
+	switch strings.TrimSpace(action) {
+	case "ban":
+		return genderedModerationVerb(senderTag, "забанил", "забанила", "забанил(а)")
+	case "unban":
+		return genderedModerationVerb(senderTag, "разбанил", "разбанила", "разбанил(а)")
+	case "mute":
+		return genderedModerationVerb(senderTag, "замьютил", "замьютила", "замьютил(а)")
+	case "unmute":
+		return genderedModerationVerb(senderTag, "размьютил", "размьютила", "размьютил(а)")
+	case "kick":
+		return genderedModerationVerb(senderTag, "кикнул", "кикнула", "кикнул(а)")
+	default:
+		return genderedModerationVerb(senderTag, "изменил", "изменила", "изменил(а)")
+	}
+}
+
+func moderationReadonlyStateVerb(turnOn bool, senderTag string) string {
+	if turnOn {
+		return genderedModerationVerb(senderTag, "включил режим только чтения", "включила режим только чтения", "включил(а) режим только чтения")
+	}
+	return genderedModerationVerb(senderTag, "выключил режим только чтения", "выключила режим только чтения", "выключил(а) режим только чтения")
+}
+
 func newChatRecentStore(maxPer int, maxAge time.Duration) *chatRecentStore {
 	if maxPer <= 0 {
 		maxPer = 8
@@ -1148,12 +1182,9 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		})
 	}
 
-	actionVerb := map[string]string{
-		"ban":    "забанил(а)",
-		"unban":  "разбанил(а)",
-		"mute":   "замьютил(а)",
-		"unmute": "размьютил(а)",
-		"kick":   "кикнул(а)",
+	senderTag := ""
+	if ctx.Bot != nil && msg.Chat != nil && msg.From != nil {
+		senderTag = getChatMemberTagRaw(ctx.Bot.Token, msg.Chat.ID, msg.From.ID)
 	}
 
 	if req.Action == "reload_admins" {
@@ -1191,10 +1222,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		if !req.Silent {
 			modLabel := ctx.UserIndex.Display(msg.Chat.ID, msg.From.ID)
 			modLink := htmlUserLink(modLabel, msg.From.ID)
-			state := "включил(а) режим только чтения"
-			if !turnOn {
-				state = "выключил(а) режим только чтения"
-			}
+			state := moderationReadonlyStateVerb(turnOn, senderTag)
 			var b strings.Builder
 			b.WriteString(modLink)
 			b.WriteByte(' ')
@@ -1313,10 +1341,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 	}
 	modLabel := ctx.UserIndex.Display(msg.Chat.ID, msg.From.ID)
 	modLink := htmlUserLink(modLabel, msg.From.ID)
-	verb := actionVerb[req.Action]
-	if verb == "" {
-		verb = "изменил(а)"
-	}
+	verb := moderationActionVerb(req.Action, senderTag)
 	targetLinks := make([]string, 0, len(targets))
 	for i, uid := range targets {
 		lbl := ctx.UserIndex.Display(msg.Chat.ID, uid)
