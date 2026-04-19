@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -176,6 +179,134 @@ func (s emojiProxyService) FetchFile(ctx context.Context, fileID string) ([]byte
 		ctype = "application/octet-stream"
 	}
 	return body, ctype, nil
+}
+
+func (s emojiProxyService) FetchPreviewImage(ctx context.Context, fileID string) ([]byte, string, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, "", errors.New("file id is empty")
+	}
+	fileURL, err := s.ResolveFileURL(ctx, fileID)
+	if err != nil {
+		return nil, "", err
+	}
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(fileURL)))
+	switch ext {
+	case ".webp", ".png", ".jpg", ".jpeg", ".gif":
+		return s.FetchFile(ctx, fileID)
+	case ".webm", ".mp4", ".mov":
+		return s.convertVideoURLToAnimatedWEBP(ctx, fileURL)
+	case ".tgs":
+		return s.convertTGSToWEBP(ctx, fileID)
+	default:
+		return s.FetchFile(ctx, fileID)
+	}
+}
+
+func (s emojiProxyService) convertVideoURLToAnimatedWEBP(ctx context.Context, fileURL string) ([]byte, string, error) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, "", errors.New("ffmpeg not found for animated preview conversion")
+	}
+	tctx := ctx
+	if tctx == nil {
+		tctx = context.Background()
+	}
+	if _, hasDeadline := tctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		tctx, cancel = context.WithTimeout(tctx, 12*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(tctx,
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", fileURL,
+		"-an",
+		"-t", "1.8",
+		"-vf", "fps=12,scale=96:-1:flags=lanczos:force_original_aspect_ratio=decrease",
+		"-loop", "0",
+		"-quality", "70",
+		"-compression_level", "6",
+		"-preset", "picture",
+		"-f", "webp",
+		"pipe:1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, "", fmt.Errorf("ffmpeg preview conversion failed: %v", err)
+	}
+	if len(out) == 0 {
+		return nil, "", errors.New("ffmpeg preview conversion returned empty output")
+	}
+	return out, "image/webp", nil
+}
+
+func (s emojiProxyService) convertTGSToWEBP(ctx context.Context, fileID string) ([]byte, string, error) {
+	tool, _ := findFirstTool("lottie_to_webp", "lottie_to_webp.sh")
+	if strings.TrimSpace(tool) == "" {
+		return nil, "", errors.New("missing lottie_to_webp tool")
+	}
+	raw, _, err := s.FetchFile(ctx, fileID)
+	if err != nil {
+		return nil, "", err
+	}
+	inFile, err := os.CreateTemp("", "emoji-*.tgs")
+	if err != nil {
+		return nil, "", err
+	}
+	inPath := inFile.Name()
+	_ = inFile.Close()
+	defer os.Remove(inPath)
+	if err := os.WriteFile(inPath, raw, 0o600); err != nil {
+		return nil, "", err
+	}
+
+	outFile, err := os.CreateTemp("", "emoji-*.webp")
+	if err != nil {
+		return nil, "", err
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer os.Remove(outPath)
+
+	tctx := ctx
+	if tctx == nil {
+		tctx = context.Background()
+	}
+	if _, hasDeadline := tctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		tctx, cancel = context.WithTimeout(tctx, 12*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(tctx, tool,
+		"--width", "96",
+		"--height", "96",
+		"--fps", "12",
+		"--quality", "70",
+		"--output", outPath,
+		inPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, "", fmt.Errorf("tgs->webp via %s failed: %v: %s", tool, err, strings.TrimSpace(string(out)))
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("tgs converter returned empty output")
+	}
+	return data, "image/webp", nil
+}
+
+func findFirstTool(names ...string) (string, error) {
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil && strings.TrimSpace(p) != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("missing tool: %s", strings.Join(names, " or "))
 }
 
 func (s emojiProxyService) call(ctx context.Context, method string, payload map[string]any, out any) error {

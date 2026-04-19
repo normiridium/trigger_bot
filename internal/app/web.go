@@ -83,6 +83,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
 	mux.HandleFunc("/trigger_bot/emoji_set", w.withAuth(w.emojiSetJSON))
 	mux.HandleFunc("/trigger_bot/emoji_proxy/file", w.withAuth(w.emojiFileProxy))
+	mux.HandleFunc("/trigger_bot/emoji_proxy/preview", w.withAuth(w.emojiPreviewProxy))
 	mux.HandleFunc("/trigger_bot/templates", w.withAuth(w.templatesJSON))
 	mux.HandleFunc("/trigger_bot/template_get", w.withAuth(w.templateGetJSON))
 	mux.HandleFunc("/trigger_bot/template_save", w.withAuth(w.templateSavePost))
@@ -227,11 +228,16 @@ func (w *WebAdmin) emojiSetJSON(rw http.ResponseWriter, r *http.Request) {
 	for _, it := range set.Items {
 		previewURL := ""
 		thumbURL := ""
+		if strings.TrimSpace(it.FileID) != "" {
+			previewURL = "/trigger_bot/emoji_proxy/preview?file_id=" + url.QueryEscape(strings.TrimSpace(it.FileID))
+		}
 		if strings.TrimSpace(it.ThumbFileID) != "" {
 			thumbURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(it.ThumbFileID))
-			previewURL = thumbURL
-		} else if strings.TrimSpace(it.FileID) != "" {
+		}
+		if previewURL == "" && strings.TrimSpace(it.FileID) != "" {
 			previewURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(it.FileID))
+		}
+		if thumbURL == "" {
 			thumbURL = previewURL
 		}
 		outItems = append(outItems, item{
@@ -274,6 +280,30 @@ func (w *WebAdmin) emojiFileProxy(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctype = detectContentTypeOrDefault(body, ctype, "application/octet-stream")
+	rw.Header().Set("Content-Type", ctype)
+	rw.Header().Set("Cache-Control", "public, max-age=3600")
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write(body)
+}
+
+func (w *WebAdmin) emojiPreviewProxy(rw http.ResponseWriter, r *http.Request) {
+	fileID := strings.TrimSpace(r.URL.Query().Get("file_id"))
+	if fileID == "" {
+		http.Error(rw, "file_id required", http.StatusBadRequest)
+		return
+	}
+	if !w.emojiProxy.Enabled() {
+		http.Error(rw, "TELEGRAM_BOT_TOKEN is not configured", http.StatusFailedDependency)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	body, ctype, err := w.emojiProxy.FetchPreviewImage(ctx, fileID)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadGateway)
+		return
+	}
+	ctype = detectContentTypeOrDefault(body, ctype, "image/webp")
 	rw.Header().Set("Content-Type", ctype)
 	rw.Header().Set("Cache-Control", "public, max-age=3600")
 	rw.WriteHeader(http.StatusOK)
