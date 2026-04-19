@@ -1,5 +1,7 @@
 # Trigger Admin Bot (Go)
 
+Подробная документация (Wiki): https://github.com/normiridium/trigger_bot/wiki
+
 Telegram-бот с web-админкой триггеров, Spotify-аудио и скачиванием медиа по ссылкам (`YouTube`, `Instagram`, `SoundCloud`, `TikTok`, `X`) через `yt-dlp`.
 
 ## Что умеет
