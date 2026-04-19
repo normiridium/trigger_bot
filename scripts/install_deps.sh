@@ -12,7 +12,7 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 sudo apt-get update
-sudo apt-get install -y ffmpeg aria2 curl gnupg
+sudo apt-get install -y ffmpeg webp aria2 curl gnupg
 
 # MongoDB is optional; install only if MONGO_URI is set to a mongodb:// or if explicitly requested.
 if [[ "${INSTALL_MONGODB:-}" == "1" ]]; then
@@ -36,3 +36,11 @@ if [[ "${INSTALL_MONGODB:-}" == "1" ]]; then
 fi
 
 echo "OK: deps installed."
+if ! command -v lottie_to_webp >/dev/null 2>&1 && ! command -v lottie_to_webp.sh >/dev/null 2>&1; then
+  cat <<'EOF'
+NOTE: animated custom-emoji preview for .tgs requires lottie_to_webp.
+Install converter tools from:
+  https://github.com/ed-asriyan/lottie-converter/releases
+Make sure lottie_to_webp (or lottie_to_webp.sh) is available in PATH.
+EOF
+fi

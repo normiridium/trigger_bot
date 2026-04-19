@@ -33,7 +33,6 @@ let settingsCache = {fields: [], values: {}};
 let emojiHelperTimer = null;
 let emojiHelperLastID = '';
 let emojiHelperSelectedID = '';
-let emojiHelperCacheSeed = Date.now();
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
@@ -638,13 +637,24 @@ function renderEmojiSetHelper(data){
     if(!id){ return ''; }
     const emoji = String(it?.emoji || '🙂');
     const preview = String(it?.preview_url || '').trim();
-    const previewURL = preview ? withTokenNoCache(preview) : '';
+    const thumb = String(it?.thumb_url || '').trim();
+    const previewURL = preview ? withToken(preview) : '';
+    const thumbURL = thumb ? withToken(thumb) : previewURL;
     const selectedClass = id === emojiHelperSelectedID ? ' emoji-chip-selected' : '';
-    return `<button type="button" class="emoji-chip${selectedClass}" data-emoji-id="${escapeHtml(id)}" data-emoji-fallback="${escapeHtml(emoji)}" data-preview-url="${escapeHtml(previewURL)}" title="${escapeHtml(id)}"><img alt="${escapeHtml(emoji)}" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
+    return `<button type="button" class="emoji-chip${selectedClass}" data-emoji-id="${escapeHtml(id)}" data-emoji-fallback="${escapeHtml(emoji)}" data-preview-url="${escapeHtml(previewURL)}" data-thumb-url="${escapeHtml(thumbURL)}" title="${escapeHtml(id)}"><img alt="${escapeHtml(emoji)}" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
   }).join('');
   box.classList.remove('d-none');
   box.innerHTML = `${head}<div class="emoji-helper-grid">${chips}</div>`;
   box.querySelectorAll('.emoji-chip[data-emoji-id]').forEach((btn) => {
+    const img = btn.querySelector('img');
+    const thumbURL = String(btn.getAttribute('data-thumb-url') || '').trim();
+    if(img){
+      img.addEventListener('error', () => {
+        if(thumbURL && img.src !== thumbURL){
+          img.src = thumbURL;
+        }
+      });
+    }
     btn.addEventListener('click', () => {
       const id = String(btn.getAttribute('data-emoji-id') || '').trim();
       const fallback = String(btn.getAttribute('data-emoji-fallback') || '🙂').trim() || '🙂';
@@ -674,7 +684,7 @@ async function refreshEmojiSetHelper(){
   emojiHelperLastID = selectedID;
   renderEmojiSetHelperLoading(selectedID);
   try{
-    const r = await fetch(withTokenNoCache('/trigger_bot/emoji_set?emoji_id=' + encodeURIComponent(selectedID)));
+    const r = await fetch(withToken('/trigger_bot/emoji_set?emoji_id=' + encodeURIComponent(selectedID)));
     if(!r.ok){
       const txt = await r.text();
       throw new Error(txt || ('HTTP ' + r.status));
@@ -1481,13 +1491,6 @@ function withToken(path){
   if(!token){ return path; }
   const u = new URL(path, window.location.origin);
   u.searchParams.set('token', token);
-  return u.pathname + u.search;
-}
-
-function withTokenNoCache(path){
-  const p = withToken(path);
-  const u = new URL(p, window.location.origin);
-  u.searchParams.set('_ts', String(emojiHelperCacheSeed));
   return u.pathname + u.search;
 }
 
