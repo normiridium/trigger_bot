@@ -37,6 +37,12 @@ type chatAllowList struct {
 	ids     map[int64]struct{}
 }
 
+type disallowedChatNotifier struct {
+	mu   sync.Mutex
+	last map[int64]time.Time
+	ttl  time.Duration
+}
+
 func parseAllowedChatIDs(raw string) (chatAllowList, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -69,6 +75,95 @@ func (a chatAllowList) Allows(chatID int64) bool {
 	}
 	_, ok := a.ids[chatID]
 	return ok
+}
+
+func newDisallowedChatNotifier(ttl time.Duration) *disallowedChatNotifier {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return &disallowedChatNotifier{
+		last: make(map[int64]time.Time),
+		ttl:  ttl,
+	}
+}
+
+func (n *disallowedChatNotifier) shouldNotify(chatID int64, now time.Time) bool {
+	if n == nil || chatID == 0 {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if prev, ok := n.last[chatID]; ok && now.Sub(prev) < n.ttl {
+		return false
+	}
+	return true
+}
+
+func (n *disallowedChatNotifier) markNotified(chatID int64, now time.Time) {
+	if n == nil || chatID == 0 {
+		return
+	}
+	n.mu.Lock()
+	n.last[chatID] = now
+	n.mu.Unlock()
+}
+
+func notifyDisallowedChat(bot *tgbotapi.BotAPI, chatID int64) error {
+	if bot == nil || chatID == 0 {
+		return errors.New("invalid notifyDisallowedChat args")
+	}
+	text := fmt.Sprintf(
+		"⚠️ Этот чат не входит в список разрешённых.\nchat_id: <code>%d</code>\nДобавьте его в админке в поле «Разрешённые чаты (ALLOWED_CHAT_IDS)».",
+		chatID,
+	)
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = "HTML"
+	m.DisableWebPagePreview = true
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("send disallowed-chat notice failed chat=%d err=%v", chatID, err)
+		return err
+	}
+	log.Printf("disallowed-chat notice sent chat=%d", chatID)
+	return nil
+}
+
+func isActiveChatMemberStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "member", "administrator", "creator":
+		return true
+	default:
+		return false
+	}
+}
+
+func handleDisallowedMyChatMemberNotice(bot *tgbotapi.BotAPI, allowed chatAllowList, notifier *disallowedChatNotifier, upd *rawChatMemberUpdated) {
+	if bot == nil || upd == nil || upd.Chat == nil || upd.NewChatMember == nil || upd.NewChatMember.User == nil {
+		return
+	}
+	// Only for updates about this bot account.
+	if !upd.NewChatMember.User.IsBot {
+		return
+	}
+	newStatus := strings.TrimSpace(upd.NewChatMember.Status)
+	oldStatus := ""
+	if upd.OldChatMember != nil {
+		oldStatus = strings.TrimSpace(upd.OldChatMember.Status)
+	}
+	// Notify only when bot becomes active in chat (added/unbanned), not on every status change.
+	if !isActiveChatMemberStatus(newStatus) || isActiveChatMemberStatus(oldStatus) {
+		return
+	}
+	chatID := upd.Chat.ID
+	if chatID == 0 || allowed.Allows(chatID) {
+		return
+	}
+	now := time.Now()
+	if !notifier.shouldNotify(chatID, now) {
+		return
+	}
+	if err := notifyDisallowedChat(bot, chatID); err == nil {
+		notifier.markNotified(chatID, now)
+	}
 }
 
 type adminCacheEntry struct {
@@ -1483,6 +1578,7 @@ func Run() {
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
 	readonly := newReadonlyManager()
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	disallowedNotifier := newDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
 	idleTracker := trigger.NewIdleTracker()
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
 	gptDebouncer := gpt.NewDebouncer(time.Duration(gptDebounceSec)*time.Second, executeGPTPromptTask)
@@ -1504,7 +1600,7 @@ func Run() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "callback_query", "chat_member"}
+	u.AllowedUpdates = []string{"message", "callback_query", "chat_member", "my_chat_member"}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)
@@ -1535,6 +1631,7 @@ func Run() {
 			handleNewMemberUpdate(handlerDeps, update.RawChatMember)
 		}
 		if update.RawMyChatMember != nil {
+			handleDisallowedMyChatMemberNotice(bot, allowedChats, disallowedNotifier, update.RawMyChatMember)
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
@@ -1632,6 +1729,12 @@ func Run() {
 		}
 		isPrivateChat := msg.Chat.IsPrivate()
 		if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
+			now := time.Now()
+			if disallowedNotifier.shouldNotify(msg.Chat.ID, now) {
+				if err := notifyDisallowedChat(bot, msg.Chat.ID); err == nil {
+					disallowedNotifier.markNotified(msg.Chat.ID, now)
+				}
+			}
 			if debugTriggerLogEnabled {
 				log.Printf("skip message from disallowed chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
 			}
