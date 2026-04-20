@@ -607,8 +607,6 @@ func settingsSchema() []settingField {
 		{Key: "GPT_PROMPT_DEBOUNCE_SEC", Label: "Debounce GPT (сек)", Type: "int", Description: "10"},
 		{Key: "SERPAPI_ENGINE", Label: "SerpAPI engine", Type: "string", Description: "google_images"},
 		{Key: "OPENAI_MODEL", Label: "OpenAI model (chat)", Type: "string", Description: "gpt-4.1-mini"},
-		{Key: "OPENAI_IMAGE_MODEL", Label: "OpenAI model (image)", Type: "string", Description: "gpt-image-1"},
-		{Key: "OPENAI_IMAGE_SIZE", Label: "OpenAI image size", Type: "string", Description: "1024x1024"},
 		{Key: "SPOTIFY_AUDIO_INTERACTIVE", Label: "Spotify: интерактивный выбор", Type: "bool", Description: "true"},
 		{Key: "SPOTIFY_AUDIO_WORKERS", Label: "Spotify: воркеры скачивания", Type: "int", Description: "1"},
 		{Key: "SPOTIFY_AUDIO_QUEUE", Label: "Spotify: размер очереди", Type: "int", Description: "8"},

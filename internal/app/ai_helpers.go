@@ -237,16 +237,14 @@ func generateChatGPTImage(ctx templateContext, promptTemplate string) (generated
 	if apiKey == "" {
 		return generatedImage{}, errors.New("OPENAI_API_KEY is empty")
 	}
-	model := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_MODEL"))
-	if model == "" {
-		model = "gpt-image-1"
-	}
-	size := strings.TrimSpace(os.Getenv("OPENAI_IMAGE_SIZE"))
-	if size == "" {
+	model := "gpt-image-1"
+	prompt := buildPromptFromMessage(ctx, promptTemplate)
+	size, err := chooseImageSizeWithChatGPT(apiKey, prompt)
+	if err != nil {
 		size = "1024x1024"
+		log.Printf("gpt image orientation pick failed, fallback size=%s err=%v", size, err)
 	}
 
-	prompt := buildPromptFromMessage(ctx, promptTemplate)
 	if debugGPTLogEnabled {
 		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, clipText(prompt, 1400))
 	}
@@ -310,6 +308,87 @@ func generateChatGPTImage(ctx templateContext, promptTemplate string) (generated
 	}
 
 	return generatedImage{}, errors.New("image payload has neither url nor b64_json")
+}
+
+func chooseImageSizeWithChatGPT(apiKey, prompt string) (string, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return "", errors.New("OPENAI_API_KEY is empty")
+	}
+	model := strings.TrimSpace(os.Getenv("OPENAI_ORIENTATION_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	}
+	if model == "" {
+		model = "gpt-4.1-mini"
+	}
+	systemPrompt := "Ты классификатор ориентации для генерации изображения. " +
+		"Верни только одно слово: portrait, landscape или square. " +
+		"portrait — если в фокусе человек/персонаж/лицо; landscape — если сцена/город/пейзаж/панорама; square — иначе."
+	userPrompt := "Запрос пользователя:\n" + strings.TrimSpace(prompt)
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"temperature": 0,
+		"max_tokens":  8,
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("orientation pick status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+	}
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", errors.New("empty orientation choices")
+	}
+	orientation := parseOrientationChoice(result.Choices[0].Message.Content)
+	switch orientation {
+	case "portrait":
+		return "1024x1536", nil
+	case "landscape":
+		return "1536x1024", nil
+	default:
+		return "1024x1024", nil
+	}
+}
+
+func parseOrientationChoice(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case strings.Contains(v, "portrait"), strings.Contains(v, "портрет"):
+		return "portrait"
+	case strings.Contains(v, "landscape"), strings.Contains(v, "land"), strings.Contains(v, "пейзаж"), strings.Contains(v, "панорам"):
+		return "landscape"
+	default:
+		return "square"
+	}
 }
 
 func getChatMemberTagRaw(token string, chatID, userID int64) string {
