@@ -23,6 +23,7 @@ type mongoBackend struct {
 	templates *mongo.Collection
 	admins    *mongo.Collection
 	adminSync *mongo.Collection
+	profiles  *mongo.Collection
 	counters  *mongo.Collection
 }
 
@@ -74,6 +75,15 @@ type mongoTemplateDoc struct {
 	Text      string `bson:"text"`
 	CreatedAt int64  `bson:"created_at"`
 	UpdatedAt int64  `bson:"updated_at"`
+}
+
+type mongoParticipantProfileDoc struct {
+	ChatID          int64    `bson:"chat_id"`
+	UserID          int64    `bson:"user_id"`
+	PortraitText    string   `bson:"portrait_text"`
+	PendingMessages []string `bson:"pending_messages"`
+	CreatedAt       int64    `bson:"created_at"`
+	UpdatedAt       int64    `bson:"updated_at"`
 }
 
 func responseItemsFromRaw(v interface{}) ([]ResponseTextItem, bool) {
@@ -208,6 +218,7 @@ func openMongoStore(uri string) (*Store, error) {
 		templates: db.Collection("response_templates"),
 		admins:    db.Collection("chat_admin_cache"),
 		adminSync: db.Collection("chat_admin_sync"),
+		profiles:  db.Collection("participant_profiles"),
 		counters:  db.Collection("counters"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
@@ -279,6 +290,18 @@ func (m *mongoBackend) ensureIndexes() error {
 		{
 			Keys:    bson.D{{Key: "chat_id", Value: 1}},
 			Options: options.Index().SetUnique(true),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = m.profiles.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "chat_id", Value: 1}, {Key: "user_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "updated_at", Value: 1}},
 		},
 	})
 	return err
@@ -732,6 +755,174 @@ func (m *mongoBackend) upsertChatAdminSync(chatID int64, updatedAt int64, adminC
 		ctx,
 		bson.M{"chat_id": chatID},
 		bson.M{"$set": bson.M{"chat_id": chatID, "updated_at": updatedAt, "admin_count": adminCount}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func sanitizePendingMessages(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		val := strings.TrimSpace(item)
+		if val == "" {
+			continue
+		}
+		out = append(out, clipText(val, 900))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	if len(out) > 200 {
+		out = out[len(out)-200:]
+	}
+	return out
+}
+
+func (m *mongoBackend) getParticipantPortrait(chatID, userID int64) (string, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoParticipantProfileDoc
+	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(d.PortraitText), nil
+}
+
+func (m *mongoBackend) appendParticipantMessage(chatID, userID int64, message string, batchSize int, now int64) (bool, []string, string, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false, nil, "", nil
+	}
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+
+	var d mongoParticipantProfileDoc
+	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, nil, "", err
+	}
+	oldPortrait := strings.TrimSpace(d.PortraitText)
+	pending := sanitizePendingMessages(append(d.PendingMessages, message))
+	ready := len(pending) >= batchSize
+	if ready {
+		batch := append([]string(nil), pending[:batchSize]...)
+		remaining := sanitizePendingMessages(pending[batchSize:])
+		_, err := m.profiles.UpdateOne(
+			ctx,
+			bson.M{"chat_id": chatID, "user_id": userID},
+			bson.M{
+				"$set": bson.M{
+					"chat_id":          chatID,
+					"user_id":          userID,
+					"pending_messages": remaining,
+					"updated_at":       now,
+				},
+				"$setOnInsert": bson.M{
+					"created_at":    now,
+					"portrait_text": "",
+				},
+			},
+			options.Update().SetUpsert(true),
+		)
+		if err != nil {
+			return false, nil, "", err
+		}
+		return true, batch, oldPortrait, nil
+	}
+	_, err = m.profiles.UpdateOne(
+		ctx,
+		bson.M{"chat_id": chatID, "user_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"chat_id":          chatID,
+				"user_id":          userID,
+				"pending_messages": pending,
+				"updated_at":       now,
+			},
+			"$setOnInsert": bson.M{
+				"created_at":    now,
+				"portrait_text": "",
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return false, nil, "", err
+	}
+	return false, nil, oldPortrait, nil
+}
+
+func (m *mongoBackend) saveParticipantPortrait(chatID, userID int64, portrait string, now int64) error {
+	portrait = strings.TrimSpace(portrait)
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.profiles.UpdateOne(
+		ctx,
+		bson.M{"chat_id": chatID, "user_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"chat_id":       chatID,
+				"user_id":       userID,
+				"portrait_text": portrait,
+				"updated_at":    now,
+			},
+			"$setOnInsert": bson.M{
+				"created_at": now,
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (m *mongoBackend) prependParticipantMessages(chatID, userID int64, messages []string, now int64) error {
+	messages = sanitizePendingMessages(messages)
+	if len(messages) == 0 {
+		return nil
+	}
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+
+	var d mongoParticipantProfileDoc
+	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+		return err
+	}
+	pending := sanitizePendingMessages(append(messages, d.PendingMessages...))
+	_, err = m.profiles.UpdateOne(
+		ctx,
+		bson.M{"chat_id": chatID, "user_id": userID},
+		bson.M{
+			"$set": bson.M{
+				"chat_id":          chatID,
+				"user_id":          userID,
+				"pending_messages": pending,
+				"updated_at":       now,
+			},
+			"$setOnInsert": bson.M{
+				"created_at":    now,
+				"portrait_text": strings.TrimSpace(d.PortraitText),
+			},
+		},
 		options.Update().SetUpsert(true),
 	)
 	return err
