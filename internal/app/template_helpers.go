@@ -275,18 +275,19 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 		}
 		return tm.Format(layout)
 	},
-	"split": func(sep, in string) []string {
+	"split": func(sep string, in interface{}) []string {
+		src := toTemplateString(in)
 		if sep == "" {
-			return []string{strings.TrimSpace(in)}
+			return []string{strings.TrimSpace(src)}
 		}
-		parts := strings.Split(in, sep)
+		parts := strings.Split(src, sep)
 		for i := range parts {
 			parts[i] = strings.TrimSpace(parts[i])
 		}
 		return parts
 	},
-	"contains": func(needle, in string) bool {
-		return strings.Contains(in, needle)
+	"contains": func(needle string, in interface{}) bool {
+		return strings.Contains(toTemplateString(in), needle)
 	},
 	"pick": func(idx int, items []string) string {
 		if idx < 0 || idx >= len(items) {
@@ -375,7 +376,7 @@ func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) st
 	}
 	cleanCapture := strings.TrimSpace(capture)
 	choice := deriveCapturingChoice(matchText, cleanCapture, caseSensitive)
-	vars := map[string]string{
+	vars := map[string]interface{}{
 		"capturing_text":   cleanCapture,
 		"capturing_choice": choice,
 		"capturing_option": choice,
@@ -596,8 +597,8 @@ func isOlenyamTrigger(tr *Trigger) bool {
 	return strings.Contains(title, "оле-ням") || strings.Contains(title, "оленям") || strings.Contains(title, "оле ням")
 }
 
-func buildTemplateVars(ctx templateContext) map[string]string {
-	vars := make(map[string]string, 24)
+func buildTemplateVars(ctx templateContext) map[string]interface{} {
+	vars := make(map[string]interface{}, 24)
 	if ctx.Msg != nil {
 		replacements := buildMessageTemplateReplacements(ctx.Bot, ctx.Msg)
 		for tag, value := range replacements {
@@ -605,6 +606,13 @@ func buildTemplateVars(ctx templateContext) map[string]string {
 			name = strings.TrimSuffix(name, "}}")
 			if name != "" {
 				vars[name] = value
+			}
+		}
+		// In this bot all placeholders are considered trusted and intended for Telegram HTML output.
+		// Keep html/template for structure/funcs, but mark values as safe to avoid escaping.
+		for k, v := range vars {
+			if s, ok := v.(string); ok {
+				vars[k] = htmltmpl.HTML(strings.TrimSpace(s))
 			}
 		}
 	}
@@ -616,7 +624,7 @@ func buildTemplateVars(ctx templateContext) map[string]string {
 	return vars
 }
 
-func renderResponseTemplate(input string, vars map[string]string, lookup func(string) string) (string, error) {
+func renderResponseTemplate(input string, vars map[string]interface{}, lookup func(string) string) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return input, nil
 	}
@@ -633,7 +641,7 @@ func renderResponseTemplate(input string, vars map[string]string, lookup func(st
 	return strings.TrimSpace(buf.String()), nil
 }
 
-func normalizeLegacyTemplateSyntax(input string, vars map[string]string) string {
+func normalizeLegacyTemplateSyntax(input string, vars map[string]interface{}) string {
 	if strings.TrimSpace(input) == "" {
 		return input
 	}
@@ -725,10 +733,10 @@ func cachedResponseTemplate(src string) (*htmltmpl.Template, error) {
 	return t, nil
 }
 
-func applySimpleTemplateVars(input string, vars map[string]string) string {
+func applySimpleTemplateVars(input string, vars map[string]interface{}) string {
 	out := input
 	for key, val := range vars {
-		out = strings.ReplaceAll(out, "{{"+key+"}}", val)
+		out = strings.ReplaceAll(out, "{{"+key+"}}", toTemplateString(val))
 	}
 	return strings.TrimSpace(out)
 }
