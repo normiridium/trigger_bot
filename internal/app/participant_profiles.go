@@ -31,6 +31,9 @@ type participantPortraitManager struct {
 	cacheMu sync.RWMutex
 	cache   map[string]string
 
+	bufferMu sync.Mutex
+	buffer   map[int64][]string
+
 	seenMu sync.Mutex
 	seen   map[string]time.Time
 }
@@ -40,11 +43,12 @@ func newParticipantPortraitManager(store *Store) *participantPortraitManager {
 		return nil
 	}
 	m := &participantPortraitManager{
-		store: store,
-		queue: make(chan participantPortraitTask, participantPortraitQueueSize),
-		stop:  make(chan struct{}),
-		cache: make(map[string]string),
-		seen:  make(map[string]time.Time),
+		store:  store,
+		queue:  make(chan participantPortraitTask, participantPortraitQueueSize),
+		stop:   make(chan struct{}),
+		cache:  make(map[string]string),
+		buffer: make(map[int64][]string),
+		seen:   make(map[string]time.Time),
 	}
 	m.wg.Add(1)
 	go m.worker()
@@ -59,15 +63,15 @@ func (m *participantPortraitManager) Close() {
 	m.wg.Wait()
 }
 
-func participantPortraitKey(chatID, userID int64) string {
-	return fmt.Sprintf("%d:%d", chatID, userID)
+func participantPortraitKey(userID int64) string {
+	return fmt.Sprintf("%d", userID)
 }
 
 func (m *participantPortraitManager) Portrait(chatID, userID int64) string {
-	if m == nil || chatID == 0 || userID == 0 {
+	if m == nil || userID == 0 {
 		return ""
 	}
-	key := participantPortraitKey(chatID, userID)
+	key := participantPortraitKey(userID)
 	m.cacheMu.RLock()
 	if v, ok := m.cache[key]; ok {
 		m.cacheMu.RUnlock()
@@ -102,18 +106,21 @@ func (m *participantPortraitManager) ObserveMessage(msg *tgbotapi.Message) {
 		return
 	}
 
-	ready, batch, oldPortrait, err := m.store.AppendParticipantMessage(msg.Chat.ID, msg.From.ID, text, participantPortraitBatchSize)
-	if err != nil {
-		log.Printf("participant portrait append failed chat=%d user=%d err=%v", msg.Chat.ID, msg.From.ID, err)
+	userID := msg.From.ID
+	batch, ok := m.takeBatch(userID, text)
+	if !ok || len(batch) == 0 {
 		return
 	}
-	if !ready || len(batch) == 0 {
+	oldPortrait, err := m.store.GetParticipantPortrait(msg.Chat.ID, userID)
+	if err != nil {
+		log.Printf("participant portrait load failed before batch chat=%d user=%d err=%v", msg.Chat.ID, userID, err)
+		m.prependBatch(userID, batch)
 		return
 	}
 
 	task := participantPortraitTask{
 		chatID:      msg.Chat.ID,
-		userID:      msg.From.ID,
+		userID:      userID,
 		messages:    append([]string(nil), batch...),
 		oldPortrait: strings.TrimSpace(oldPortrait),
 	}
@@ -121,10 +128,60 @@ func (m *participantPortraitManager) ObserveMessage(msg *tgbotapi.Message) {
 	case m.queue <- task:
 	default:
 		log.Printf("participant portrait queue full; batch requeued chat=%d user=%d", task.chatID, task.userID)
-		if err := m.store.RequeueParticipantMessages(task.chatID, task.userID, task.messages); err != nil {
-			log.Printf("participant portrait requeue failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
-		}
+		m.prependBatch(task.userID, task.messages)
 	}
+}
+
+func (m *participantPortraitManager) takeBatch(userID int64, text string) ([]string, bool) {
+	if userID == 0 {
+		return nil, false
+	}
+	val := strings.TrimSpace(text)
+	if val == "" {
+		return nil, false
+	}
+	m.bufferMu.Lock()
+	defer m.bufferMu.Unlock()
+	items := append(m.buffer[userID], clipText(val, 900))
+	if len(items) < participantPortraitBatchSize {
+		m.buffer[userID] = items
+		return nil, false
+	}
+	batch := append([]string(nil), items[:participantPortraitBatchSize]...)
+	remaining := append([]string(nil), items[participantPortraitBatchSize:]...)
+	if len(remaining) == 0 {
+		delete(m.buffer, userID)
+	} else {
+		m.buffer[userID] = remaining
+	}
+	return batch, true
+}
+
+func (m *participantPortraitManager) prependBatch(userID int64, messages []string) {
+	if userID == 0 || len(messages) == 0 {
+		return
+	}
+	clean := make([]string, 0, len(messages))
+	for _, message := range messages {
+		val := strings.TrimSpace(message)
+		if val == "" {
+			continue
+		}
+		clean = append(clean, clipText(val, 900))
+	}
+	if len(clean) == 0 {
+		return
+	}
+	m.bufferMu.Lock()
+	existing := m.buffer[userID]
+	merged := make([]string, 0, len(clean)+len(existing))
+	merged = append(merged, clean...)
+	merged = append(merged, existing...)
+	if len(merged) > 200 {
+		merged = merged[:200]
+	}
+	m.buffer[userID] = merged
+	m.bufferMu.Unlock()
 }
 
 func (m *participantPortraitManager) isDuplicateMessage(chatID, userID int64, messageID int) bool {
@@ -170,19 +227,15 @@ func (m *participantPortraitManager) processTask(task participantPortraitTask) {
 	portrait, err := generateParticipantPortrait(task.oldPortrait, task.messages)
 	if err != nil {
 		log.Printf("participant portrait generation failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
-		if err := m.store.RequeueParticipantMessages(task.chatID, task.userID, task.messages); err != nil {
-			log.Printf("participant portrait requeue failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
-		}
+		m.prependBatch(task.userID, task.messages)
 		return
 	}
 	if err := m.store.SaveParticipantPortrait(task.chatID, task.userID, portrait); err != nil {
 		log.Printf("participant portrait save failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
-		if err := m.store.RequeueParticipantMessages(task.chatID, task.userID, task.messages); err != nil {
-			log.Printf("participant portrait requeue failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
-		}
+		m.prependBatch(task.userID, task.messages)
 		return
 	}
-	key := participantPortraitKey(task.chatID, task.userID)
+	key := participantPortraitKey(task.userID)
 	m.cacheMu.Lock()
 	m.cache[key] = strings.TrimSpace(portrait)
 	m.cacheMu.Unlock()

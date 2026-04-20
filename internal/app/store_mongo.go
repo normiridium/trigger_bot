@@ -301,6 +301,9 @@ func (m *mongoBackend) ensureIndexes() error {
 			Options: options.Index().SetUnique(true),
 		},
 		{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}},
+		},
+		{
 			Keys: bson.D{{Key: "updated_at", Value: 1}},
 		},
 	})
@@ -760,32 +763,12 @@ func (m *mongoBackend) upsertChatAdminSync(chatID int64, updatedAt int64, adminC
 	return err
 }
 
-func sanitizePendingMessages(items []string) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		val := strings.TrimSpace(item)
-		if val == "" {
-			continue
-		}
-		out = append(out, clipText(val, 900))
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	if len(out) > 200 {
-		out = out[len(out)-200:]
-	}
-	return out
-}
-
 func (m *mongoBackend) getParticipantPortrait(chatID, userID int64) (string, error) {
+	_ = chatID
 	ctx, cancel := mongoCtx()
 	defer cancel()
 	var d mongoParticipantProfileDoc
-	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
+	err := m.profiles.FindOne(ctx, bson.M{"user_id": userID}, options.FindOne().SetSort(bson.D{{Key: "updated_at", Value: -1}})).Decode(&d)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return "", nil
 	}
@@ -793,76 +776,6 @@ func (m *mongoBackend) getParticipantPortrait(chatID, userID int64) (string, err
 		return "", err
 	}
 	return strings.TrimSpace(d.PortraitText), nil
-}
-
-func (m *mongoBackend) appendParticipantMessage(chatID, userID int64, message string, batchSize int, now int64) (bool, []string, string, error) {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return false, nil, "", nil
-	}
-	if batchSize <= 0 {
-		batchSize = 10
-	}
-	if now <= 0 {
-		now = time.Now().Unix()
-	}
-	ctx, cancel := mongoCtx()
-	defer cancel()
-
-	var d mongoParticipantProfileDoc
-	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
-	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil, "", err
-	}
-	oldPortrait := strings.TrimSpace(d.PortraitText)
-	pending := sanitizePendingMessages(append(d.PendingMessages, message))
-	ready := len(pending) >= batchSize
-	if ready {
-		batch := append([]string(nil), pending[:batchSize]...)
-		remaining := sanitizePendingMessages(pending[batchSize:])
-		_, err := m.profiles.UpdateOne(
-			ctx,
-			bson.M{"chat_id": chatID, "user_id": userID},
-			bson.M{
-				"$set": bson.M{
-					"chat_id":          chatID,
-					"user_id":          userID,
-					"pending_messages": remaining,
-					"updated_at":       now,
-				},
-				"$setOnInsert": bson.M{
-					"created_at":    now,
-					"portrait_text": "",
-				},
-			},
-			options.Update().SetUpsert(true),
-		)
-		if err != nil {
-			return false, nil, "", err
-		}
-		return true, batch, oldPortrait, nil
-	}
-	_, err = m.profiles.UpdateOne(
-		ctx,
-		bson.M{"chat_id": chatID, "user_id": userID},
-		bson.M{
-			"$set": bson.M{
-				"chat_id":          chatID,
-				"user_id":          userID,
-				"pending_messages": pending,
-				"updated_at":       now,
-			},
-			"$setOnInsert": bson.M{
-				"created_at":    now,
-				"portrait_text": "",
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		return false, nil, "", err
-	}
-	return false, nil, oldPortrait, nil
 }
 
 func (m *mongoBackend) saveParticipantPortrait(chatID, userID int64, portrait string, now int64) error {
@@ -874,7 +787,7 @@ func (m *mongoBackend) saveParticipantPortrait(chatID, userID int64, portrait st
 	defer cancel()
 	_, err := m.profiles.UpdateOne(
 		ctx,
-		bson.M{"chat_id": chatID, "user_id": userID},
+		bson.M{"user_id": userID},
 		bson.M{
 			"$set": bson.M{
 				"chat_id":       chatID,
@@ -882,45 +795,11 @@ func (m *mongoBackend) saveParticipantPortrait(chatID, userID int64, portrait st
 				"portrait_text": portrait,
 				"updated_at":    now,
 			},
+			"$unset": bson.M{
+				"pending_messages": "",
+			},
 			"$setOnInsert": bson.M{
 				"created_at": now,
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
-	return err
-}
-
-func (m *mongoBackend) prependParticipantMessages(chatID, userID int64, messages []string, now int64) error {
-	messages = sanitizePendingMessages(messages)
-	if len(messages) == 0 {
-		return nil
-	}
-	if now <= 0 {
-		now = time.Now().Unix()
-	}
-	ctx, cancel := mongoCtx()
-	defer cancel()
-
-	var d mongoParticipantProfileDoc
-	err := m.profiles.FindOne(ctx, bson.M{"chat_id": chatID, "user_id": userID}).Decode(&d)
-	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
-		return err
-	}
-	pending := sanitizePendingMessages(append(messages, d.PendingMessages...))
-	_, err = m.profiles.UpdateOne(
-		ctx,
-		bson.M{"chat_id": chatID, "user_id": userID},
-		bson.M{
-			"$set": bson.M{
-				"chat_id":          chatID,
-				"user_id":          userID,
-				"pending_messages": pending,
-				"updated_at":       now,
-			},
-			"$setOnInsert": bson.M{
-				"created_at":    now,
-				"portrait_text": strings.TrimSpace(d.PortraitText),
 			},
 		},
 		options.Update().SetUpsert(true),
