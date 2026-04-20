@@ -1724,7 +1724,61 @@ func Run() {
 		}
 		msg := update.Update.Message
 		rawMsg := update.RawMessage
-		if msg.Chat == nil || msg.From == nil || msg.From.IsBot {
+		senderChatPresent := msg != nil && msg.SenderChat != nil
+		if senderChatPresent {
+			// Telegram anonymous/channel-posted messages may come with From=nil or GroupAnonymousBot.
+			// Normalize into a pseudo-user so regular trigger flow can process them.
+			senderID := msg.SenderChat.ID
+			senderTitle := strings.TrimSpace(msg.SenderChat.Title)
+			senderUsername := strings.TrimPrefix(strings.TrimSpace(msg.SenderChat.UserName), "@")
+			if senderTitle == "" {
+				senderTitle = senderUsername
+			}
+			if senderTitle == "" {
+				senderTitle = "sender_chat"
+			}
+			if senderID == 0 && msg.From != nil {
+				senderID = msg.From.ID
+			}
+			if msg.From == nil || msg.From.IsBot {
+				msg.From = &tgbotapi.User{
+					ID:        senderID,
+					FirstName: senderTitle,
+					UserName:  senderUsername,
+					IsBot:     false,
+				}
+				if debugTriggerLogEnabled {
+					log.Printf("sender_chat normalized chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q",
+						msg.Chat.ID, msg.MessageID, msg.SenderChat.ID, msg.SenderChat.Type, strings.TrimSpace(msg.SenderChat.Title))
+				}
+			}
+		}
+		if msg.Chat == nil {
+			if debugTriggerLogEnabled {
+				log.Printf("skip message: missing chat msg=%d", msg.MessageID)
+			}
+			continue
+		}
+		if msg.From == nil {
+			if debugTriggerLogEnabled {
+				senderChatID := int64(0)
+				senderChatType := ""
+				senderChatTitle := ""
+				if msg.SenderChat != nil {
+					senderChatID = msg.SenderChat.ID
+					senderChatType = msg.SenderChat.Type
+					senderChatTitle = strings.TrimSpace(msg.SenderChat.Title)
+				}
+				log.Printf("skip message: from=nil (likely sender_chat) chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q text=%q",
+					msg.Chat.ID, msg.MessageID, senderChatID, senderChatType, senderChatTitle, clipText(strings.TrimSpace(firstNonEmptyUserText(msg)), 180))
+			}
+			continue
+		}
+		if msg.From.IsBot {
+			if debugTriggerLogEnabled {
+				log.Printf("skip message: from bot chat=%d msg=%d from_id=%d from_username=%q sender_chat_present=%v",
+					msg.Chat.ID, msg.MessageID, msg.From.ID, strings.TrimSpace(msg.From.UserName), msg.SenderChat != nil)
+			}
 			continue
 		}
 		isPrivateChat := msg.Chat.IsPrivate()
