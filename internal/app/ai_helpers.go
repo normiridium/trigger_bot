@@ -232,6 +232,99 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 	return out, nil
 }
 
+func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return "", errors.New("OPENAI_API_KEY is empty")
+	}
+	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	if model == "" {
+		model = "gpt-4.1-mini"
+	}
+	cleanMessages := make([]string, 0, len(messages))
+	for _, message := range messages {
+		val := strings.TrimSpace(message)
+		if val == "" {
+			continue
+		}
+		cleanMessages = append(cleanMessages, clipText(val, 900))
+	}
+	if len(cleanMessages) == 0 {
+		return "", errors.New("empty message batch")
+	}
+	var batch strings.Builder
+	for i, message := range cleanMessages {
+		fmt.Fprintf(&batch, "%d) %s\n", i+1, message)
+	}
+	var userPrompt strings.Builder
+	if strings.TrimSpace(oldPortrait) == "" {
+		userPrompt.WriteString("Составь краткий портрет участника чата по его последним сообщениям.\n")
+		userPrompt.WriteString("Верни только сам портрет на русском языке, без вводных и дисклеймеров.\n")
+	} else {
+		userPrompt.WriteString("Обнови портрет участника чата.\n")
+		userPrompt.WriteString("Учитывай старый портрет и новые сообщения.\n")
+		userPrompt.WriteString("Верни только обновленный портрет на русском языке, без вводных и дисклеймеров.\n\n")
+		userPrompt.WriteString("Старый портрет:\n")
+		userPrompt.WriteString(strings.TrimSpace(oldPortrait))
+		userPrompt.WriteString("\n\n")
+	}
+	userPrompt.WriteString("Новые сообщения участника:\n")
+	userPrompt.WriteString(strings.TrimSpace(batch.String()))
+
+	systemPrompt := "Ты анализируешь стиль общения участника чата. " +
+		"Пиши мягко и нейтрально, без категоричности. " +
+		"Формат: 4-8 коротких предложений про манеру общения, интересы, эмоциональные реакции и предпочтительный стиль ответа."
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt.String()},
+		},
+		"temperature": 0.3,
+		"max_tokens":  500,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("openai portrait status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+	}
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", errors.New("empty portrait choices")
+	}
+	out := strings.TrimSpace(result.Choices[0].Message.Content)
+	if out == "" {
+		return "", errors.New("empty portrait answer")
+	}
+	return out, nil
+}
+
 func generateChatGPTImage(ctx templateContext, promptTemplate string) (generatedImage, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {

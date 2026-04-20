@@ -107,6 +107,46 @@ func (s *Store) ClearChatAdminCache(chatID int64) error {
 	return s.mg.clearChatAdminCache(chatID)
 }
 
+func (s *Store) GetParticipantPortrait(chatID, userID int64) (string, error) {
+	if s == nil || s.mg == nil {
+		return "", errors.New("mongo backend not initialized")
+	}
+	if chatID == 0 || userID == 0 {
+		return "", nil
+	}
+	return s.mg.getParticipantPortrait(chatID, userID)
+}
+
+func (s *Store) AppendParticipantMessage(chatID, userID int64, message string, batchSize int) (bool, []string, string, error) {
+	if s == nil || s.mg == nil {
+		return false, nil, "", errors.New("mongo backend not initialized")
+	}
+	if chatID == 0 || userID == 0 {
+		return false, nil, "", nil
+	}
+	return s.mg.appendParticipantMessage(chatID, userID, message, batchSize, time.Now().Unix())
+}
+
+func (s *Store) SaveParticipantPortrait(chatID, userID int64, portrait string) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	if chatID == 0 || userID == 0 {
+		return nil
+	}
+	return s.mg.saveParticipantPortrait(chatID, userID, portrait, time.Now().Unix())
+}
+
+func (s *Store) RequeueParticipantMessages(chatID, userID int64, messages []string) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	if chatID == 0 || userID == 0 || len(messages) == 0 {
+		return nil
+	}
+	return s.mg.prependParticipantMessages(chatID, userID, messages, time.Now().Unix())
+}
+
 func sanitizeChance(v int) int {
 	if v < 1 {
 		return 1

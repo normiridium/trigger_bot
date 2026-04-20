@@ -1579,6 +1579,16 @@ func Run() {
 	readonly := newReadonlyManager()
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	disallowedNotifier := newDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
+	portraitManager := newParticipantPortraitManager(store)
+	if portraitManager != nil {
+		setParticipantPortraitResolver(func(chatID, userID int64) string {
+			return portraitManager.Portrait(chatID, userID)
+		})
+		defer func() {
+			setParticipantPortraitResolver(nil)
+			portraitManager.Close()
+		}()
+	}
 	idleTracker := trigger.NewIdleTracker()
 	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
 	gptDebouncer := gpt.NewDebouncer(time.Duration(gptDebounceSec)*time.Second, executeGPTPromptTask)
@@ -1609,6 +1619,7 @@ func Run() {
 			Bot:               bot,
 			IdleTracker:       idleTracker,
 			GPTDebouncer:      gptDebouncer,
+			Portraits:         portraitManager,
 			SpotifyMusic:      spotifyMusicClient,
 			SpotifyDownloader: spotifyDownloader,
 			SpotifyQueue:      spotifyQueue,
@@ -1825,6 +1836,7 @@ func Run() {
 						"{{message}} / {{user_text}} — текст сообщения\n" +
 						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
 						"{{user_display_name}}, {{user_label}}\n" +
+						"{{user_portrait}}\n" +
 						"{{sender_tag}}\n" +
 						"{{chat_id}}, {{chat_title}}\n" +
 						"{{reply_text}}\n" +
@@ -2208,6 +2220,7 @@ type triggerActionDeps struct {
 	Bot               *tgbotapi.BotAPI
 	IdleTracker       *trigger.IdleTracker
 	GPTDebouncer      *gpt.Debouncer
+	Portraits         *participantPortraitManager
 	SpotifyMusic      SpotifyMusicPort
 	SpotifyDownloader SpotifyDownloadPort
 	SpotifyQueue      *spotifyPickQueue
@@ -2496,6 +2509,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 		}
 	case "gpt_prompt":
+		if deps.Portraits != nil {
+			deps.Portraits.ObserveMessage(msg)
+		}
 		ctx := ""
 		if isOlenyamTrigger(tr) {
 			ctx = recentBefore

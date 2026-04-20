@@ -206,6 +206,27 @@ var responseTemplateCache = struct {
 }
 
 var responseTemplateFuncsMu sync.RWMutex
+var participantPortraitResolverMu sync.RWMutex
+var participantPortraitResolver func(chatID, userID int64) string
+
+func setParticipantPortraitResolver(fn func(chatID, userID int64) string) {
+	participantPortraitResolverMu.Lock()
+	participantPortraitResolver = fn
+	participantPortraitResolverMu.Unlock()
+}
+
+func resolveParticipantPortrait(chatID, userID int64) string {
+	if chatID == 0 || userID == 0 {
+		return ""
+	}
+	participantPortraitResolverMu.RLock()
+	fn := participantPortraitResolver
+	participantPortraitResolverMu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn(chatID, userID))
+}
 
 var responseTemplateFuncs = htmltmpl.FuncMap{
 	"default": func(def string, v interface{}) string {
@@ -1056,6 +1077,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 	}
 
 	chatTitle := strings.TrimSpace(msg.Chat.Title)
+	userPortrait := resolveParticipantPortrait(msg.Chat.ID, msg.From.ID)
 
 	return map[string]string{
 		"{{message}}":            userText,
@@ -1066,6 +1088,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{user_display_name}}":  userDisplayName,
 		"{{user_label}}":         userLabel,
 		"{{sender_tag}}":         senderTagDisplay,
+		"{{user_portrait}}":      userPortrait,
 		"{{user_link}}":          buildUserLink(msg.From),
 		"{{chat_id}}":            strconv.FormatInt(msg.Chat.ID, 10),
 		"{{chat_title}}":         chatTitle,
