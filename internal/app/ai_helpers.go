@@ -162,7 +162,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt request model=%s prompt=%q", model, clipText(prompt, 1800))
+		log.Printf("gpt request model=%s prompt=%q", model, prompt)
 	}
 
 	userMessage := map[string]interface{}{"role": "user", "content": prompt}
@@ -206,7 +206,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 		return "", err
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt response status=%d body=%q", resp.StatusCode, clipText(string(bodyBytes), 1800))
+		log.Printf("gpt response status=%d body=%q", resp.StatusCode, string(bodyBytes))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
@@ -339,7 +339,7 @@ func generateChatGPTImage(ctx templateContext, promptTemplate string) (generated
 	}
 
 	if debugGPTLogEnabled {
-		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, clipText(prompt, 1400))
+		log.Printf("gpt image request model=%s size=%s prompt=%q", model, size, prompt)
 	}
 
 	payload := map[string]interface{}{
@@ -367,7 +367,7 @@ func generateChatGPTImage(ctx templateContext, promptTemplate string) (generated
 		return generatedImage{}, err
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt image response status=%d body=%q", resp.StatusCode, clipText(string(bodyBytes), 1800))
+		log.Printf("gpt image response status=%d body=%q", resp.StatusCode, string(bodyBytes))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return generatedImage{}, fmt.Errorf("openai images status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
