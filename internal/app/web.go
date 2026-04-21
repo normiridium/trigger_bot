@@ -182,6 +182,8 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 		{Value: "{{ .user_label }}", Label: "{{ .user_label }} — метка из скобок в имени автора"},
 		{Value: "{{ .user_link }}", Label: "{{ .user_link }} — ссылка на автора"},
 		{Value: "{{ .sender_tag }}", Label: "{{ .sender_tag }} — тег автора в чате"},
+		{Value: "{{ .user_portrait }}", Label: "{{ .user_portrait }} — портрет участника"},
+		{Value: "{{ chat_context 12 }}", Label: "{{ chat_context 12 }} — последние 12 сообщений чата (можно менять N)"},
 		{Value: "{{ .chat_id }}", Label: "{{ .chat_id }} — ID чата"},
 		{Value: "{{ .chat_title }}", Label: "{{ .chat_title }} — название чата"},
 		{Value: "{{ .reply_text }}", Label: "{{ .reply_text }} — текст сообщения, на которое ответили"},

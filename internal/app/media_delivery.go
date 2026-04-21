@@ -33,6 +33,7 @@ func (c sendContext) WithReply(replyTo int) sendContext {
 }
 
 func reply(ctx sendContext, text string, preview bool) {
+	rawText := strings.TrimSpace(text)
 	m := tgbotapi.NewMessage(ctx.ChatID, text)
 	m.DisableWebPagePreview = !preview
 	if ctx.ReplyTo > 0 {
@@ -48,6 +49,7 @@ func reply(ctx sendContext, text string, preview bool) {
 	if debugTriggerLogEnabled {
 		log.Printf("send ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(text, 120))
 	}
+	addOutgoingChatRecentMessage(ctx.ChatID, rawText)
 }
 
 func sendHTML(ctx sendContext, html string, preview bool) bool {
@@ -77,10 +79,13 @@ func sendHTML(ctx sendContext, html string, preview bool) bool {
 	if debugTriggerLogEnabled {
 		log.Printf("send html ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Text, 120))
 	}
+	plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(m.Text, " "))
+	addOutgoingChatRecentMessage(ctx.ChatID, plain)
 	return true
 }
 
 func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
+	rawText := strings.TrimSpace(text)
 	text = normalizeTelegramLineBreaks(text)
 	text = escapeMarkdownV2PreservingFences(text)
 	m := tgbotapi.NewMessage(ctx.ChatID, text)
@@ -102,6 +107,7 @@ func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 	if debugTriggerLogEnabled {
 		log.Printf("send markdown ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Text, 120))
 	}
+	addOutgoingChatRecentMessage(ctx.ChatID, rawText)
 	return true
 }
 
