@@ -193,6 +193,12 @@ type chatRecentStore struct {
 	messages map[int64][]recentChatMessage
 }
 
+var outgoingChatRecentState = struct {
+	mu      sync.RWMutex
+	store   *chatRecentStore
+	botName string
+}{}
+
 type chatUserIndex struct {
 	mu      sync.RWMutex
 	byChat  map[int64]map[string]int64
@@ -251,7 +257,10 @@ func moderationReadonlyStateVerb(turnOn bool, senderTag string) string {
 
 func newChatRecentStore(maxPer int, maxAge time.Duration) *chatRecentStore {
 	if maxPer <= 0 {
-		maxPer = 8
+		maxPer = 12
+	}
+	if maxPer < 12 {
+		maxPer = 12
 	}
 	if maxAge <= 0 {
 		maxAge = 30 * time.Minute
@@ -289,7 +298,7 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 		return ""
 	}
 	if limit <= 0 {
-		limit = 4
+		limit = 12
 	}
 	now := time.Now()
 	s.mu.RLock()
@@ -312,14 +321,43 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 		if txt == "" {
 			continue
 		}
-		txt = clipText(txt, 220)
+		txt = clipText(txt, 500)
 		user := strings.TrimSpace(it.UserName)
 		if user == "" {
 			user = "участник"
 		}
-		lines = append(lines, fmt.Sprintf("- %s: %s", user, txt))
+		lines = append(lines, fmt.Sprintf("[%s] %s: %s", it.At.Local().Format("02.01.2006 15:04"), user, txt))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func setOutgoingChatRecentStore(store *chatRecentStore, botName string) {
+	outgoingChatRecentState.mu.Lock()
+	outgoingChatRecentState.store = store
+	outgoingChatRecentState.botName = strings.TrimSpace(botName)
+	outgoingChatRecentState.mu.Unlock()
+}
+
+func addOutgoingChatRecentMessage(chatID int64, text string) {
+	text = strings.TrimSpace(text)
+	if chatID == 0 || text == "" {
+		return
+	}
+	outgoingChatRecentState.mu.RLock()
+	store := outgoingChatRecentState.store
+	botName := strings.TrimSpace(outgoingChatRecentState.botName)
+	outgoingChatRecentState.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	if botName == "" {
+		botName = "Оле-ням"
+	}
+	store.Add(chatID, recentChatMessage{
+		UserName: botName,
+		Text:     text,
+		At:       time.Now(),
+	})
 }
 
 func executeGPTPromptTask(task gpt.PromptTask) {
@@ -1578,6 +1616,14 @@ func Run() {
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
 	readonly := newReadonlyManager()
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
+	setChatContextResolver(func(chatID int64, limit int) string {
+		return chatRecent.RecentText(chatID, limit)
+	})
+	defer func() {
+		setOutgoingChatRecentStore(nil, "")
+		setChatContextResolver(nil)
+	}()
 	disallowedNotifier := newDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
 	portraitManager := newParticipantPortraitManager(store)
 	if portraitManager != nil {
@@ -1837,6 +1883,7 @@ func Run() {
 						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
 						"{{user_display_name}}, {{user_label}}\n" +
 						"{{user_portrait}}\n" +
+						"{{chat_context 12}}\n" +
 						"{{sender_tag}}\n" +
 						"{{chat_id}}, {{chat_title}}\n" +
 						"{{reply_text}}\n" +

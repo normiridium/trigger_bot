@@ -190,6 +190,7 @@ var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
 var legacyTemplateActionRe = regexp.MustCompile(`\{\{[-]?\s*([^{}]+?)\s*[-]?\}\}`)
 var legacyPipeIndexRe = regexp.MustCompile(`\|\s*index\s+(-?\d+)`)
+var chatContextActionRe = regexp.MustCompile(`\{\{\s*chat_context(?:\s+(\d+))?\s*\}\}`)
 
 var capturingChoiceCache = struct {
 	mu    sync.RWMutex
@@ -208,6 +209,8 @@ var responseTemplateCache = struct {
 var responseTemplateFuncsMu sync.RWMutex
 var participantPortraitResolverMu sync.RWMutex
 var participantPortraitResolver func(chatID, userID int64) string
+var chatContextResolverMu sync.RWMutex
+var chatContextResolver func(chatID int64, limit int) string
 
 func setParticipantPortraitResolver(fn func(chatID, userID int64) string) {
 	participantPortraitResolverMu.Lock()
@@ -226,6 +229,28 @@ func resolveParticipantPortrait(chatID, userID int64) string {
 		return ""
 	}
 	return strings.TrimSpace(fn(chatID, userID))
+}
+
+func setChatContextResolver(fn func(chatID int64, limit int) string) {
+	chatContextResolverMu.Lock()
+	chatContextResolver = fn
+	chatContextResolverMu.Unlock()
+}
+
+func resolveChatContext(chatID int64, limit int) string {
+	if chatID == 0 {
+		return ""
+	}
+	if limit <= 0 {
+		limit = 12
+	}
+	chatContextResolverMu.RLock()
+	fn := chatContextResolver
+	chatContextResolverMu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn(chatID, limit))
 }
 
 var responseTemplateFuncs = htmltmpl.FuncMap{
@@ -598,12 +623,44 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	if strings.TrimSpace(template) == "" {
 		return template
 	}
+	rewrittenTemplate, chatContextLimits := rewriteChatContextTemplateActions(template)
 	vars := buildTemplateVars(ctx)
-	out, err := renderResponseTemplate(template, vars, ctx.TemplateLookup)
+	if ctx.Msg != nil && ctx.Msg.Chat != nil {
+		chatID := ctx.Msg.Chat.ID
+		vars["chat_context"] = htmltmpl.HTML(resolveChatContext(chatID, 12))
+		for _, n := range chatContextLimits {
+			key := fmt.Sprintf("__chat_context_%d", n)
+			vars[key] = htmltmpl.HTML(resolveChatContext(chatID, n))
+		}
+	}
+	out, err := renderResponseTemplate(rewrittenTemplate, vars, ctx.TemplateLookup)
 	if err != nil {
-		return applySimpleTemplateVars(template, vars)
+		return applySimpleTemplateVars(rewrittenTemplate, vars)
 	}
 	return out
+}
+
+func rewriteChatContextTemplateActions(input string) (string, []int) {
+	if strings.TrimSpace(input) == "" {
+		return input, nil
+	}
+	seen := make(map[int]struct{}, 2)
+	limits := make([]int, 0, 2)
+	out := chatContextActionRe.ReplaceAllStringFunc(input, func(full string) string {
+		m := chatContextActionRe.FindStringSubmatch(full)
+		limit := 12
+		if len(m) > 1 {
+			if n, err := strconv.Atoi(strings.TrimSpace(m[1])); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if _, ok := seen[limit]; !ok {
+			seen[limit] = struct{}{}
+			limits = append(limits, limit)
+		}
+		return fmt.Sprintf("{{ .__chat_context_%d }}", limit)
+	})
+	return out, limits
 }
 
 func buildResponseFromMessage(ctx templateContext, template string) string {
