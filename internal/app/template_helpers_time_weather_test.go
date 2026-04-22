@@ -141,3 +141,44 @@ func TestWeatherCityCandidatesInflectionFallback(t *testing.T) {
 		t.Fatalf("expected normalized city variant in candidates: %v", got)
 	}
 }
+
+func TestRenderResponseTemplateWebSearchFromCache(t *testing.T) {
+	templateWebSearchCache.mu.Lock()
+	old := templateWebSearchCache.items
+	templateWebSearchCache.items = map[string]webSearchCacheEntry{
+		"оле-ням 67?|8": {
+			value:     "1) test title — test snippet (https://example.org)",
+			expiresAt: time.Now().Add(5 * time.Minute),
+		},
+	}
+	templateWebSearchCache.mu.Unlock()
+	defer func() {
+		templateWebSearchCache.mu.Lock()
+		templateWebSearchCache.items = old
+		templateWebSearchCache.mu.Unlock()
+	}()
+
+	got, err := renderResponseTemplate(`{{ web_search .message 8 }}`, map[string]interface{}{
+		"message": "оле-ням 67?",
+	}, nil)
+	if err != nil {
+		t.Fatalf("renderResponseTemplate error: %v", err)
+	}
+	if !strings.Contains(got, "test title") {
+		t.Fatalf("unexpected web_search render: %q", got)
+	}
+}
+
+func TestRenderResponseTemplateRegexpReplace(t *testing.T) {
+	got, err := renderResponseTemplate(
+		`{{ trim (regexp_replace "(?i)(?:оле-ням|оленям)[\\s,.:!?-]*" "" .message) }}`,
+		map[string]interface{}{"message": "Оле-ням, 67?"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("renderResponseTemplate error: %v", err)
+	}
+	if got != "67?" {
+		t.Fatalf("unexpected regexp_replace result: %q", got)
+	}
+}
