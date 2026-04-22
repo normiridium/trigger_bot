@@ -47,3 +47,51 @@ func TestSelectIdleAutoReplyTrigger(t *testing.T) {
 		t.Fatalf("unexpected idle duration: %s", after)
 	}
 }
+
+func TestIdleTrackerLifecycle(t *testing.T) {
+	tr := NewIdleTracker()
+	if tr == nil {
+		t.Fatal("expected tracker")
+	}
+	chatID := int64(-1001)
+	base := time.Now()
+
+	tr.Seen(chatID, base)
+	if tr.ShouldAutoReply(chatID, 5*time.Minute, base.Add(4*time.Minute)) {
+		t.Fatal("must not auto reply before idle threshold")
+	}
+	if !tr.ShouldAutoReply(chatID, 5*time.Minute, base.Add(5*time.Minute)) {
+		t.Fatal("expected auto reply at threshold")
+	}
+
+	tr.MarkActivity(chatID, base.Add(6*time.Minute))
+	if tr.ShouldAutoReply(chatID, 5*time.Minute, base.Add(10*time.Minute)) {
+		t.Fatal("must not auto reply right after activity")
+	}
+	if !tr.ShouldAutoReply(chatID, 5*time.Minute, base.Add(11*time.Minute)) {
+		t.Fatal("expected auto reply after renewed idle interval")
+	}
+}
+
+func TestIdleTrackerGuards(t *testing.T) {
+	var nilTracker *IdleTracker
+	nilTracker.Seen(-100, time.Now())
+	nilTracker.MarkActivity(-100, time.Now())
+	if nilTracker.ShouldAutoReply(-100, time.Minute, time.Now()) {
+		t.Fatal("nil tracker must never auto reply")
+	}
+
+	tr := NewIdleTracker()
+	if tr.ShouldAutoReply(0, time.Minute, time.Now()) {
+		t.Fatal("zero chat id must never auto reply")
+	}
+	if tr.ShouldAutoReply(-100, 0, time.Now()) {
+		t.Fatal("non-positive idle duration must never auto reply")
+	}
+}
+
+func TestIntParseErrorString(t *testing.T) {
+	if got := errInvalidInt.Error(); got != "invalid integer" {
+		t.Fatalf("unexpected error text: %q", got)
+	}
+}

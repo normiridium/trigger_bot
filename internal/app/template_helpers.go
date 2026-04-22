@@ -2,9 +2,11 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	htmltmpl "html/template"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"reflect"
@@ -211,6 +213,17 @@ var participantPortraitResolverMu sync.RWMutex
 var participantPortraitResolver func(chatID, userID int64) string
 var chatContextResolverMu sync.RWMutex
 var chatContextResolver func(chatID int64, limit int) string
+var templateWeatherCache = struct {
+	mu    sync.RWMutex
+	items map[string]weatherCacheEntry
+}{
+	items: make(map[string]weatherCacheEntry),
+}
+
+type weatherCacheEntry struct {
+	value     string
+	expiresAt time.Time
+}
 
 func setParticipantPortraitResolver(fn func(chatID, userID int64) string) {
 	participantPortraitResolverMu.Lock()
@@ -387,6 +400,258 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 		}
 		return resolveGenderVariant(val, variants)
 	},
+	"chance": func(percent int) bool {
+		if percent <= 0 {
+			return false
+		}
+		if percent >= 100 {
+			return true
+		}
+		return rand.Intn(100) < percent
+	},
+	"weather": func(city interface{}) string {
+		name := strings.TrimSpace(toTemplateString(city))
+		if name == "" {
+			return ""
+		}
+		return resolveWeatherNow(name)
+	},
+	"time_of_day": func(tz interface{}) string {
+		loc := loadTemplateLocation(toTemplateString(tz))
+		return describeTimeOfDay(time.Now().In(loc).Hour())
+	},
+	"weekday": func(tz interface{}) string {
+		loc := loadTemplateLocation(toTemplateString(tz))
+		return russianWeekdayName(time.Now().In(loc).Weekday())
+	},
+}
+
+func resolveWeatherNow(city string) string {
+	city = strings.TrimSpace(city)
+	if city == "" {
+		return ""
+	}
+	key := strings.ToLower(city)
+	now := time.Now()
+	templateWeatherCache.mu.RLock()
+	if cached, ok := templateWeatherCache.items[key]; ok && now.Before(cached.expiresAt) {
+		templateWeatherCache.mu.RUnlock()
+		return cached.value
+	}
+	templateWeatherCache.mu.RUnlock()
+
+	var (
+		val string
+		err error
+	)
+	for _, candidate := range weatherCityCandidates(city) {
+		val, err = fetchWeatherNow(candidate)
+		if err == nil && strings.TrimSpace(val) != "" {
+			break
+		}
+	}
+	ttl := 12 * time.Minute
+	if err != nil {
+		val = "н/д"
+		ttl = 2 * time.Minute
+	}
+
+	templateWeatherCache.mu.Lock()
+	if len(templateWeatherCache.items) > 2048 {
+		templateWeatherCache.items = make(map[string]weatherCacheEntry)
+	}
+	templateWeatherCache.items[key] = weatherCacheEntry{
+		value:     val,
+		expiresAt: now.Add(ttl),
+	}
+	templateWeatherCache.mu.Unlock()
+	return val
+}
+
+func weatherCityCandidates(city string) []string {
+	orig := strings.TrimSpace(city)
+	if orig == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 8)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		k := strings.ToLower(v)
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		out = append(out, v)
+	}
+	add(orig)
+
+	lower := strings.ToLower(orig)
+	r := []rune(lower)
+	if len(r) < 2 {
+		return out
+	}
+
+	replaceLast := func(to string) string {
+		return string(r[:len(r)-1]) + to
+	}
+	replaceLast2 := func(to string) string {
+		if len(r) < 3 {
+			return ""
+		}
+		return string(r[:len(r)-2]) + to
+	}
+
+	switch {
+	case strings.HasSuffix(lower, "и"):
+		add(replaceLast("ь"))
+		add(replaceLast("а"))
+		add(replaceLast("я"))
+	case strings.HasSuffix(lower, "е"):
+		add(replaceLast("а"))
+		add(replaceLast("я"))
+	case strings.HasSuffix(lower, "у"):
+		add(replaceLast("а"))
+		add(replaceLast("я"))
+	case strings.HasSuffix(lower, "ю"):
+		add(replaceLast("я"))
+	case strings.HasSuffix(lower, "ой"), strings.HasSuffix(lower, "ей"):
+		add(replaceLast2("а"))
+		add(replaceLast2("я"))
+	case strings.HasSuffix(lower, "ом"), strings.HasSuffix(lower, "ем"):
+		add(replaceLast2(""))
+	}
+
+	return out
+}
+
+func fetchWeatherNow(city string) (string, error) {
+	client := &http.Client{Timeout: 6 * time.Second}
+
+	geoURL := "https://geocoding-api.open-meteo.com/v1/search?count=1&language=ru&format=json&name=" + url.QueryEscape(city)
+	geoReq, err := http.NewRequest(http.MethodGet, geoURL, nil)
+	if err != nil {
+		return "", err
+	}
+	geoResp, err := client.Do(geoReq)
+	if err != nil {
+		return "", err
+	}
+	defer geoResp.Body.Close()
+	var geo struct {
+		Results []struct {
+			Name      string  `json:"name"`
+			Latitude  float64 `json:"latitude"`
+			Longitude float64 `json:"longitude"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(geoResp.Body).Decode(&geo); err != nil {
+		return "", err
+	}
+	if len(geo.Results) == 0 {
+		return "", fmt.Errorf("city not found")
+	}
+	point := geo.Results[0]
+
+	weatherURL := fmt.Sprintf(
+		"https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f&current=temperature_2m,apparent_temperature,weather_code&timezone=auto",
+		point.Latitude,
+		point.Longitude,
+	)
+	wReq, err := http.NewRequest(http.MethodGet, weatherURL, nil)
+	if err != nil {
+		return "", err
+	}
+	wResp, err := client.Do(wReq)
+	if err != nil {
+		return "", err
+	}
+	defer wResp.Body.Close()
+
+	var payload struct {
+		Current struct {
+			Temperature2m       float64 `json:"temperature_2m"`
+			ApparentTemperature float64 `json:"apparent_temperature"`
+			WeatherCode         int     `json:"weather_code"`
+		} `json:"current"`
+	}
+	if err := json.NewDecoder(wResp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	desc := weatherCodeToRU(payload.Current.WeatherCode)
+	return fmt.Sprintf("%s, %.0f°C (ощущается как %.0f°C)", desc, payload.Current.Temperature2m, payload.Current.ApparentTemperature), nil
+}
+
+func weatherCodeToRU(code int) string {
+	switch code {
+	case 0:
+		return "ясно"
+	case 1, 2:
+		return "переменная облачность"
+	case 3:
+		return "пасмурно"
+	case 45, 48:
+		return "туман"
+	case 51, 53, 55, 56, 57:
+		return "морось"
+	case 61, 63, 65, 66, 67, 80, 81, 82:
+		return "дождь"
+	case 71, 73, 75, 77, 85, 86:
+		return "снег"
+	case 95, 96, 99:
+		return "гроза"
+	default:
+		return "погода"
+	}
+}
+
+func loadTemplateLocation(tz string) *time.Location {
+	name := strings.TrimSpace(tz)
+	if name == "" {
+		return time.Local
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.Local
+	}
+	return loc
+}
+
+func describeTimeOfDay(hour int) string {
+	switch {
+	case hour >= 5 && hour < 12:
+		return "утро"
+	case hour >= 12 && hour < 18:
+		return "день"
+	case hour >= 18 && hour < 23:
+		return "вечер"
+	default:
+		return "ночь"
+	}
+}
+
+func russianWeekdayName(day time.Weekday) string {
+	switch day {
+	case time.Monday:
+		return "понедельник"
+	case time.Tuesday:
+		return "вторник"
+	case time.Wednesday:
+		return "среда"
+	case time.Thursday:
+		return "четверг"
+	case time.Friday:
+		return "пятница"
+	case time.Saturday:
+		return "суббота"
+	case time.Sunday:
+		return "воскресенье"
+	default:
+		return ""
+	}
 }
 
 func RegisterResponseTemplateFunc(name string, fn interface{}) {
