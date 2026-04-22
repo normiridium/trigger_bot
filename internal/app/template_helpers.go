@@ -192,6 +192,7 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 
 var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
+var webSnippetURLRe = regexp.MustCompile(`https?://\S+`)
 var legacyTemplateActionRe = regexp.MustCompile(`\{\{[-]?\s*([^{}]+?)\s*[-]?\}\}`)
 var legacyPipeIndexRe = regexp.MustCompile(`\|\s*index\s+(-?\d+)`)
 var chatContextActionRe = regexp.MustCompile(`\{\{\s*chat_context(?:\s+(\d+))?\s*\}\}`)
@@ -719,7 +720,6 @@ func fetchWebSearchContext(query string, limit int) (string, error) {
 		Error          string `json:"error"`
 		OrganicResults []struct {
 			Title   string `json:"title"`
-			Link    string `json:"link"`
 			Snippet string `json:"snippet"`
 		} `json:"organic_results"`
 	}
@@ -739,16 +739,14 @@ func fetchWebSearchContext(query string, limit int) (string, error) {
 		}
 		title := strings.TrimSpace(it.Title)
 		snippet := strings.TrimSpace(it.Snippet)
-		link := strings.TrimSpace(it.Link)
+		snippet = strings.TrimSpace(webSnippetURLRe.ReplaceAllString(snippet, ""))
+		snippet = strings.Join(strings.Fields(snippet), " ")
 		if title == "" && snippet == "" {
 			continue
 		}
 		line := fmt.Sprintf("%d) %s", i+1, clipText(title, 120))
 		if snippet != "" {
 			line += " — " + clipText(snippet, 220)
-		}
-		if link != "" {
-			line += " (" + clipText(link, 160) + ")"
 		}
 		out = append(out, line)
 	}
