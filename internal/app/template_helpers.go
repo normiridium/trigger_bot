@@ -3,10 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	htmltmpl "html/template"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -221,19 +219,8 @@ var templateWeatherCache = struct {
 }{
 	items: make(map[string]weatherCacheEntry),
 }
-var templateWebSearchCache = struct {
-	mu    sync.RWMutex
-	items map[string]webSearchCacheEntry
-}{
-	items: make(map[string]webSearchCacheEntry),
-}
 
 type weatherCacheEntry struct {
-	value     string
-	expiresAt time.Time
-}
-
-type webSearchCacheEntry struct {
 	value     string
 	expiresAt time.Time
 }
@@ -361,20 +348,6 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 	"contains": func(needle string, in interface{}) bool {
 		return strings.Contains(toTemplateString(in), needle)
 	},
-	"regexp_replace": func(pattern, repl string, v interface{}) string {
-		src := toTemplateString(v)
-		if strings.TrimSpace(pattern) == "" || src == "" {
-			return src
-		}
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return src
-		}
-		return re.ReplaceAllString(src, repl)
-	},
-	"rune_len": func(v interface{}) int {
-		return len([]rune(toTemplateString(v)))
-	},
 	"pick": func(idx int, items []string) string {
 		if idx < 0 || idx >= len(items) {
 			return ""
@@ -450,10 +423,6 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 	"weekday": func(tz interface{}) string {
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return russianWeekdayName(time.Now().In(loc).Weekday())
-	},
-	"web_search": func(query interface{}, limit int) string {
-		q := strings.TrimSpace(toTemplateString(query))
-		return resolveWebSearchContext(q, limit)
 	},
 }
 
@@ -637,125 +606,6 @@ func weatherCodeToRU(code int) string {
 	default:
 		return "погода"
 	}
-}
-
-func resolveWebSearchContext(query string, limit int) string {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return ""
-	}
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 10 {
-		limit = 10
-	}
-	cacheKey := strings.ToLower(query) + "|" + strconv.Itoa(limit)
-	now := time.Now()
-	templateWebSearchCache.mu.RLock()
-	if cached, ok := templateWebSearchCache.items[cacheKey]; ok && now.Before(cached.expiresAt) {
-		templateWebSearchCache.mu.RUnlock()
-		return cached.value
-	}
-	templateWebSearchCache.mu.RUnlock()
-
-	val, err := fetchWebSearchContext(query, limit)
-	ttl := 20 * time.Minute
-	if err != nil {
-		val = ""
-		ttl = 2 * time.Minute
-	}
-
-	templateWebSearchCache.mu.Lock()
-	if len(templateWebSearchCache.items) > 2048 {
-		templateWebSearchCache.items = make(map[string]webSearchCacheEntry)
-	}
-	templateWebSearchCache.items[cacheKey] = webSearchCacheEntry{
-		value:     val,
-		expiresAt: now.Add(ttl),
-	}
-	templateWebSearchCache.mu.Unlock()
-	return val
-}
-
-func fetchWebSearchContext(query string, limit int) (string, error) {
-	apiKey := strings.TrimSpace(os.Getenv("SERPAPI_KEY"))
-	if apiKey == "" {
-		return "", fmt.Errorf("SERPAPI_KEY is required")
-	}
-	engine := strings.TrimSpace(os.Getenv("SERPAPI_WEB_ENGINE"))
-	if engine == "" {
-		engine = "google"
-	}
-	params := url.Values{}
-	params.Set("api_key", apiKey)
-	params.Set("engine", engine)
-	params.Set("q", query)
-	params.Set("hl", "ru")
-	params.Set("gl", "ru")
-	params.Set("num", strconv.Itoa(limit))
-
-	endpoint := "https://serpapi.com/search.json?" + params.Encode()
-	client := &http.Client{Timeout: 12 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("serpapi status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 500))
-	}
-	var payload struct {
-		Error          string `json:"error"`
-		OrganicResults []struct {
-			Title   string `json:"title"`
-			Link    string `json:"link"`
-			Snippet string `json:"snippet"`
-		} `json:"organic_results"`
-	}
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(payload.Error) != "" {
-		return "", errors.New(strings.TrimSpace(payload.Error))
-	}
-	if len(payload.OrganicResults) == 0 {
-		return "", nil
-	}
-	out := make([]string, 0, limit)
-	for i, it := range payload.OrganicResults {
-		if len(out) >= limit {
-			break
-		}
-		title := strings.TrimSpace(it.Title)
-		snippet := strings.TrimSpace(it.Snippet)
-		link := strings.TrimSpace(it.Link)
-		if title == "" && snippet == "" {
-			continue
-		}
-		line := fmt.Sprintf("%d) %s", i+1, clipText(title, 120))
-		if snippet != "" {
-			line += " — " + clipText(snippet, 220)
-		}
-		if link != "" {
-			line += " (" + clipText(link, 160) + ")"
-		}
-		out = append(out, line)
-	}
-	if len(out) == 0 {
-		return "", nil
-	}
-	return strings.Join(out, "\n"), nil
 }
 
 func loadTemplateLocation(tz string) *time.Location {
