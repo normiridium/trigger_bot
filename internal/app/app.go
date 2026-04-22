@@ -321,7 +321,6 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 		if txt == "" {
 			continue
 		}
-		txt = clipText(txt, 500)
 		user := strings.TrimSpace(it.UserName)
 		if user == "" {
 			user = "участник"
@@ -1596,6 +1595,10 @@ func Run() {
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
 	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
+	logTextClipMax = envInt("LOG_TEXT_CLIP_CHARS", 200)
+	if logTextClipMax < 0 {
+		logTextClipMax = 200
+	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
 
 	allowedChats, err := parseAllowedChatIDs(os.Getenv("ALLOWED_CHAT_IDS"))
@@ -1630,8 +1633,12 @@ func Run() {
 		setParticipantPortraitResolver(func(chatID, userID int64) string {
 			return portraitManager.Portrait(chatID, userID)
 		})
+		setParticipantPortraitRemainingResolver(func(chatID, userID int64) int {
+			return portraitManager.RemainingUntilUpdate(userID)
+		})
 		defer func() {
 			setParticipantPortraitResolver(nil)
+			setParticipantPortraitRemainingResolver(nil)
 			portraitManager.Close()
 		}()
 	}
@@ -1827,7 +1834,7 @@ func Run() {
 					senderChatTitle = strings.TrimSpace(msg.SenderChat.Title)
 				}
 				log.Printf("skip message: from=nil (likely sender_chat) chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q text=%q",
-					msg.Chat.ID, msg.MessageID, senderChatID, senderChatType, senderChatTitle, clipText(strings.TrimSpace(firstNonEmptyUserText(msg)), 180))
+					msg.Chat.ID, msg.MessageID, senderChatID, senderChatType, senderChatTitle, clipLogText(strings.TrimSpace(firstNonEmptyUserText(msg)), 180))
 			}
 			continue
 		}
@@ -1883,6 +1890,7 @@ func Run() {
 						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
 						"{{user_display_name}}, {{user_label}}\n" +
 						"{{user_portrait}}\n" +
+						"{{user_portrait_remaining}}\n" +
 						"{{chat_context 12}}\n" +
 						"{{sender_tag}}\n" +
 						"{{chat_id}}, {{chat_title}}\n" +
@@ -2126,7 +2134,7 @@ func Run() {
 
 		if debugTriggerLogEnabled {
 			log.Printf("update chat=%d msg=%d from=%d user=%s text=%q",
-				msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, clipText(text, 220))
+				msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, clipLogText(text, 220))
 		}
 
 		items, err := store.ListTriggersCached()

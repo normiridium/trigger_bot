@@ -15,6 +15,13 @@ func TestUserPortraitTemplateTag(t *testing.T) {
 		return ""
 	})
 	defer setParticipantPortraitResolver(nil)
+	setParticipantPortraitRemainingResolver(func(chatID, userID int64) int {
+		if chatID == -1001 && userID == 42 {
+			return 3
+		}
+		return participantPortraitBatchSize
+	})
+	defer setParticipantPortraitRemainingResolver(nil)
 
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -1001, Title: "чат"},
@@ -26,9 +33,12 @@ func TestUserPortraitTemplateTag(t *testing.T) {
 	if got := strings.TrimSpace(replacements["{{user_portrait}}"]); got != "любит короткие ответы" {
 		t.Fatalf("unexpected user portrait replacement: %q", got)
 	}
+	if got := strings.TrimSpace(replacements["{{user_portrait_remaining}}"]); got != "3" {
+		t.Fatalf("unexpected user portrait remaining replacement: %q", got)
+	}
 
-	out := strings.TrimSpace(renderTemplateWithMessage(templateContext{Msg: msg}, "Портрет: {{ .user_portrait }}"))
-	if out != "Портрет: любит короткие ответы" {
+	out := strings.TrimSpace(renderTemplateWithMessage(templateContext{Msg: msg}, "Портрет: {{ .user_portrait }} (осталось {{ .user_portrait_remaining }})"))
+	if out != "Портрет: любит короткие ответы (осталось 3)" {
 		t.Fatalf("unexpected rendered output: %q", out)
 	}
 }

@@ -110,6 +110,22 @@ func (m *participantPortraitManager) DeletePortrait(userID int64) error {
 	return nil
 }
 
+func (m *participantPortraitManager) RemainingUntilUpdate(userID int64) int {
+	if m == nil || userID == 0 {
+		return participantPortraitBatchSize
+	}
+	m.bufferMu.Lock()
+	defer m.bufferMu.Unlock()
+	n := len(m.buffer[userID])
+	if n < 0 {
+		n = 0
+	}
+	if n >= participantPortraitBatchSize {
+		return 0
+	}
+	return participantPortraitBatchSize - n
+}
+
 func (m *participantPortraitManager) ObserveMessage(msg *tgbotapi.Message) {
 	if m == nil || msg == nil || msg.Chat == nil || msg.From == nil {
 		return
