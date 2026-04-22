@@ -154,24 +154,26 @@ func (m MatchType) String() string {
 type ActionType string
 
 const (
-	ActionTypeSend         ActionType = "send"
-	ActionTypeSendSticker  ActionType = "send_sticker"
-	ActionTypeDelete       ActionType = "delete"
-	ActionTypeGPTPrompt    ActionType = "gpt_prompt"
-	ActionTypeGPTImage     ActionType = "gpt_image"
-	ActionTypeSearchImage  ActionType = "search_image"
-	ActionTypeSpotifyMusic ActionType = "spotify_music_audio"
-	ActionTypeMusic        ActionType = "music_audio"
-	ActionTypeYandexMusic  ActionType = "yandex_music_audio"
-	ActionTypeMediaAudio   ActionType = "media_link_audio"
-	ActionTypeMediaTikTok  ActionType = "media_tiktok_download"
-	ActionTypeMediaX       ActionType = "media_x_download"
+	ActionTypeSend           ActionType = "send"
+	ActionTypeSendSticker    ActionType = "send_sticker"
+	ActionTypeDelete         ActionType = "delete"
+	ActionTypeDeletePortrait ActionType = "delete_user_portrait"
+	ActionTypeGPTPrompt      ActionType = "gpt_prompt"
+	ActionTypeGPTImage       ActionType = "gpt_image"
+	ActionTypeSearchImage    ActionType = "search_image"
+	ActionTypeSpotifyMusic   ActionType = "spotify_music_audio"
+	ActionTypeMusic          ActionType = "music_audio"
+	ActionTypeYandexMusic    ActionType = "yandex_music_audio"
+	ActionTypeMediaAudio     ActionType = "media_link_audio"
+	ActionTypeMediaTikTok    ActionType = "media_tiktok_download"
+	ActionTypeMediaX         ActionType = "media_x_download"
 )
 
 var ActionTypeValues = []ActionType{
 	ActionTypeSend,
 	ActionTypeSendSticker,
 	ActionTypeDelete,
+	ActionTypeDeletePortrait,
 	ActionTypeGPTPrompt,
 	ActionTypeGPTImage,
 	ActionTypeSearchImage,
@@ -191,6 +193,8 @@ func (m ActionType) String() string {
 		return "Отправить стикер"
 	case ActionTypeDelete:
 		return "Удалить сообщение"
+	case ActionTypeDeletePortrait:
+		return "Удалить портрет участника"
 	case ActionTypeGPTPrompt:
 		return "Промпт в ChatGPT"
 	case ActionTypeGPTImage:

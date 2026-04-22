@@ -806,3 +806,13 @@ func (m *mongoBackend) saveParticipantPortrait(chatID, userID int64, portrait st
 	)
 	return err
 }
+
+func (m *mongoBackend) deleteParticipantPortrait(userID int64) error {
+	if userID == 0 {
+		return nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.profiles.DeleteOne(ctx, bson.M{"user_id": userID})
+	return err
+}
