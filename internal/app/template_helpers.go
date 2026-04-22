@@ -448,6 +448,10 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return describeTimeOfDay(time.Now().In(loc).Hour())
 	},
+	"time_hm": func(tz interface{}) string {
+		loc := loadTemplateLocation(toTemplateString(tz))
+		return time.Now().In(loc).Format("15:04")
+	},
 	"weekday": func(tz interface{}) string {
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return russianWeekdayName(time.Now().In(loc).Weekday())
