@@ -91,6 +91,25 @@ func (m *participantPortraitManager) Portrait(chatID, userID int64) string {
 	return portrait
 }
 
+func (m *participantPortraitManager) DeletePortrait(userID int64) error {
+	if m == nil || userID == 0 {
+		return nil
+	}
+	if err := m.store.DeleteParticipantPortrait(userID); err != nil {
+		return err
+	}
+
+	key := participantPortraitKey(userID)
+	m.cacheMu.Lock()
+	delete(m.cache, key)
+	m.cacheMu.Unlock()
+
+	m.bufferMu.Lock()
+	delete(m.buffer, userID)
+	m.bufferMu.Unlock()
+	return nil
+}
+
 func (m *participantPortraitManager) ObserveMessage(msg *tgbotapi.Message) {
 	if m == nil || msg == nil || msg.Chat == nil || msg.From == nil {
 		return

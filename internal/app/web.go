@@ -782,6 +782,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-file-earmark-image"
 	case model.ActionTypeDelete:
 		return "bi-trash"
+	case model.ActionTypeDeletePortrait:
+		return "bi-person-dash"
 	case model.ActionTypeGPTPrompt:
 		return "bi-cpu"
 	case model.ActionTypeGPTImage:

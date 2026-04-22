@@ -127,6 +127,16 @@ func (s *Store) SaveParticipantPortrait(chatID, userID int64, portrait string) e
 	return s.mg.saveParticipantPortrait(chatID, userID, portrait, time.Now().Unix())
 }
 
+func (s *Store) DeleteParticipantPortrait(userID int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	if userID == 0 {
+		return nil
+	}
+	return s.mg.deleteParticipantPortrait(userID)
+}
+
 func sanitizeChance(v int) int {
 	if v < 1 {
 		return 1
@@ -173,6 +183,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeSendSticker
 	case "delete":
 		return ActionTypeDelete
+	case "delete_user_portrait":
+		return ActionTypeDeletePortrait
 	case "gpt_prompt":
 		return ActionTypeGPTPrompt
 	case "gpt_image":

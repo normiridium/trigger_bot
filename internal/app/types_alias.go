@@ -42,16 +42,17 @@ const (
 )
 
 const (
-	ActionTypeSend         = model.ActionTypeSend
-	ActionTypeSendSticker  = model.ActionTypeSendSticker
-	ActionTypeDelete       = model.ActionTypeDelete
-	ActionTypeGPTPrompt    = model.ActionTypeGPTPrompt
-	ActionTypeGPTImage     = model.ActionTypeGPTImage
-	ActionTypeSearchImage  = model.ActionTypeSearchImage
-	ActionTypeSpotifyMusic = model.ActionTypeSpotifyMusic
-	ActionTypeMusic        = model.ActionTypeMusic
-	ActionTypeYandexMusic  = model.ActionTypeYandexMusic
-	ActionTypeMediaAudio   = model.ActionTypeMediaAudio
-	ActionTypeMediaTikTok  = model.ActionTypeMediaTikTok
-	ActionTypeMediaX       = model.ActionTypeMediaX
+	ActionTypeSend           = model.ActionTypeSend
+	ActionTypeSendSticker    = model.ActionTypeSendSticker
+	ActionTypeDelete         = model.ActionTypeDelete
+	ActionTypeDeletePortrait = model.ActionTypeDeletePortrait
+	ActionTypeGPTPrompt      = model.ActionTypeGPTPrompt
+	ActionTypeGPTImage       = model.ActionTypeGPTImage
+	ActionTypeSearchImage    = model.ActionTypeSearchImage
+	ActionTypeSpotifyMusic   = model.ActionTypeSpotifyMusic
+	ActionTypeMusic          = model.ActionTypeMusic
+	ActionTypeYandexMusic    = model.ActionTypeYandexMusic
+	ActionTypeMediaAudio     = model.ActionTypeMediaAudio
+	ActionTypeMediaTikTok    = model.ActionTypeMediaTikTok
+	ActionTypeMediaX         = model.ActionTypeMediaX
 )

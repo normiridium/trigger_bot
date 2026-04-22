@@ -2555,6 +2555,34 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		} else if deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 		}
+	case "delete_user_portrait":
+		if msg.From == nil || msg.From.ID == 0 {
+			return
+		}
+		if deps.Portraits == nil {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка удаления портрета", errors.New("participant portraits are not initialized"))
+			return
+		}
+		if err := deps.Portraits.DeletePortrait(msg.From.ID); err != nil {
+			log.Printf("delete participant portrait failed chat=%d user=%d err=%v", msg.Chat.ID, msg.From.ID, err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка удаления портрета", err)
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == "command_reply" {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+		if strings.TrimSpace(out) == "" {
+			out = "Портрет удалён. Начну собирать новый по следующим сообщениям."
+		}
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if ok := sendHTML(sendCtx, out, tr.Preview); ok && deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
+		return
 	case "gpt_prompt":
 		if deps.Portraits != nil {
 			deps.Portraits.ObserveMessage(msg)
