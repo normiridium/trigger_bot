@@ -214,6 +214,8 @@ var responseTemplateCache = struct {
 var responseTemplateFuncsMu sync.RWMutex
 var participantPortraitResolverMu sync.RWMutex
 var participantPortraitResolver func(chatID, userID int64) string
+var participantPortraitRemainingResolverMu sync.RWMutex
+var participantPortraitRemainingResolver func(chatID, userID int64) int
 var chatContextResolverMu sync.RWMutex
 var chatContextResolver func(chatID int64, limit int) string
 var templateWeatherCache = struct {
@@ -245,6 +247,12 @@ func setParticipantPortraitResolver(fn func(chatID, userID int64) string) {
 	participantPortraitResolverMu.Unlock()
 }
 
+func setParticipantPortraitRemainingResolver(fn func(chatID, userID int64) int) {
+	participantPortraitRemainingResolverMu.Lock()
+	participantPortraitRemainingResolver = fn
+	participantPortraitRemainingResolverMu.Unlock()
+}
+
 func resolveParticipantPortrait(chatID, userID int64) string {
 	if chatID == 0 || userID == 0 {
 		return ""
@@ -256,6 +264,26 @@ func resolveParticipantPortrait(chatID, userID int64) string {
 		return ""
 	}
 	return strings.TrimSpace(fn(chatID, userID))
+}
+
+func resolveParticipantPortraitRemaining(chatID, userID int64) int {
+	if chatID == 0 || userID == 0 {
+		return participantPortraitBatchSize
+	}
+	participantPortraitRemainingResolverMu.RLock()
+	fn := participantPortraitRemainingResolver
+	participantPortraitRemainingResolverMu.RUnlock()
+	if fn == nil {
+		return participantPortraitBatchSize
+	}
+	remaining := fn(chatID, userID)
+	if remaining < 0 {
+		return 0
+	}
+	if remaining > participantPortraitBatchSize {
+		return participantPortraitBatchSize
+	}
+	return remaining
 }
 
 func setChatContextResolver(fn func(chatID int64, limit int) string) {
@@ -1552,28 +1580,30 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 
 	chatTitle := strings.TrimSpace(msg.Chat.Title)
 	userPortrait := resolveParticipantPortrait(msg.Chat.ID, msg.From.ID)
+	userPortraitRemaining := strconv.Itoa(resolveParticipantPortraitRemaining(msg.Chat.ID, msg.From.ID))
 
 	return map[string]string{
-		"{{message}}":            userText,
-		"{{user_text}}":          userText,
-		"{{user_id}}":            strconv.FormatInt(msg.From.ID, 10),
-		"{{user_first_name}}":    strings.TrimSpace(msg.From.FirstName),
-		"{{user_username}}":      userUsername,
-		"{{user_display_name}}":  userDisplayName,
-		"{{user_label}}":         userLabel,
-		"{{sender_tag}}":         senderTagDisplay,
-		"{{user_portrait}}":      userPortrait,
-		"{{user_link}}":          buildUserLink(msg.From),
-		"{{chat_id}}":            strconv.FormatInt(msg.Chat.ID, 10),
-		"{{chat_title}}":         chatTitle,
-		"{{reply_text}}":         replyText,
-		"{{reply_user_id}}":      replyUserID,
-		"{{reply_first_name}}":   replyFirstName,
-		"{{reply_username}}":     replyUsername,
-		"{{reply_display_name}}": replyDisplayName,
-		"{{reply_label}}":        replyLabel,
-		"{{reply_user_link}}":    replyUserLink,
-		"{{reply_sender_tag}}":   replySenderTagDisplay,
+		"{{message}}":                 userText,
+		"{{user_text}}":               userText,
+		"{{user_id}}":                 strconv.FormatInt(msg.From.ID, 10),
+		"{{user_first_name}}":         strings.TrimSpace(msg.From.FirstName),
+		"{{user_username}}":           userUsername,
+		"{{user_display_name}}":       userDisplayName,
+		"{{user_label}}":              userLabel,
+		"{{sender_tag}}":              senderTagDisplay,
+		"{{user_portrait}}":           userPortrait,
+		"{{user_portrait_remaining}}": userPortraitRemaining,
+		"{{user_link}}":               buildUserLink(msg.From),
+		"{{chat_id}}":                 strconv.FormatInt(msg.Chat.ID, 10),
+		"{{chat_title}}":              chatTitle,
+		"{{reply_text}}":              replyText,
+		"{{reply_user_id}}":           replyUserID,
+		"{{reply_first_name}}":        replyFirstName,
+		"{{reply_username}}":          replyUsername,
+		"{{reply_display_name}}":      replyDisplayName,
+		"{{reply_label}}":             replyLabel,
+		"{{reply_user_link}}":         replyUserLink,
+		"{{reply_sender_tag}}":        replySenderTagDisplay,
 	}
 }
 
