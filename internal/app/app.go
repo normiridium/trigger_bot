@@ -1627,6 +1627,15 @@ func Run() {
 	if logTextClipMax < 0 {
 		logTextClipMax = 200
 	}
+	userDailyBotMessagesLimit := envInt("USER_DAILY_BOT_MESSAGES_LIMIT", 12)
+	if userDailyBotMessagesLimit < 0 {
+		userDailyBotMessagesLimit = 0
+	}
+	if userDailyBotMessagesLimit > 0 {
+		log.Printf("per-user GPT response limit enabled: %d per 4h window (UTC)", userDailyBotMessagesLimit)
+	} else {
+		log.Printf("per-user GPT response limit disabled")
+	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
 
 	allowedChats, err := parseAllowedChatIDs(os.Getenv("ALLOWED_CHAT_IDS"))
@@ -2144,6 +2153,26 @@ func Run() {
 		}
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
+		quotaConsumed := false
+		consumeDailyQuota := func() bool {
+			if quotaConsumed {
+				return true
+			}
+			ok, err := store.TryConsumeDailyUserBotMessage(msg.From.ID, now, userDailyBotMessagesLimit)
+			if err != nil {
+				log.Printf("gpt user-limit check failed user=%d: %v", msg.From.ID, err)
+				quotaConsumed = true
+				return true
+			}
+			if ok {
+				quotaConsumed = true
+				return true
+			}
+			if debugTriggerLogEnabled {
+				log.Printf("gpt user-limit reached user=%d chat=%d limit=%d/4h", msg.From.ID, msg.Chat.ID, userDailyBotMessagesLimit)
+			}
+			return false
+		}
 
 		recentBefore := ""
 		if text != "" {
@@ -2187,6 +2216,9 @@ func Run() {
 			},
 		})
 		if primary != nil {
+			if primary.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+				continue
+			}
 			matchedAny = true
 			used[primary.ID] = struct{}{}
 			if debugTriggerLogEnabled {
@@ -2213,6 +2245,10 @@ func Run() {
 			if tr == nil {
 				break
 			}
+			if tr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+				matchedAny = true
+				break
+			}
 			matchedAny = true
 			used[tr.ID] = struct{}{}
 			if debugTriggerLogEnabled {
@@ -2235,6 +2271,9 @@ func Run() {
 				return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 			})
 			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
+				if autoTr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+					continue
+				}
 				ctx := ""
 				if isOlenyamTrigger(autoTr) {
 					ctx = recentBefore

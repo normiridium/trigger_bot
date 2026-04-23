@@ -724,3 +724,39 @@ func TestChatAdminSyncCRUD(t *testing.T) {
 		t.Fatalf("expected sync row to be deleted")
 	}
 }
+
+func TestTryConsumeDailyUserBotMessage(t *testing.T) {
+	s := openTestStore(t)
+	userID := int64(123456)
+	winStart := time.Date(2026, time.April, 23, 12, 5, 0, 0, time.UTC) // 12:00..15:59 window
+	nextWin := time.Date(2026, time.April, 23, 16, 0, 1, 0, time.UTC)  // next 4h window
+
+	ok, err := s.TryConsumeDailyUserBotMessage(userID, winStart, 2)
+	if err != nil {
+		t.Fatalf("first consume: %v", err)
+	}
+	if !ok {
+		t.Fatalf("first consume must pass")
+	}
+	ok, err = s.TryConsumeDailyUserBotMessage(userID, winStart.Add(2*time.Hour), 2)
+	if err != nil {
+		t.Fatalf("second consume: %v", err)
+	}
+	if !ok {
+		t.Fatalf("second consume must pass")
+	}
+	ok, err = s.TryConsumeDailyUserBotMessage(userID, winStart.Add(3*time.Hour), 2)
+	if err != nil {
+		t.Fatalf("third consume: %v", err)
+	}
+	if ok {
+		t.Fatalf("third consume in same 4h window must be blocked")
+	}
+	ok, err = s.TryConsumeDailyUserBotMessage(userID, nextWin, 2)
+	if err != nil {
+		t.Fatalf("next window consume: %v", err)
+	}
+	if !ok {
+		t.Fatalf("next 4h window consume must pass")
+	}
+}
