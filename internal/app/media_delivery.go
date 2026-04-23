@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +33,236 @@ func (c sendContext) WithReply(replyTo int) sendContext {
 	return c
 }
 
+func sanitizeTelegramText(s string) string {
+	return strings.ToValidUTF8(s, "")
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
+type htmlOpenTag struct {
+	name string
+	open string
+}
+
+var telegramHTMLTokenRe = regexp.MustCompile(`(?s)<[^>]+>|[^<]+`)
+
+func splitTelegramHTMLMessage(input string, maxRunes int) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	if maxRunes <= 0 {
+		return []string{input}
+	}
+	if len([]rune(input)) <= maxRunes {
+		return []string{input}
+	}
+
+	tokens := telegramHTMLTokenRe.FindAllString(input, -1)
+	if len(tokens) == 0 {
+		return []string{input}
+	}
+
+	stack := make([]htmlOpenTag, 0, 8)
+	out := make([]string, 0, 2)
+	var b strings.Builder
+	curLen := 0
+	hasPayload := false
+
+	openPrefix := func() string {
+		if len(stack) == 0 {
+			return ""
+		}
+		var p strings.Builder
+		for _, t := range stack {
+			p.WriteString(t.open)
+		}
+		return p.String()
+	}
+	closeSuffix := func(st []htmlOpenTag) string {
+		if len(st) == 0 {
+			return ""
+		}
+		var p strings.Builder
+		for i := len(st) - 1; i >= 0; i-- {
+			p.WriteString("</")
+			p.WriteString(st[i].name)
+			p.WriteString(">")
+		}
+		return p.String()
+	}
+	flush := func() bool {
+		if !hasPayload {
+			return false
+		}
+		chunk := b.String() + closeSuffix(stack)
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			return false
+		}
+		out = append(out, chunk)
+		b.Reset()
+		curLen = 0
+		hasPayload = false
+		prefix := openPrefix()
+		if prefix != "" {
+			b.WriteString(prefix)
+			curLen += len([]rune(prefix))
+		}
+		return true
+	}
+
+	prefix := openPrefix()
+	if prefix != "" {
+		b.WriteString(prefix)
+		curLen += len([]rune(prefix))
+	}
+
+	for _, tok := range tokens {
+		name, isOpen, isClose, isSelf := parseTelegramHTMLTag(tok)
+		if isOpen || isClose {
+			newStack := make([]htmlOpenTag, len(stack))
+			copy(newStack, stack)
+			if isOpen && !isSelf {
+				newStack = append(newStack, htmlOpenTag{name: name, open: tok})
+			} else if isClose {
+				for i := len(newStack) - 1; i >= 0; i-- {
+					if newStack[i].name == name {
+						newStack = newStack[:i]
+						break
+					}
+				}
+			}
+			tokenLen := len([]rune(tok))
+			if curLen+tokenLen+len([]rune(closeSuffix(newStack))) > maxRunes {
+				if flush() {
+					// retry this token on fresh chunk with reopened tags
+					name, isOpen, isClose, isSelf = parseTelegramHTMLTag(tok)
+					newStack = make([]htmlOpenTag, len(stack))
+					copy(newStack, stack)
+					if isOpen && !isSelf {
+						newStack = append(newStack, htmlOpenTag{name: name, open: tok})
+					} else if isClose {
+						for i := len(newStack) - 1; i >= 0; i-- {
+							if newStack[i].name == name {
+								newStack = newStack[:i]
+								break
+							}
+						}
+					}
+				}
+			}
+			b.WriteString(tok)
+			curLen += tokenLen
+			hasPayload = true
+			stack = newStack
+			continue
+		}
+
+		rest := tok
+		for rest != "" {
+			suffixLen := len([]rune(closeSuffix(stack)))
+			avail := maxRunes - curLen - suffixLen
+			if avail <= 0 {
+				if !flush() {
+					// Degenerate case: cannot flush because payload is empty.
+					// Fall back to hard split.
+					r := []rune(rest)
+					cut := maxRunes - curLen
+					if cut <= 0 {
+						cut = 1
+					}
+					if cut > len(r) {
+						cut = len(r)
+					}
+					part := string(r[:cut])
+					b.WriteString(part)
+					curLen += len([]rune(part))
+					hasPayload = true
+					rest = string(r[cut:])
+					_ = flush()
+					continue
+				}
+				continue
+			}
+			r := []rune(rest)
+			if len(r) <= avail {
+				b.WriteString(rest)
+				curLen += len(r)
+				hasPayload = true
+				rest = ""
+				continue
+			}
+			part := string(r[:avail])
+			b.WriteString(part)
+			curLen += len([]rune(part))
+			hasPayload = true
+			rest = string(r[avail:])
+			_ = flush()
+		}
+	}
+	if hasPayload {
+		chunk := strings.TrimSpace(b.String() + closeSuffix(stack))
+		if chunk != "" {
+			out = append(out, chunk)
+		}
+	}
+	if len(out) == 0 {
+		return []string{input}
+	}
+	return out
+}
+
+func parseTelegramHTMLTag(tok string) (name string, isOpen bool, isClose bool, isSelf bool) {
+	t := strings.TrimSpace(tok)
+	if len(t) < 3 || t[0] != '<' || t[len(t)-1] != '>' {
+		return "", false, false, false
+	}
+	inner := strings.TrimSpace(t[1 : len(t)-1])
+	if inner == "" {
+		return "", false, false, false
+	}
+	if strings.HasPrefix(inner, "/") {
+		rest := strings.TrimSpace(inner[1:])
+		if rest == "" {
+			return "", false, false, false
+		}
+		parts := strings.Fields(rest)
+		if len(parts) == 0 {
+			return "", false, false, false
+		}
+		return strings.ToLower(parts[0]), false, true, false
+	}
+	if strings.HasSuffix(inner, "/") {
+		isSelf = true
+		inner = strings.TrimSpace(strings.TrimSuffix(inner, "/"))
+	}
+	parts := strings.Fields(inner)
+	if len(parts) == 0 {
+		return "", false, false, false
+	}
+	name = strings.ToLower(parts[0])
+	switch name {
+	case "b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre", "blockquote", "a", "tg-spoiler", "tg-emoji":
+		return name, true, false, isSelf
+	default:
+		return "", false, false, false
+	}
+}
+
 func reply(ctx sendContext, text string, preview bool) {
 	rawText := strings.TrimSpace(text)
+	text = sanitizeTelegramText(text)
+	// text = truncateRunes(text, 4096) // временно отключено
 	m := tgbotapi.NewMessage(ctx.ChatID, text)
 	m.DisableWebPagePreview = !preview
 	if ctx.ReplyTo > 0 {
@@ -54,39 +283,63 @@ func reply(ctx sendContext, text string, preview bool) {
 
 func sendHTML(ctx sendContext, html string, preview bool) bool {
 	html = normalizeTelegramLineBreaks(html)
+	html = sanitizeTelegramText(html)
 	if strings.TrimSpace(html) == "" {
 		if debugTriggerLogEnabled {
 			log.Printf("send html skipped chat=%d replyTo=%d: empty text", ctx.ChatID, ctx.ReplyTo)
 		}
 		return false
 	}
-	m := tgbotapi.NewMessage(ctx.ChatID, html)
-	m.ParseMode = "HTML"
-	m.DisableWebPagePreview = !preview
-	if ctx.ReplyTo > 0 {
-		m.ReplyToMessageID = ctx.ReplyTo
-		m.AllowSendingWithoutReply = true
-	}
-	if len(m.Text) > 4096 {
-		m.Text = m.Text[:4096]
-	}
-	sent, err := ctx.Bot.Send(m)
-	if err != nil {
-		log.Printf("send html failed: %v", err)
-		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки HTML-сообщения", err)
+	parts := splitTelegramHTMLMessage(html, 4096)
+	if len(parts) == 0 {
 		return false
 	}
-	if debugTriggerLogEnabled {
-		log.Printf("send html ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Text, 120))
+	replyTo := ctx.ReplyTo
+	for i, part := range parts {
+		m := tgbotapi.NewMessage(ctx.ChatID, part)
+		m.ParseMode = "HTML"
+		m.DisableWebPagePreview = !preview
+		if i == 0 && replyTo > 0 {
+			m.ReplyToMessageID = replyTo
+			m.AllowSendingWithoutReply = true
+		}
+		sent, err := ctx.Bot.Send(m)
+		if err != nil {
+			// Fallback for stale/invalid custom emoji IDs: keep text, drop tg-emoji tags.
+			if strings.Contains(strings.ToLower(err.Error()), "invalid custom emoji identifier") {
+				fallback := replaceTGEmojiTagsWithFallback(part)
+				m2 := tgbotapi.NewMessage(ctx.ChatID, fallback)
+				m2.ParseMode = "HTML"
+				m2.DisableWebPagePreview = !preview
+				if i == 0 && replyTo > 0 {
+					m2.ReplyToMessageID = replyTo
+					m2.AllowSendingWithoutReply = true
+				}
+				sent, err = ctx.Bot.Send(m2)
+				if err == nil {
+					part = fallback
+				}
+			}
+		}
+		if err != nil {
+			log.Printf("send html failed part=%d/%d: %v", i+1, len(parts), err)
+			reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки HTML-сообщения", err)
+			return false
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send html ok chat=%d msg=%d replyTo=%d part=%d/%d text=%q",
+				ctx.ChatID, sent.MessageID, replyTo, i+1, len(parts), clipText(part, 120))
+		}
+		plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(part, " "))
+		addOutgoingChatRecentMessage(ctx.ChatID, plain)
 	}
-	plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(m.Text, " "))
-	addOutgoingChatRecentMessage(ctx.ChatID, plain)
 	return true
 }
 
 func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 	rawText := strings.TrimSpace(text)
 	text = normalizeTelegramLineBreaks(text)
+	text = sanitizeTelegramText(text)
 	text = escapeMarkdownV2PreservingFences(text)
 	m := tgbotapi.NewMessage(ctx.ChatID, text)
 	m.ParseMode = "MarkdownV2"
@@ -95,9 +348,7 @@ func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 		m.ReplyToMessageID = ctx.ReplyTo
 		m.AllowSendingWithoutReply = true
 	}
-	if len(m.Text) > 4096 {
-		m.Text = m.Text[:4096]
-	}
+	// m.Text = truncateRunes(m.Text, 4096) // временно отключено
 	sent, err := ctx.Bot.Send(m)
 	if err != nil {
 		log.Printf("send markdown failed: %v", err)
