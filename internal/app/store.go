@@ -100,6 +100,13 @@ func (s *Store) UpsertChatAdminCache(chatID, userID int64, isAdmin bool, updated
 	return s.mg.upsertChatAdminCache(chatID, userID, isAdmin, updatedAt)
 }
 
+func (s *Store) TryConsumeDailyUserBotMessage(userID int64, now time.Time, limit int) (bool, error) {
+	if s == nil || s.mg == nil {
+		return false, errors.New("mongo backend not initialized")
+	}
+	return s.mg.tryConsumeDailyUserBotMessage(userID, now, limit)
+}
+
 func (s *Store) ClearChatAdminCache(chatID int64) error {
 	if s == nil || s.mg == nil {
 		return errors.New("mongo backend not initialized")

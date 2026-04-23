@@ -610,6 +610,7 @@ func settingsSchema() []settingField {
 		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
 		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
 		{Key: "OLENYAM_CONTEXT_MESSAGES", Label: "Контекст для GPT (сообщений)", Type: "int", Description: "4"},
+		{Key: "USER_DAILY_BOT_MESSAGES_LIMIT", Label: "Лимит GPT-ответов на пользователя за 4 часа (0 = выкл)", Type: "int", Description: "12"},
 		{Key: "DEBUG_TRIGGER_LOG", Label: "Лог триггеров (debug)", Type: "bool", Description: "false"},
 		{Key: "DEBUG_GPT_LOG", Label: "Лог GPT (debug)", Type: "bool", Description: "false"},
 		{Key: "LOG_TEXT_CLIP_CHARS", Label: "Обрезка текста в логах (0 = без обрезки)", Type: "int", Description: "200"},

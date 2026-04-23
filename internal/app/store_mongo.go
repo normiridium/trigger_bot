@@ -24,6 +24,7 @@ type mongoBackend struct {
 	admins    *mongo.Collection
 	adminSync *mongo.Collection
 	profiles  *mongo.Collection
+	quotas    *mongo.Collection
 	counters  *mongo.Collection
 }
 
@@ -85,6 +86,15 @@ type mongoParticipantProfileDoc struct {
 	CreatedAt       int64    `bson:"created_at"`
 	UpdatedAt       int64    `bson:"updated_at"`
 }
+
+type mongoDailyUserQuotaDoc struct {
+	UserID    int64  `bson:"user_id"`
+	DayUTC    string `bson:"day_utc"`
+	Count     int    `bson:"count"`
+	UpdatedAt int64  `bson:"updated_at"`
+}
+
+const gptUserQuotaWindow = 4 * time.Hour
 
 func responseItemsFromRaw(v interface{}) ([]ResponseTextItem, bool) {
 	if v == nil {
@@ -219,6 +229,7 @@ func openMongoStore(uri string) (*Store, error) {
 		admins:    db.Collection("chat_admin_cache"),
 		adminSync: db.Collection("chat_admin_sync"),
 		profiles:  db.Collection("participant_profiles"),
+		quotas:    db.Collection("user_daily_bot_quota"),
 		counters:  db.Collection("counters"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
@@ -307,7 +318,82 @@ func (m *mongoBackend) ensureIndexes() error {
 			Keys: bson.D{{Key: "updated_at", Value: 1}},
 		},
 	})
+	if err != nil {
+		return err
+	}
+	_, err = m.quotas.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "day_utc", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "updated_at", Value: 1}},
+		},
+	})
 	return err
+}
+
+func (m *mongoBackend) tryConsumeDailyUserBotMessage(userID int64, now time.Time, limit int) (bool, error) {
+	if userID == 0 || limit <= 0 {
+		return true, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
+	nowUnix := now.Unix()
+
+	res, err := m.quotas.UpdateOne(
+		ctx,
+		bson.M{
+			"user_id": userID,
+			"day_utc": window,
+			"count":   bson.M{"$lt": limit},
+		},
+		bson.M{
+			"$inc": bson.M{"count": 1},
+			"$set": bson.M{"updated_at": nowUnix},
+		},
+	)
+	if err != nil {
+		return false, err
+	}
+	if res.ModifiedCount > 0 {
+		return true, nil
+	}
+
+	res, err = m.quotas.UpdateOne(
+		ctx,
+		bson.M{"user_id": userID, "day_utc": window},
+		bson.M{
+			"$setOnInsert": bson.M{
+				"user_id":    userID,
+				"day_utc":    window,
+				"count":      1,
+				"updated_at": nowUnix,
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return false, err
+	}
+	if res.UpsertedCount > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
+func quotaWindowKeyUTC(now time.Time, window time.Duration) string {
+	if window <= 0 {
+		window = 4 * time.Hour
+	}
+	sec := int64(window / time.Second)
+	if sec <= 0 {
+		sec = 1
+	}
+	ts := now.UTC().Unix()
+	start := (ts / sec) * sec
+	return time.Unix(start, 0).UTC().Format(time.RFC3339)
 }
 
 func triggerToDocMap(t Trigger) bson.M {
