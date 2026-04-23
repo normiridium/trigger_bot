@@ -535,9 +535,13 @@ func reportChatFailure(bot *tgbotapi.BotAPI, chatID int64, context string, err e
 }
 
 func clipText(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if max <= 0 || len(s) <= max {
+	s = strings.TrimSpace(strings.ToValidUTF8(s, ""))
+	if max <= 0 {
 		return s
 	}
-	return s[:max] + "..."
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return strings.TrimSpace(string(r[:max])) + "..."
 }

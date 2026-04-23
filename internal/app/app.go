@@ -359,10 +359,33 @@ func addOutgoingChatRecentMessage(chatID int64, text string) {
 	})
 }
 
+func sendTypingAction(bot *tgbotapi.BotAPI, chatID int64) {
+	if bot == nil || chatID == 0 {
+		return
+	}
+	_, _ = bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+}
+
+func ensureMinTypingWindow(bot *tgbotapi.BotAPI, chatID int64, startedAt time.Time, min time.Duration) {
+	if min <= 0 {
+		return
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	wait := min - time.Since(startedAt)
+	if wait <= 0 {
+		return
+	}
+	sendTypingAction(bot, chatID)
+	time.Sleep(wait)
+}
+
 func executeGPTPromptTask(task gpt.PromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
+	sendTypingAction(task.Bot, task.Msg.Chat.ID)
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
@@ -371,6 +394,11 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		return
 	}
 	out = expandTemplateCalls(out, task.TemplateLookup)
+	startedAt := task.TriggeredAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	ensureMinTypingWindow(task.Bot, task.Msg.Chat.ID, startedAt, 1*time.Second)
 	replyTo := 0
 	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
 		replyTo = task.Msg.MessageID
@@ -2219,6 +2247,7 @@ func Run() {
 					Bot:            bot,
 					Trigger:        trCopy,
 					Msg:            msg,
+					TriggeredAt:    time.Now(),
 					RecentContext:  ctx,
 					TemplateLookup: templateLookup,
 					IdleMarkActivity: func(chatID int64, now time.Time) {
@@ -2602,10 +2631,12 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if deps.GPTDebouncer != nil {
 			trCopy := *tr
 			trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
+			triggeredAt := time.Now()
 			deps.GPTDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
 				Bot:            deps.Bot,
 				Trigger:        trCopy,
 				Msg:            msg,
+				TriggeredAt:    triggeredAt,
 				RecentContext:  ctx,
 				TemplateLookup: deps.TemplateLookup,
 				IdleMarkActivity: func(chatID int64, now time.Time) {
@@ -2622,10 +2653,12 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		trCopy := *tr
 		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
+		triggeredAt := time.Now()
 		executeGPTPromptTask(gpt.PromptTask{
 			Bot:            deps.Bot,
 			Trigger:        trCopy,
 			Msg:            msg,
+			TriggeredAt:    triggeredAt,
 			RecentContext:  ctx,
 			TemplateLookup: deps.TemplateLookup,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
