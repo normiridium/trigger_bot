@@ -764,7 +764,13 @@ func fetchWebSearchContext(query string, limit int) (string, error) {
 	if len(payload.OrganicResults) == 0 {
 		return "", nil
 	}
+	const (
+		maxTitleRunes   = 180
+		maxSnippetRunes = 480
+		maxOutputRunes  = 3800
+	)
 	out := make([]string, 0, limit)
+	totalRunes := 0
 	for i, it := range payload.OrganicResults {
 		if len(out) >= limit {
 			break
@@ -776,11 +782,24 @@ func fetchWebSearchContext(query string, limit int) (string, error) {
 		if title == "" && snippet == "" {
 			continue
 		}
-		line := fmt.Sprintf("%d) %s", i+1, clipText(title, 120))
+		line := fmt.Sprintf("%d) %s", i+1, clipText(title, maxTitleRunes))
 		if snippet != "" {
-			line += " — " + clipText(snippet, 220)
+			line += " — " + clipText(snippet, maxSnippetRunes)
+		}
+		lineRunes := len([]rune(line))
+		if totalRunes+lineRunes > maxOutputRunes {
+			if len(out) > 0 {
+				break
+			}
+			allowed := maxOutputRunes
+			if allowed <= 0 {
+				return "", nil
+			}
+			line = clipText(line, allowed)
+			lineRunes = len([]rune(line))
 		}
 		out = append(out, line)
+		totalRunes += lineRunes + 1 // + newline
 	}
 	if len(out) == 0 {
 		return "", nil
