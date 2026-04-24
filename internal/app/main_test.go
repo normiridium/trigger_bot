@@ -861,6 +861,46 @@ func TestParseModerationCommandBanSlashAndMention(t *testing.T) {
 	}
 }
 
+func TestParseModerationCommandMuteDurationBeforeTarget(t *testing.T) {
+	req, ok, err := parseModerationCommand("!mute 6m @user")
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok || req.Action != "mute" {
+		t.Fatalf("unexpected parse: ok=%v req=%#v", ok, req)
+	}
+	if req.Duration != 6*time.Minute || req.DurationRaw != "6m" {
+		t.Fatalf("unexpected duration: %s raw=%q", req.Duration, req.DurationRaw)
+	}
+	if len(req.Targets) != 1 || req.Targets[0] != "@user" {
+		t.Fatalf("unexpected targets: %#v", req.Targets)
+	}
+}
+
+func TestParseModerationCommandUnmuteTargets(t *testing.T) {
+	req, ok, err := parseModerationCommand("!unmute @username")
+	if err != nil {
+		t.Fatalf("parse err: %v", err)
+	}
+	if !ok || req.Action != "unmute" {
+		t.Fatalf("unexpected parse: ok=%v req=%#v", ok, req)
+	}
+	if len(req.Targets) != 1 || req.Targets[0] != "@username" {
+		t.Fatalf("unexpected targets: %#v", req.Targets)
+	}
+
+	req, ok, err = parseModerationCommand("!unmute 79886464684")
+	if err != nil {
+		t.Fatalf("parse err (id): %v", err)
+	}
+	if !ok || req.Action != "unmute" {
+		t.Fatalf("unexpected parse (id): ok=%v req=%#v", ok, req)
+	}
+	if len(req.Targets) != 1 || req.Targets[0] != "79886464684" {
+		t.Fatalf("unexpected targets (id): %#v", req.Targets)
+	}
+}
+
 func TestParseModerationCommandReadonlyAlias(t *testing.T) {
 	req, ok, err := parseModerationCommand("!ro 30m")
 	if err != nil {

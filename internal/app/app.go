@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html"
@@ -219,6 +221,118 @@ type moderationRequest struct {
 	Duration    time.Duration
 	DurationRaw string
 	Reason      string
+}
+
+const (
+	moderationConfirmQuestionCount = 3
+)
+
+type moderationConfirmState struct {
+	ID           string
+	ChatID       int64
+	AdminID      int64
+	SenderTag    string
+	Req          moderationRequest
+	Targets      []int64
+	TargetLabels []string
+	Answers      [moderationConfirmQuestionCount]bool
+	CreatedAt    time.Time
+}
+
+type moderationConfirmManager struct {
+	mu    sync.Mutex
+	ttl   time.Duration
+	items map[string]moderationConfirmState
+}
+
+func newModerationConfirmManager(ttl time.Duration) *moderationConfirmManager {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return &moderationConfirmManager{
+		ttl:   ttl,
+		items: make(map[string]moderationConfirmState),
+	}
+}
+
+func newModerationConfirmID() string {
+	var b [6]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func (m *moderationConfirmManager) cleanupLocked(now time.Time) {
+	if m == nil {
+		return
+	}
+	for id, st := range m.items {
+		if now.Sub(st.CreatedAt) > m.ttl {
+			delete(m.items, id)
+		}
+	}
+}
+
+func (m *moderationConfirmManager) Create(st moderationConfirmState) string {
+	if m == nil {
+		return ""
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	st.ID = newModerationConfirmID()
+	st.CreatedAt = now
+	m.items[st.ID] = st
+	return st.ID
+}
+
+func (m *moderationConfirmManager) Get(id string) (moderationConfirmState, bool) {
+	if m == nil {
+		return moderationConfirmState{}, false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return moderationConfirmState{}, false
+	}
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	st, ok := m.items[id]
+	return st, ok
+}
+
+func (m *moderationConfirmManager) Toggle(id string, idx int) (moderationConfirmState, bool) {
+	if m == nil || idx < 0 || idx >= moderationConfirmQuestionCount {
+		return moderationConfirmState{}, false
+	}
+	id = strings.TrimSpace(id)
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	st, ok := m.items[id]
+	if !ok {
+		return moderationConfirmState{}, false
+	}
+	st.Answers[idx] = !st.Answers[idx]
+	m.items[id] = st
+	return st, true
+}
+
+func (m *moderationConfirmManager) Delete(id string) {
+	if m == nil {
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.items, id)
+	m.mu.Unlock()
 }
 
 func genderedModerationVerb(tag, male, female, unknown string) string {
@@ -869,8 +983,12 @@ func (c *adminStatusCache) IsChatAdmin(bot *tgbotapi.BotAPI, chatID, userID int6
 			}
 		}
 	}
-
-	return false
+	isAdmin := fetchChatAdminStatus(bot, chatID, userID)
+	c.setCached(chatID, userID, isAdmin, now)
+	if c.store != nil {
+		_ = c.store.UpsertChatAdminCache(chatID, userID, isAdmin, now.Unix())
+	}
+	return isAdmin
 }
 
 func (c *adminStatusCache) ClearChat(chatID int64) error {
@@ -899,13 +1017,13 @@ func (c *adminStatusCache) ReloadChatAdmins(bot *tgbotapi.BotAPI, chatID int64) 
 	if bot == nil || chatID == 0 {
 		return 0, errors.New("invalid chat reload params")
 	}
-	if err := c.ClearChat(chatID); err != nil {
-		return 0, err
-	}
 	admins, err := bot.GetChatAdministrators(tgbotapi.ChatAdministratorsConfig{
 		ChatConfig: tgbotapi.ChatConfig{ChatID: chatID},
 	})
 	if err != nil {
+		return 0, err
+	}
+	if err := c.ClearChat(chatID); err != nil {
 		return 0, err
 	}
 	now := time.Now()
@@ -1271,19 +1389,21 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 		return out, true, nil
 	}
 
-	if len(args) > 0 {
-		if d, ok := parseModerationDurationToken(args[len(args)-1]); ok && (out.Action == "ban" || out.Action == "mute") {
-			out.Duration = d
-			out.DurationRaw = strings.ToLower(strings.TrimSpace(args[len(args)-1]))
-			args = args[:len(args)-1]
-		}
-	}
+	filtered := make([]string, 0, len(args))
 	for _, a := range args {
 		v := strings.TrimSpace(strings.Trim(a, ",;"))
 		if v != "" {
-			out.Targets = append(out.Targets, v)
+			if (out.Action == "ban" || out.Action == "mute") && out.Duration == 0 {
+				if d, ok := parseModerationDurationToken(v); ok {
+					out.Duration = d
+					out.DurationRaw = strings.ToLower(strings.TrimSpace(v))
+					continue
+				}
+			}
+			filtered = append(filtered, v)
 		}
 	}
+	out.Targets = append(out.Targets, filtered...)
 	return out, true, nil
 }
 
@@ -1327,11 +1447,356 @@ func applyReadonly(bot *tgbotapi.BotAPI, chatID int64, on bool) error {
 	return err
 }
 
+func unmuteChatMember(bot *tgbotapi.BotAPI, chatID, userID int64) error {
+	if bot == nil || chatID == 0 || userID == 0 {
+		return errors.New("invalid unmute params")
+	}
+	_, err := bot.Request(tgbotapi.RestrictChatMemberConfig{
+		ChatMemberConfig: tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: userID},
+		Permissions: &tgbotapi.ChatPermissions{
+			CanSendMessages:       true,
+			CanSendMediaMessages:  true,
+			CanSendPolls:          true,
+			CanSendOtherMessages:  true,
+			CanAddWebPagePreviews: true,
+		},
+		UntilDate: 0,
+	})
+	return err
+}
+
+func runScheduledUnmutes(bot *tgbotapi.BotAPI, store *Store) {
+	if bot == nil || store == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		nowUnix := time.Now().Unix()
+		items, err := store.ListDueScheduledUnmutes(nowUnix, 64)
+		if err != nil {
+			log.Printf("scheduled unmute list failed: %v", err)
+			continue
+		}
+		for _, it := range items {
+			if it.ChatID == 0 || it.UserID == 0 {
+				continue
+			}
+			if err := unmuteChatMember(bot, it.ChatID, it.UserID); err != nil {
+				if debugTriggerLogEnabled {
+					log.Printf("scheduled unmute failed chat=%d user=%d: %v", it.ChatID, it.UserID, err)
+				}
+				continue
+			}
+			if err := store.DeleteScheduledUnmute(it.ChatID, it.UserID); err != nil {
+				log.Printf("scheduled unmute cleanup failed chat=%d user=%d: %v", it.ChatID, it.UserID, err)
+			}
+		}
+	}
+}
+
 type moderationContext struct {
 	Bot        *tgbotapi.BotAPI
 	AdminCache *adminStatusCache
 	UserIndex  *chatUserIndex
 	Readonly   *readonlyManager
+	Store      *Store
+	Confirms   *moderationConfirmManager
+}
+
+func syncAdminCacheForUser(bot *tgbotapi.BotAPI, cache *adminStatusCache, chatID, userID int64) bool {
+	if bot == nil || cache == nil || chatID == 0 || userID == 0 {
+		return false
+	}
+	member, err := bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: chatID,
+			UserID: userID,
+		},
+	})
+	if err != nil {
+		return false
+	}
+	isAdmin := member.Status == "administrator" || member.Status == "creator"
+	now := time.Now()
+	cache.setCached(chatID, userID, isAdmin, now)
+	if cache.store != nil {
+		_ = cache.store.UpsertChatAdminCache(chatID, userID, isAdmin, now.Unix())
+	}
+	return isAdmin
+}
+
+func moderationRequiresConfirm(action string) bool {
+	switch action {
+	case "ban", "mute", "kick":
+		return true
+	default:
+		return false
+	}
+}
+
+func moderationConfirmQuestions() [moderationConfirmQuestionCount]string {
+	return [moderationConfirmQuestionCount]string{
+		"Нарушение правил действительно есть",
+		"Это не первое нарушение",
+		"Наказание соразмерно ситуации",
+	}
+}
+
+func moderationActionLabel(req moderationRequest) string {
+	switch req.Action {
+	case "ban":
+		if req.Duration > 0 {
+			return "Бан на " + humanModerationDurationRU(req.Duration, req.DurationRaw)
+		}
+		return "Бан"
+	case "mute":
+		if req.Duration > 0 {
+			return "Мут на " + humanModerationDurationRU(req.Duration, req.DurationRaw)
+		}
+		return "Мут"
+	case "kick":
+		return "Кик"
+	case "unban":
+		return "Разбан"
+	case "unmute":
+		return "Размут"
+	default:
+		return strings.ToUpper(req.Action)
+	}
+}
+
+func moderationConfirmAllChecked(st moderationConfirmState) bool {
+	for _, v := range st.Answers {
+		if !v {
+			return false
+		}
+	}
+	return true
+}
+
+func formatModerationTargets(labels []string) string {
+	if len(labels) == 0 {
+		return "не указаны"
+	}
+	return strings.Join(labels, ", ")
+}
+
+func buildModerationConfirmMessage(st moderationConfirmState) (string, tgbotapi.InlineKeyboardMarkup) {
+	questions := moderationConfirmQuestions()
+	lines := make([]string, 0, 10)
+	lines = append(lines, "Подтверди действие перед применением.")
+	lines = append(lines, "Действие: "+moderationActionLabel(st.Req))
+	lines = append(lines, "Цель: "+formatModerationTargets(st.TargetLabels))
+	lines = append(lines, "")
+	for i, q := range questions {
+		prefix := "⬜"
+		if st.Answers[i] {
+			prefix = "✅"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", prefix, q))
+	}
+	if st.Req.Reason != "" {
+		lines = append(lines, "")
+		lines = append(lines, "Причина: "+st.Req.Reason)
+	}
+
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, moderationConfirmQuestionCount+1)
+	for i, q := range questions {
+		data := fmt.Sprintf("modq|t|%s|%d", st.ID, i)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(q, data),
+		))
+	}
+	applyText := "Применить"
+	if moderationConfirmAllChecked(st) {
+		applyText = "✅ Применить"
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(applyText, "modq|a|"+st.ID),
+		tgbotapi.NewInlineKeyboardButtonData("Отмена", "modq|c|"+st.ID),
+	))
+	return strings.Join(lines, "\n"), tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func applyModerationToTargets(bot *tgbotapi.BotAPI, store *Store, chatID int64, req moderationRequest, targets []int64) error {
+	if bot == nil || chatID == 0 {
+		return errors.New("invalid moderation apply params")
+	}
+	var firstErr error
+	for _, uid := range targets {
+		if uid == 0 {
+			continue
+		}
+		cfgMember := tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: uid}
+		var err error
+		switch req.Action {
+		case "ban":
+			cfg := tgbotapi.BanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				RevokeMessages:   true,
+			}
+			if req.Duration > 0 {
+				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
+			}
+			_, err = bot.Request(cfg)
+		case "unban":
+			_, err = bot.Request(tgbotapi.UnbanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				OnlyIfBanned:     false,
+			})
+		case "mute":
+			cfg := tgbotapi.RestrictChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				Permissions:      &tgbotapi.ChatPermissions{},
+			}
+			if req.Duration > 0 {
+				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
+			}
+			_, err = bot.Request(cfg)
+			if err == nil {
+				if store != nil && req.Duration > 0 {
+					unmuteAt := time.Now().Add(req.Duration).Unix()
+					if e := store.UpsertScheduledUnmute(chatID, uid, unmuteAt); e != nil {
+						log.Printf("scheduled unmute save failed chat=%d user=%d: %v", chatID, uid, e)
+					}
+				} else if store != nil {
+					_ = store.DeleteScheduledUnmute(chatID, uid)
+				}
+			}
+		case "unmute":
+			err = unmuteChatMember(bot, chatID, uid)
+			if err == nil && store != nil {
+				_ = store.DeleteScheduledUnmute(chatID, uid)
+			}
+		case "kick":
+			_, err = bot.Request(tgbotapi.BanChatMemberConfig{
+				ChatMemberConfig: cfgMember,
+				UntilDate:        time.Now().Add(45 * time.Second).Unix(),
+				RevokeMessages:   false,
+			})
+			if err == nil {
+				_, err = bot.Request(tgbotapi.UnbanChatMemberConfig{
+					ChatMemberConfig: cfgMember,
+					OnlyIfBanned:     true,
+				})
+			}
+		default:
+			err = fmt.Errorf("unsupported moderation action: %s", req.Action)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func buildModerationResultText(userIndex *chatUserIndex, chatID int64, moderatorID int64, senderTag string, req moderationRequest, targets []int64, targetLabels []string) string {
+	if userIndex == nil {
+		return ""
+	}
+	modLabel := userIndex.Display(chatID, moderatorID)
+	modLink := htmlUserLink(modLabel, moderatorID)
+	verb := moderationActionVerb(req.Action, senderTag)
+	targetLinks := make([]string, 0, len(targets))
+	for i, uid := range targets {
+		lbl := userIndex.Display(chatID, uid)
+		if i < len(targetLabels) && strings.TrimSpace(targetLabels[i]) != "" {
+			lbl = targetLabels[i]
+		}
+		targetLinks = append(targetLinks, htmlUserLink(lbl, uid))
+	}
+	var b strings.Builder
+	b.WriteString(modLink)
+	b.WriteByte(' ')
+	b.WriteString(verb)
+	b.WriteByte(' ')
+	b.WriteString(strings.Join(targetLinks, ", "))
+	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
+		b.WriteString(" на ")
+		b.WriteString(html.EscapeString(humanModerationDurationRU(req.Duration, req.DurationRaw)))
+	}
+	if req.Reason != "" {
+		b.WriteString(" — ")
+		b.WriteString(html.EscapeString(req.Reason))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func handleModerationConfirmCallback(bot *tgbotapi.BotAPI, adminCache *adminStatusCache, userIndex *chatUserIndex, store *Store, confirms *moderationConfirmManager, cb *tgbotapi.CallbackQuery) bool {
+	if bot == nil || confirms == nil || cb == nil || cb.From == nil {
+		return false
+	}
+	parts := strings.Split(strings.TrimSpace(cb.Data), "|")
+	if len(parts) < 3 || parts[0] != "modq" {
+		return false
+	}
+	action := strings.TrimSpace(parts[1])
+	id := strings.TrimSpace(parts[2])
+	st, ok := confirms.Get(id)
+	if !ok {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Подтверждение устарело"))
+		return true
+	}
+	if cb.Message == nil || cb.Message.Chat == nil || cb.Message.Chat.ID != st.ChatID {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Чат не совпадает с запросом"))
+		return true
+	}
+	_ = syncAdminCacheForUser(bot, adminCache, st.ChatID, cb.From.ID)
+	if adminCache != nil && !adminCache.IsChatAdmin(bot, st.ChatID, cb.From.ID) {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Права администратора больше не подтверждены"))
+		return true
+	}
+	actorTag := getChatMemberTagRaw(bot.Token, st.ChatID, cb.From.ID)
+
+	switch action {
+	case "t":
+		if len(parts) < 4 {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Некорректный выбор"))
+			return true
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(parts[3]))
+		if err != nil {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Некорректный выбор"))
+			return true
+		}
+		updated, ok := confirms.Toggle(id, idx)
+		if !ok {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Подтверждение устарело"))
+			return true
+		}
+		text, kb := buildModerationConfirmMessage(updated)
+		edit := tgbotapi.NewEditMessageTextAndMarkup(st.ChatID, cb.Message.MessageID, text, kb)
+		if _, err := bot.Request(edit); err != nil {
+			log.Printf("moderation confirm edit failed chat=%d msg=%d: %v", st.ChatID, cb.Message.MessageID, err)
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Обновлено"))
+		return true
+	case "c":
+		confirms.Delete(id)
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: st.ChatID, MessageID: cb.Message.MessageID})
+		return true
+	case "a":
+		if !moderationConfirmAllChecked(st) {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отметь все пункты перед применением"))
+			return true
+		}
+		if err := applyModerationToTargets(bot, store, st.ChatID, st.Req, st.Targets); err != nil {
+			reportChatFailure(bot, st.ChatID, "ошибка модерации", err)
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Не удалось применить"))
+			return true
+		}
+		confirms.Delete(id)
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Применено"))
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: st.ChatID, MessageID: cb.Message.MessageID})
+		if !st.Req.Silent {
+			sendHTML(sendContext{Bot: bot, ChatID: st.ChatID}, buildModerationResultText(userIndex, st.ChatID, cb.From.ID, actorTag, st.Req, st.Targets, st.TargetLabels), false)
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text string) bool {
@@ -1350,10 +1815,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		reply(sendCtx.WithReply(msg.MessageID), "Мод-команды работают только в группах.", false)
 		return true
 	}
-	if ctx.AdminCache == nil || !ctx.AdminCache.IsChatAdmin(ctx.Bot, msg.Chat.ID, msg.From.ID) {
-		reply(sendCtx.WithReply(msg.MessageID), "Только администраторы могут использовать эту команду.", false)
-		return true
-	}
+	_ = syncAdminCacheForUser(ctx.Bot, ctx.AdminCache, msg.Chat.ID, msg.From.ID)
 
 	deleteCmd := func() {
 		_, _ = ctx.Bot.Request(tgbotapi.DeleteMessageConfig{
@@ -1368,6 +1830,14 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 	}
 
 	if req.Action == "reload_admins" {
+		if ctx.AdminCache == nil {
+			reply(sendCtx.WithReply(msg.MessageID), "Кэш админов недоступен.", false)
+			return true
+		}
+		if !fetchChatAdminStatus(ctx.Bot, msg.Chat.ID, msg.From.ID) && !ctx.AdminCache.IsChatAdmin(ctx.Bot, msg.Chat.ID, msg.From.ID) {
+			reply(sendCtx.WithReply(msg.MessageID), "Только администраторы могут использовать эту команду.", false)
+			return true
+		}
 		count, err := ctx.AdminCache.ReloadChatAdmins(ctx.Bot, msg.Chat.ID)
 		if err != nil {
 			reportChatFailure(ctx.Bot, msg.Chat.ID, "ошибка обновления кэша админов", err)
@@ -1375,6 +1845,11 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		}
 		deleteCmd()
 		reply(sendCtx, fmt.Sprintf("Кэш админов обновлён: %d.", count), false)
+		return true
+	}
+
+	if ctx.AdminCache == nil || !ctx.AdminCache.IsChatAdmin(ctx.Bot, msg.Chat.ID, msg.From.ID) {
+		reply(sendCtx.WithReply(msg.MessageID), "Только администраторы могут использовать эту команду.", false)
 		return true
 	}
 
@@ -1455,96 +1930,37 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		return true
 	}
 
-	var firstErr error
-	for _, uid := range targets {
-		cfgMember := tgbotapi.ChatMemberConfig{ChatID: msg.Chat.ID, UserID: uid}
-		switch req.Action {
-		case "ban":
-			cfg := tgbotapi.BanChatMemberConfig{
-				ChatMemberConfig: cfgMember,
-				RevokeMessages:   true,
-			}
-			if req.Duration > 0 {
-				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
-			}
-			_, err = ctx.Bot.Request(cfg)
-		case "unban":
-			_, err = ctx.Bot.Request(tgbotapi.UnbanChatMemberConfig{
-				ChatMemberConfig: cfgMember,
-				OnlyIfBanned:     false,
-			})
-		case "mute":
-			cfg := tgbotapi.RestrictChatMemberConfig{
-				ChatMemberConfig: cfgMember,
-				Permissions:      &tgbotapi.ChatPermissions{},
-			}
-			if req.Duration > 0 {
-				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
-			}
-			_, err = ctx.Bot.Request(cfg)
-		case "unmute":
-			_, err = ctx.Bot.Request(tgbotapi.RestrictChatMemberConfig{
-				ChatMemberConfig: cfgMember,
-				Permissions: &tgbotapi.ChatPermissions{
-					CanSendMessages:       true,
-					CanSendMediaMessages:  true,
-					CanSendPolls:          true,
-					CanSendOtherMessages:  true,
-					CanAddWebPagePreviews: true,
-				},
-			})
-		case "kick":
-			_, err = ctx.Bot.Request(tgbotapi.BanChatMemberConfig{
-				ChatMemberConfig: cfgMember,
-				UntilDate:        time.Now().Add(45 * time.Second).Unix(),
-				RevokeMessages:   false,
-			})
-			if err == nil {
-				_, err = ctx.Bot.Request(tgbotapi.UnbanChatMemberConfig{
-					ChatMemberConfig: cfgMember,
-					OnlyIfBanned:     true,
-				})
-			}
+	if moderationRequiresConfirm(req.Action) && ctx.Confirms != nil {
+		id := ctx.Confirms.Create(moderationConfirmState{
+			ChatID:       msg.Chat.ID,
+			AdminID:      msg.From.ID,
+			SenderTag:    senderTag,
+			Req:          req,
+			Targets:      append([]int64(nil), targets...),
+			TargetLabels: append([]string(nil), targetLabels...),
+		})
+		if id == "" {
+			reply(sendCtx.WithReply(msg.MessageID), "Не удалось создать подтверждение. Повтори команду.", false)
+			return true
 		}
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if firstErr != nil {
-		reportChatFailure(ctx.Bot, msg.Chat.ID, "ошибка модерации", firstErr)
+		st, _ := ctx.Confirms.Get(id)
+		text, kb := buildModerationConfirmMessage(st)
+		deleteCmd()
+		prompt := tgbotapi.NewMessage(msg.Chat.ID, text)
+		prompt.ReplyMarkup = kb
+		_, _ = ctx.Bot.Send(prompt)
 		return true
 	}
 
+	if err := applyModerationToTargets(ctx.Bot, ctx.Store, msg.Chat.ID, req, targets); err != nil {
+		reportChatFailure(ctx.Bot, msg.Chat.ID, "ошибка модерации", err)
+		return true
+	}
 	deleteCmd()
 	if req.Silent {
 		return true
 	}
-	modLabel := ctx.UserIndex.Display(msg.Chat.ID, msg.From.ID)
-	modLink := htmlUserLink(modLabel, msg.From.ID)
-	verb := moderationActionVerb(req.Action, senderTag)
-	targetLinks := make([]string, 0, len(targets))
-	for i, uid := range targets {
-		lbl := ctx.UserIndex.Display(msg.Chat.ID, uid)
-		if i < len(targetLabels) && strings.TrimSpace(targetLabels[i]) != "" {
-			lbl = targetLabels[i]
-		}
-		targetLinks = append(targetLinks, htmlUserLink(lbl, uid))
-	}
-	var b strings.Builder
-	b.WriteString(modLink)
-	b.WriteByte(' ')
-	b.WriteString(verb)
-	b.WriteByte(' ')
-	b.WriteString(strings.Join(targetLinks, ", "))
-	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
-		b.WriteString(" на ")
-		b.WriteString(html.EscapeString(humanModerationDurationRU(req.Duration, req.DurationRaw)))
-	}
-	if req.Reason != "" {
-		b.WriteString(" — ")
-		b.WriteString(html.EscapeString(req.Reason))
-	}
-	sendHTML(sendCtx, strings.TrimSpace(b.String()), false)
+	sendHTML(sendCtx, buildModerationResultText(ctx.UserIndex, msg.Chat.ID, msg.From.ID, senderTag, req, targets, targetLabels), false)
 	return true
 }
 
@@ -1655,6 +2071,7 @@ func Run() {
 	adminCache := newAdminStatusCache(adminCacheTTL, store)
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
 	readonly := newReadonlyManager()
+	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
@@ -1697,6 +2114,7 @@ func Run() {
 			}
 		}()
 	}
+	go runScheduledUnmutes(bot, store)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -1736,6 +2154,16 @@ func Run() {
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
+			if handleModerationConfirmCallback(
+				bot,
+				adminCache,
+				userIndex,
+				store,
+				moderationConfirms,
+				update.Update.CallbackQuery,
+			) {
+				continue
+			}
 			if musicpick.HandleChoiceCallback(
 				bot,
 				update.Update.CallbackQuery,
@@ -1907,6 +2335,8 @@ func Run() {
 			AdminCache: adminCache,
 			UserIndex:  userIndex,
 			Readonly:   readonly,
+			Store:      store,
+			Confirms:   moderationConfirms,
 		}, msg, strings.TrimSpace(msg.Text)) {
 			continue
 		}

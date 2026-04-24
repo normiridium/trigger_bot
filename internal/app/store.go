@@ -24,6 +24,12 @@ type Store struct {
 	cacheTTL   time.Duration
 }
 
+type ScheduledUnmute struct {
+	ChatID   int64
+	UserID   int64
+	UnmuteAt int64
+}
+
 func parseResponseTextRaw(raw json.RawMessage) []ResponseTextItem {
 	if len(raw) == 0 {
 		return nil
@@ -105,6 +111,27 @@ func (s *Store) TryConsumeDailyUserBotMessage(userID int64, now time.Time, limit
 		return false, errors.New("mongo backend not initialized")
 	}
 	return s.mg.tryConsumeDailyUserBotMessage(userID, now, limit)
+}
+
+func (s *Store) UpsertScheduledUnmute(chatID, userID int64, unmuteAt int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.upsertScheduledUnmute(chatID, userID, unmuteAt)
+}
+
+func (s *Store) DeleteScheduledUnmute(chatID, userID int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteScheduledUnmute(chatID, userID)
+}
+
+func (s *Store) ListDueScheduledUnmutes(nowUnix int64, limit int) ([]ScheduledUnmute, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.listDueScheduledUnmutes(nowUnix, limit)
 }
 
 func (s *Store) ClearChatAdminCache(chatID int64) error {

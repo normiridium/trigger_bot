@@ -760,3 +760,48 @@ func TestTryConsumeDailyUserBotMessage(t *testing.T) {
 		t.Fatalf("next 4h window consume must pass")
 	}
 }
+
+func TestScheduledUnmuteCRUDAndDueListing(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().Unix()
+	chatID := int64(-100777)
+	userID := int64(424242)
+
+	if err := s.UpsertScheduledUnmute(chatID, userID, now+120); err != nil {
+		t.Fatalf("upsert scheduled unmute: %v", err)
+	}
+	// Upsert same key should overwrite target time.
+	if err := s.UpsertScheduledUnmute(chatID, userID, now-1); err != nil {
+		t.Fatalf("update scheduled unmute: %v", err)
+	}
+
+	items, err := s.ListDueScheduledUnmutes(now, 10)
+	if err != nil {
+		t.Fatalf("list due scheduled unmutes: %v", err)
+	}
+	found := false
+	for _, it := range items {
+		if it.ChatID == chatID && it.UserID == userID {
+			found = true
+			if it.UnmuteAt > now {
+				t.Fatalf("expected due unmute, got future timestamp: %d > %d", it.UnmuteAt, now)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected to find due scheduled unmute for chat=%d user=%d", chatID, userID)
+	}
+
+	if err := s.DeleteScheduledUnmute(chatID, userID); err != nil {
+		t.Fatalf("delete scheduled unmute: %v", err)
+	}
+	items, err = s.ListDueScheduledUnmutes(now+3600, 10)
+	if err != nil {
+		t.Fatalf("list due after delete: %v", err)
+	}
+	for _, it := range items {
+		if it.ChatID == chatID && it.UserID == userID {
+			t.Fatalf("scheduled unmute must be deleted")
+		}
+	}
+}
