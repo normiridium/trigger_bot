@@ -25,6 +25,7 @@ type mongoBackend struct {
 	adminSync *mongo.Collection
 	profiles  *mongo.Collection
 	quotas    *mongo.Collection
+	unmutes   *mongo.Collection
 	counters  *mongo.Collection
 }
 
@@ -92,6 +93,13 @@ type mongoDailyUserQuotaDoc struct {
 	DayUTC    string `bson:"day_utc"`
 	Count     int    `bson:"count"`
 	UpdatedAt int64  `bson:"updated_at"`
+}
+
+type mongoScheduledUnmuteDoc struct {
+	ChatID    int64 `bson:"chat_id"`
+	UserID    int64 `bson:"user_id"`
+	UnmuteAt  int64 `bson:"unmute_at"`
+	UpdatedAt int64 `bson:"updated_at"`
 }
 
 const gptUserQuotaWindow = 4 * time.Hour
@@ -230,6 +238,7 @@ func openMongoStore(uri string) (*Store, error) {
 		adminSync: db.Collection("chat_admin_sync"),
 		profiles:  db.Collection("participant_profiles"),
 		quotas:    db.Collection("user_daily_bot_quota"),
+		unmutes:   db.Collection("scheduled_unmutes"),
 		counters:  db.Collection("counters"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
@@ -330,6 +339,18 @@ func (m *mongoBackend) ensureIndexes() error {
 			Keys: bson.D{{Key: "updated_at", Value: 1}},
 		},
 	})
+	if err != nil {
+		return err
+	}
+	_, err = m.unmutes.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "chat_id", Value: 1}, {Key: "user_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "unmute_at", Value: 1}},
+		},
+	})
 	return err
 }
 
@@ -394,6 +415,72 @@ func quotaWindowKeyUTC(now time.Time, window time.Duration) string {
 	ts := now.UTC().Unix()
 	start := (ts / sec) * sec
 	return time.Unix(start, 0).UTC().Format(time.RFC3339)
+}
+
+func (m *mongoBackend) upsertScheduledUnmute(chatID, userID int64, unmuteAt int64) error {
+	if chatID == 0 || userID == 0 || unmuteAt <= 0 {
+		return nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.unmutes.UpdateOne(
+		ctx,
+		bson.M{"chat_id": chatID, "user_id": userID},
+		bson.M{"$set": bson.M{
+			"chat_id":    chatID,
+			"user_id":    userID,
+			"unmute_at":  unmuteAt,
+			"updated_at": time.Now().Unix(),
+		}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (m *mongoBackend) deleteScheduledUnmute(chatID, userID int64) error {
+	if chatID == 0 || userID == 0 {
+		return nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.unmutes.DeleteOne(ctx, bson.M{"chat_id": chatID, "user_id": userID})
+	return err
+}
+
+func (m *mongoBackend) listDueScheduledUnmutes(nowUnix int64, limit int) ([]ScheduledUnmute, error) {
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
+	if limit <= 0 {
+		limit = 32
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	cur, err := m.unmutes.Find(
+		ctx,
+		bson.M{"unmute_at": bson.M{"$lte": nowUnix}},
+		options.Find().SetSort(bson.D{{Key: "unmute_at", Value: 1}}).SetLimit(int64(limit)),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := make([]ScheduledUnmute, 0, limit)
+	for cur.Next(ctx) {
+		var d mongoScheduledUnmuteDoc
+		if err := cur.Decode(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, ScheduledUnmute{
+			ChatID:   d.ChatID,
+			UserID:   d.UserID,
+			UnmuteAt: d.UnmuteAt,
+		})
+	}
+	return out, cur.Err()
 }
 
 func triggerToDocMap(t Trigger) bson.M {
