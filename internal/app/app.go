@@ -480,6 +480,33 @@ func sendTypingAction(bot *tgbotapi.BotAPI, chatID int64) {
 	_, _ = bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
 }
 
+func startTypingLoop(bot *tgbotapi.BotAPI, chatID int64, interval time.Duration) func() {
+	if bot == nil || chatID == 0 {
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = 4 * time.Second
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		sendTypingAction(bot, chatID)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				sendTypingAction(bot, chatID)
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(done) })
+	}
+}
+
 func ensureMinTypingWindow(bot *tgbotapi.BotAPI, chatID int64, startedAt time.Time, min time.Duration) {
 	if min <= 0 {
 		return
@@ -499,7 +526,8 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
 	}
-	sendTypingAction(task.Bot, task.Msg.Chat.ID)
+	stopTyping := startTypingLoop(task.Bot, task.Msg.Chat.ID, 4*time.Second)
+	defer stopTyping()
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
