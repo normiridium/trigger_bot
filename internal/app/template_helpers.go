@@ -7,6 +7,7 @@ import (
 	"fmt"
 	htmltmpl "html/template"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -192,7 +193,10 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 
 var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
 var regexSpacePattern = regexp.MustCompile(`\\s\+|\\s\*|\\s`)
-var webSnippetURLRe = regexp.MustCompile(`https?://\S+`)
+var webSnippetURLRe = regexp.MustCompile(`https?://[^\s)>\]]+`)
+var webSnippetMarkdownLinkRe = regexp.MustCompile(`\[(.*?)\]\((https?://[^\s)]+)\)`)
+var webSnippetAngleURLRe = regexp.MustCompile(`<\s*https?://[^>]+>`)
+var webSearchLineDropRe = regexp.MustCompile(`(?i)^\s*(источник|sources?|source|url|ссылка)\s*[:\-]`)
 var legacyTemplateActionRe = regexp.MustCompile(`\{\{[-]?\s*([^{}]+?)\s*[-]?\}\}`)
 var legacyPipeIndexRe = regexp.MustCompile(`\|\s*index\s+(-?\d+)`)
 var chatContextActionRe = regexp.MustCompile(`\{\{\s*chat_context(?:\s+(\d+))?\s*\}\}`)
@@ -224,19 +228,8 @@ var templateWeatherCache = struct {
 }{
 	items: make(map[string]weatherCacheEntry),
 }
-var templateWebSearchCache = struct {
-	mu    sync.RWMutex
-	items map[string]webSearchCacheEntry
-}{
-	items: make(map[string]webSearchCacheEntry),
-}
 
 type weatherCacheEntry struct {
-	value     string
-	expiresAt time.Time
-}
-
-type webSearchCacheEntry struct {
 	value     string
 	expiresAt time.Time
 }
@@ -484,10 +477,105 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return russianWeekdayName(time.Now().In(loc).Weekday())
 	},
-	"web_search": func(query interface{}, limit int) string {
-		q := strings.TrimSpace(toTemplateString(query))
-		return resolveWebSearchContext(q, limit)
+	"web_search": func(query interface{}, args ...interface{}) string {
+		opts := parseWebSearchCall(query, args...)
+		return resolveWebSearchContext(opts.Query, opts.Condition, opts.Compact)
 	},
+}
+
+type webSearchCallOptions struct {
+	Query     string
+	Condition string
+	Compact   bool
+}
+
+func parseWebSearchCall(query interface{}, args ...interface{}) webSearchCallOptions {
+	opts := webSearchCallOptions{
+		Query: strings.TrimSpace(toTemplateString(query)),
+	}
+	if isWebSearchCompactFlag(opts.Query) {
+		opts.Compact = true
+		opts.Query = ""
+	} else if isWebSearchFullFlag(opts.Query) {
+		opts.Compact = false
+		opts.Query = ""
+	}
+
+	for _, arg := range args {
+		if b, ok := arg.(bool); ok {
+			opts.Compact = b
+			continue
+		}
+		s := strings.TrimSpace(toTemplateString(arg))
+		if s == "" {
+			continue
+		}
+		switch {
+		case isWebSearchCompactFlag(s):
+			opts.Compact = true
+		case isWebSearchFullFlag(s):
+			opts.Compact = false
+		case opts.Condition == "":
+			opts.Condition = s
+		}
+	}
+
+	// Go template pipelines pass the previous result as the LAST argument.
+	// For `{{ .message | web_search "cond" }}` this function receives:
+	//   query="cond", condition=".message"
+	// Detect and normalize this case.
+	if opts.Condition != "" && looksLikeWebSearchCondition(opts.Query) && !looksLikeWebSearchCondition(opts.Condition) {
+		opts.Query, opts.Condition = opts.Condition, opts.Query
+	}
+	// For `{{ .message | web_search "компактно" }}`:
+	//   query="компактно", condition=".message"
+	if opts.Query == "" && opts.Condition != "" {
+		opts.Query, opts.Condition = opts.Condition, ""
+	}
+	return opts
+}
+
+func looksLikeWebSearchCondition(s string) bool {
+	v := strings.ToLower(strings.TrimSpace(s))
+	if v == "" {
+		return false
+	}
+	markers := []string{
+		"искать",
+		"поиск",
+		"search",
+		"only if",
+		"только если",
+		"if ",
+		"если ",
+		"__no_search__",
+	}
+	for _, m := range markers {
+		if strings.Contains(v, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWebSearchCompactFlag(s string) bool {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch v {
+	case "кратко", "компактно", "short", "brief", "compact":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWebSearchFullFlag(s string) bool {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch v {
+	case "полно", "подробно", "full", "verbose", "detailed":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveWeatherNow(city string) string {
@@ -672,69 +760,154 @@ func weatherCodeToRU(code int) string {
 	}
 }
 
-func resolveWebSearchContext(query string, limit int) string {
+func resolveWebSearchContext(query string, condition string, compact bool) string {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return ""
 	}
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 10 {
-		limit = 10
-	}
-	cacheKey := strings.ToLower(query) + "|" + strconv.Itoa(limit)
-	now := time.Now()
-	templateWebSearchCache.mu.RLock()
-	if cached, ok := templateWebSearchCache.items[cacheKey]; ok && now.Before(cached.expiresAt) {
-		templateWebSearchCache.mu.RUnlock()
-		return cached.value
-	}
-	templateWebSearchCache.mu.RUnlock()
-
-	val, err := fetchWebSearchContext(query, limit)
-	ttl := 20 * time.Minute
+	val, err := fetchWebSearchContext(query, condition, compact)
 	if err != nil {
-		val = ""
-		ttl = 2 * time.Minute
+		logWebSearchf("fetch failed query=%q cond=%q compact=%t err=%v", clipText(query, 120), clipText(condition, 120), compact, err)
+		return ""
 	}
-
-	templateWebSearchCache.mu.Lock()
-	if len(templateWebSearchCache.items) > 2048 {
-		templateWebSearchCache.items = make(map[string]webSearchCacheEntry)
-	}
-	templateWebSearchCache.items[cacheKey] = webSearchCacheEntry{
-		value:     val,
-		expiresAt: now.Add(ttl),
-	}
-	templateWebSearchCache.mu.Unlock()
+	logWebSearchf("fetch ok query=%q cond=%q compact=%t len=%d", clipText(query, 120), clipText(condition, 120), compact, len(val))
 	return val
 }
 
-func fetchWebSearchContext(query string, limit int) (string, error) {
-	apiKey := strings.TrimSpace(os.Getenv("SERPAPI_KEY"))
+func fetchWebSearchContext(query string, condition string, compact bool) (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
-		return "", fmt.Errorf("SERPAPI_KEY is required")
+		return "", fmt.Errorf("OPENAI_API_KEY is required")
 	}
-	engine := strings.TrimSpace(os.Getenv("SERPAPI_WEB_ENGINE"))
-	if engine == "" {
-		engine = "google"
+	model := strings.TrimSpace(os.Getenv("OPENAI_WEB_SEARCH_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
 	}
-	params := url.Values{}
-	params.Set("api_key", apiKey)
-	params.Set("engine", engine)
-	params.Set("q", query)
-	params.Set("hl", "ru")
-	params.Set("gl", "ru")
-	params.Set("num", strconv.Itoa(limit))
+	if model == "" {
+		model = "gpt-4.1"
+	}
+	condition = strings.TrimSpace(condition)
+	logWebSearchf("start query=%q cond=%q compact=%t", clipText(query, 180), clipText(condition, 180), compact)
+	if condition != "" {
+		shouldSearch, err := shouldRunWebSearch(apiKey, model, query, condition)
+		if err != nil {
+			return "", err
+		}
+		if !shouldSearch {
+			logWebSearchf("condition rejected query=%q cond=%q", clipText(query, 180), clipText(condition, 180))
+			return "", nil
+		}
+		logWebSearchf("condition accepted query=%q cond=%q", clipText(query, 180), clipText(condition, 180))
+	}
 
-	endpoint := "https://serpapi.com/search.json?" + params.Encode()
-	client := &http.Client{Timeout: 12 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	prompt := buildWebSearchPrompt(query, compact)
+	reqPayload := map[string]interface{}{
+		"model": model,
+		"input": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": prompt},
+				},
+			},
+		},
+		"tools":       []map[string]interface{}{{"type": "web_search"}},
+		"tool_choice": "auto",
+	}
+	raw, err := callOpenAIResponsesOutputText(apiKey, reqPayload, 12*time.Second)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	logWebSearchf("raw output len=%d query=%q", len(raw), clipText(query, 180))
+	raw = sanitizeWebSearchOutput(raw)
+	if raw == "" {
+		logWebSearchf("sanitized empty query=%q", clipText(query, 180))
+		return "", nil
+	}
+	logWebSearchf("sanitized output len=%d query=%q", len(raw), clipText(query, 180))
+	return clipText(raw, 3800), nil
+}
+
+func buildWebSearchPrompt(query string, compact bool) string {
+	if compact {
+		return fmt.Sprintf(
+			"Сделай веб-поиск по запросу: %q.\n"+
+				"Верни короткие пункты на русском в формате:\n"+
+				"1) заголовок — краткая суть\n"+
+				"Без URL, без markdown-ссылок, без отдельного списка источников.\n"+
+				"Нужна только суть, компактно и по делу.",
+			query,
+		)
+	}
+	return fmt.Sprintf(
+		"Сделай веб-поиск по запросу: %q.\n"+
+			"Верни умеренно подробную выдачу на русском: 4–6 пунктов с ключевой сутью.\n"+
+			"Сохрани полезные детали и формулировки, но без лишней воды и без чрезмерной длины.\n"+
+			"Без URL, без markdown-ссылок, без отдельного списка источников.",
+		query,
+	)
+}
+
+func shouldRunWebSearch(apiKey, model, query, condition string) (bool, error) {
+	prompt := fmt.Sprintf(
+		"Определи, нужно ли запускать веб-поиск по условию.\n"+
+			"Условие: %s\n"+
+			"Запрос: %q\n"+
+			"Ответь строго одним словом: SEARCH или NO_SEARCH.",
+		condition,
+		query,
+	)
+	reqPayload := map[string]interface{}{
+		"model": model,
+		"input": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{"type": "input_text", "text": prompt},
+				},
+			},
+		},
+		"temperature":       0,
+		"max_output_tokens": 16,
+	}
+	raw, err := callOpenAIResponsesOutputText(apiKey, reqPayload, 10*time.Second)
+	if err != nil {
+		return false, err
+	}
+	decision := strings.ToUpper(strings.TrimSpace(raw))
+	logWebSearchf("condition decision raw=%q normalized=%q query=%q cond=%q", clipText(raw, 80), decision, clipText(query, 120), clipText(condition, 120))
+	switch decision {
+	case "SEARCH":
+		return true, nil
+	case "NO_SEARCH":
+		return false, nil
+	default:
+		// Fallback to SEARCH so we don't silently drop useful results.
+		logWebSearchf("condition decision fallback->SEARCH query=%q cond=%q", clipText(query, 120), clipText(condition, 120))
+		return true, nil
+	}
+}
+
+func webSearchDebugEnabled() bool {
+	return debugTriggerLogEnabled || debugGPTLogEnabled || envBool("DEBUG_WEB_SEARCH_LOG", false)
+}
+
+func logWebSearchf(format string, args ...interface{}) {
+	if !webSearchDebugEnabled() {
+		return
+	}
+	log.Printf("web_search: "+format, args...)
+}
+
+func callOpenAIResponsesOutputText(apiKey string, reqPayload map[string]interface{}, timeout time.Duration) (string, error) {
+	body, _ := json.Marshal(reqPayload)
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -746,65 +919,78 @@ func fetchWebSearchContext(query string, limit int) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("serpapi status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 500))
+		return "", fmt.Errorf("openai responses status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 500))
 	}
-	var payload struct {
-		Error          string `json:"error"`
-		OrganicResults []struct {
-			Title   string `json:"title"`
-			Snippet string `json:"snippet"`
-		} `json:"organic_results"`
+	var respPayload struct {
+		Error      string `json:"error"`
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
 	}
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+	if err := json.Unmarshal(bodyBytes, &respPayload); err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(payload.Error) != "" {
-		return "", errors.New(strings.TrimSpace(payload.Error))
+	if strings.TrimSpace(respPayload.Error) != "" {
+		return "", errors.New(strings.TrimSpace(respPayload.Error))
 	}
-	if len(payload.OrganicResults) == 0 {
-		return "", nil
+	raw := strings.TrimSpace(respPayload.OutputText)
+	if raw != "" {
+		return raw, nil
 	}
-	const (
-		maxTitleRunes   = 180
-		maxSnippetRunes = 480
-		maxOutputRunes  = 3800
-	)
-	out := make([]string, 0, limit)
-	totalRunes := 0
-	for i, it := range payload.OrganicResults {
-		if len(out) >= limit {
-			break
-		}
-		title := strings.TrimSpace(it.Title)
-		snippet := strings.TrimSpace(it.Snippet)
-		snippet = strings.TrimSpace(webSnippetURLRe.ReplaceAllString(snippet, ""))
-		snippet = strings.Join(strings.Fields(snippet), " ")
-		if title == "" && snippet == "" {
+	var b strings.Builder
+	for _, item := range respPayload.Output {
+		if item.Type != "message" {
 			continue
 		}
-		line := fmt.Sprintf("%d) %s", i+1, clipText(title, maxTitleRunes))
-		if snippet != "" {
-			line += " — " + clipText(snippet, maxSnippetRunes)
-		}
-		lineRunes := len([]rune(line))
-		if totalRunes+lineRunes > maxOutputRunes {
-			if len(out) > 0 {
-				break
+		for _, part := range item.Content {
+			if part.Type != "output_text" && part.Type != "text" {
+				continue
 			}
-			allowed := maxOutputRunes
-			if allowed <= 0 {
-				return "", nil
+			txt := strings.TrimSpace(part.Text)
+			if txt == "" {
+				continue
 			}
-			line = clipText(line, allowed)
-			lineRunes = len([]rune(line))
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(txt)
 		}
-		out = append(out, line)
-		totalRunes += lineRunes + 1 // + newline
 	}
-	if len(out) == 0 {
-		return "", nil
+	return strings.TrimSpace(b.String()), nil
+}
+
+func sanitizeWebSearchOutput(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-	return strings.Join(out, "\n"), nil
+	raw = webSnippetMarkdownLinkRe.ReplaceAllString(raw, "$1")
+	raw = webSnippetAngleURLRe.ReplaceAllString(raw, "")
+	raw = webSnippetURLRe.ReplaceAllString(raw, "")
+
+	lines := strings.Split(raw, "\n")
+	const maxLineRunes = 520
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if webSearchLineDropRe.MatchString(strings.ToLower(line)) {
+			continue
+		}
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		out = append(out, clipText(line, maxLineRunes))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func loadTemplateLocation(tz string) *time.Location {

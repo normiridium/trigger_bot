@@ -142,30 +142,78 @@ func TestWeatherCityCandidatesInflectionFallback(t *testing.T) {
 	}
 }
 
-func TestRenderResponseTemplateWebSearchFromCache(t *testing.T) {
-	templateWebSearchCache.mu.Lock()
-	old := templateWebSearchCache.items
-	templateWebSearchCache.items = map[string]webSearchCacheEntry{
-		"оле-ням 67?|8": {
-			value:     "1) test title — test snippet (https://example.org)",
-			expiresAt: time.Now().Add(5 * time.Minute),
-		},
+func TestSanitizeWebSearchOutputRemovesLinks(t *testing.T) {
+	in := "1) Заголовок — суть (https://example.org/path)\n2) [источник](https://foo.bar/x)\n3) <https://baz.test/q>"
+	got := sanitizeWebSearchOutput(in)
+	if strings.Contains(got, "http://") || strings.Contains(got, "https://") {
+		t.Fatalf("sanitized output must not contain urls: %q", got)
 	}
-	templateWebSearchCache.mu.Unlock()
-	defer func() {
-		templateWebSearchCache.mu.Lock()
-		templateWebSearchCache.items = old
-		templateWebSearchCache.mu.Unlock()
-	}()
+	if strings.Contains(got, "[источник](") {
+		t.Fatalf("sanitized output must not contain markdown links: %q", got)
+	}
+	if !strings.Contains(got, "Заголовок") {
+		t.Fatalf("sanitized output lost content: %q", got)
+	}
+}
 
-	got, err := renderResponseTemplate(`{{ web_search .message 8 }}`, map[string]interface{}{
-		"message": "оле-ням 67?",
-	}, nil)
-	if err != nil {
-		t.Fatalf("renderResponseTemplate error: %v", err)
+func TestParseWebSearchCallDefault(t *testing.T) {
+	opts := parseWebSearchCall("найди анекдот про штирлица")
+	if opts.Query != "найди анекдот про штирлица" {
+		t.Fatalf("unexpected query: %q", opts.Query)
 	}
-	if !strings.Contains(got, "test title") {
-		t.Fatalf("unexpected web_search render: %q", got)
+	if opts.Condition != "" {
+		t.Fatalf("unexpected condition: %q", opts.Condition)
+	}
+	if opts.Compact {
+		t.Fatal("compact must be false by default")
+	}
+}
+
+func TestParseWebSearchCallCompactFlag(t *testing.T) {
+	opts := parseWebSearchCall("найди анекдот про штирлица", "компактно")
+	if opts.Query != "найди анекдот про штирлица" {
+		t.Fatalf("unexpected query: %q", opts.Query)
+	}
+	if !opts.Compact {
+		t.Fatal("compact must be true")
+	}
+}
+
+func TestParseWebSearchCallPipelineCondition(t *testing.T) {
+	opts := parseWebSearchCall("Искать только если запрос про мем, юмор или анекдот.", "расскажи анекдот про штирлица")
+	if opts.Query != "расскажи анекдот про штирлица" {
+		t.Fatalf("unexpected query: %q", opts.Query)
+	}
+	if opts.Condition != "Искать только если запрос про мем, юмор или анекдот." {
+		t.Fatalf("unexpected condition: %q", opts.Condition)
+	}
+}
+
+func TestParseWebSearchCallPipelineCompact(t *testing.T) {
+	opts := parseWebSearchCall("компактно", "найди анекдот про штирлица")
+	if opts.Query != "найди анекдот про штирлица" {
+		t.Fatalf("unexpected query: %q", opts.Query)
+	}
+	if opts.Condition != "" {
+		t.Fatalf("unexpected condition: %q", opts.Condition)
+	}
+	if !opts.Compact {
+		t.Fatal("compact must be true")
+	}
+}
+
+func TestBuildWebSearchPromptModes(t *testing.T) {
+	full := buildWebSearchPrompt("расскажи анекдот про штирлица", false)
+	if strings.Contains(strings.ToLower(full), "короткие пункты") {
+		t.Fatalf("full prompt unexpectedly asks for compact output: %q", full)
+	}
+	if !strings.Contains(strings.ToLower(full), "умеренно подробную") {
+		t.Fatalf("full prompt must request non-compact output: %q", full)
+	}
+
+	compact := buildWebSearchPrompt("расскажи анекдот про штирлица", true)
+	if !strings.Contains(strings.ToLower(compact), "короткие пункты") {
+		t.Fatalf("compact prompt must request compact output: %q", compact)
 	}
 }
 
