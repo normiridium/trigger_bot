@@ -12,25 +12,25 @@ import (
 
 func defaultBotCommands() []tgbotapi.BotCommand {
 	return []tgbotapi.BotCommand{
-		{Command: "start", Description: "О боте и возможностях"},
-		{Command: "help", Description: "Справка по командам"},
-		{Command: "emojiid", Description: "ID кастомного эмодзи"},
-		{Command: "stickerid", Description: "Код стикера из реплая"},
-		{Command: "spsearch", Description: "Поиск трека в Spotify"},
-		{Command: "my_portrait", Description: "Показать мой портрет"},
-		{Command: "delete_my_portrait", Description: "Удалить мой портрет"},
+		{Command: cmdStart, Description: "О боте и возможностях"},
+		{Command: cmdHelp, Description: "Справка по командам"},
+		{Command: cmdEmojiID, Description: "ID кастомного эмодзи"},
+		{Command: cmdStickerID, Description: "Код стикера из реплая"},
+		{Command: cmdSpotifySearch, Description: "Поиск трека в Spotify"},
+		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
+		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
 	}
 }
 
 func adminBotCommands() []tgbotapi.BotCommand {
 	return []tgbotapi.BotCommand{
-		{Command: "ban", Description: "Бан пользователя"},
-		{Command: "unban", Description: "Снять бан"},
-		{Command: "mute", Description: "Мут пользователя"},
-		{Command: "unmute", Description: "Снять мут"},
-		{Command: "kick", Description: "Кик пользователя"},
-		{Command: "readonly", Description: "Режим readonly в чате"},
-		{Command: "reload_admins", Description: "Обновить кеш админов"},
+		{Command: cmdBan, Description: "Бан пользователя"},
+		{Command: cmdUnban, Description: "Снять бан"},
+		{Command: cmdMute, Description: "Мут пользователя"},
+		{Command: cmdUnmute, Description: "Снять мут"},
+		{Command: cmdKick, Description: "Кик пользователя"},
+		{Command: cmdReadonly, Description: "Режим readonly в чате"},
+		{Command: cmdReloadAdmins, Description: "Обновить кеш админов"},
 	}
 }
 
