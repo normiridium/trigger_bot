@@ -165,6 +165,22 @@ func (c *Client) Track(ctx context.Context, id int64) (*Track, error) {
 	return &out[0], nil
 }
 
+func (c *Client) TrackLyrics(ctx context.Context, id int64) (string, error) {
+	var out struct {
+		Lyrics struct {
+			Short string `json:"lyrics"`
+			Full  string `json:"fullLyrics"`
+		} `json:"lyrics"`
+	}
+	if err := c.get(ctx, "/tracks/"+strconv.FormatInt(id, 10)+"/supplement", nil, &out); err != nil {
+		return "", err
+	}
+	if v := strings.TrimSpace(out.Lyrics.Full); v != "" {
+		return v, nil
+	}
+	return strings.TrimSpace(out.Lyrics.Short), nil
+}
+
 func (c *Client) SearchTracks(ctx context.Context, query string, page int) ([]Track, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {

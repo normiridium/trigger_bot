@@ -543,6 +543,43 @@ func TestBuildResponseFromMessage_CommonTemplateFuncs(t *testing.T) {
 	}
 }
 
+func TestBuildResponseFromMessage_EscapesUserHTMLInPlainVars(t *testing.T) {
+	ctx := templateContext{
+		Msg: &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+			From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+			Text: `1'); DROP TABLE users; <tig-emoji emoji-id="1">🙂</tig-emoji>`,
+		},
+	}
+	got := buildResponseFromMessage(ctx, `{{ .message }}`)
+	if strings.Contains(got, "<tig-emoji") {
+		t.Fatalf("message html must be escaped, got=%q", got)
+	}
+	if !strings.Contains(got, "&lt;tig-emoji") {
+		t.Fatalf("escaped html marker not found, got=%q", got)
+	}
+}
+
+func TestBuildResponseFromMessage_UserLinkRemainsHTML(t *testing.T) {
+	ctx := templateContext{
+		Msg: &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+			From: &tgbotapi.User{ID: 7, FirstName: `<b>Ann</b>`, UserName: "anya"},
+			Text: "test",
+		},
+	}
+	got := buildResponseFromMessage(ctx, `{{ .user_link }}`)
+	if !strings.Contains(got, `<a href="tg://user?id=7">`) {
+		t.Fatalf("expected anchor in user_link, got=%q", got)
+	}
+	if strings.Contains(got, "<b>Ann</b>") {
+		t.Fatalf("link text must be escaped, got=%q", got)
+	}
+	if !strings.Contains(got, "&lt;b&gt;Ann&lt;/b&gt;") {
+		t.Fatalf("escaped link text not found, got=%q", got)
+	}
+}
+
 func TestResolveGenderVariant(t *testing.T) {
 	variants := genderVariants{
 		Male:    "он",

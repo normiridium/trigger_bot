@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -118,8 +120,21 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 }
 
 func fetchImageBytes(imageURL string) ([]byte, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", imageURL, nil)
+	u, err := validateExternalImageURL(imageURL)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 5 {
+				return errors.New("too many redirects")
+			}
+			_, err := validateExternalImageURL(req.URL.String())
+			return err
+		},
+	}
+	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +160,72 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 		return nil, fmt.Errorf("not an image content-type=%s url=%s", ctype, clipText(imageURL, 140))
 	}
 	return bodyBytes, nil
+}
+
+func validateExternalImageURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("empty image url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("bad image url: %w", err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return nil, errors.New("unsupported image url scheme")
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return nil, errors.New("empty image host")
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".local") {
+		return nil, errors.New("local image hosts are not allowed")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedImageHostIP(ip) {
+			return nil, errors.New("private image host ip is not allowed")
+		}
+		return u, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("image host resolve failed: %w", err)
+	}
+	if len(addrs) == 0 {
+		return nil, errors.New("image host resolve returned no ip")
+	}
+	for _, addr := range addrs {
+		if isBlockedImageHostIP(addr.IP) {
+			return nil, errors.New("private image host ip is not allowed")
+		}
+	}
+	return u, nil
+}
+
+func isBlockedImageHostIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if cidrContainsIP("100.64.0.0/10", ip) {
+		return true
+	}
+	return false
+}
+
+func cidrContainsIP(cidr string, ip net.IP) bool {
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil || n == nil || ip == nil {
+		return false
+	}
+	return n.Contains(ip)
 }
 
 func generateChatGPTReply(ctx templateContext, promptTemplate string, recentContext string) (string, error) {

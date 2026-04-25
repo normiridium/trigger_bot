@@ -2038,6 +2038,9 @@ func Run() {
 		TimeoutSec:    envInt("YANDEX_MUSIC_TIMEOUT_SEC", 45),
 		Tries:         envInt("YANDEX_MUSIC_TRIES", 6),
 		RetryDelaySec: envInt("YANDEX_MUSIC_RETRY_DELAY_SEC", 2),
+		FFmpegBin:     strings.TrimSpace(firstNonEmptyEnv("YANDEX_MUSIC_FFMPEG_BIN", "FFMPEG_BIN")),
+		ForceMP3:      envBool("YANDEX_MUSIC_FORCE_MP3", true),
+		EmbedLyrics:   envBool("YANDEX_MUSIC_EMBED_LYRICS", true),
 	}
 	telegramUploadMaxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
 	if telegramUploadMaxMB <= 0 {

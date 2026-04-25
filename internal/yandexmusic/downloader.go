@@ -1,11 +1,13 @@
 package yandexmusic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -18,6 +20,9 @@ type Downloader struct {
 	TimeoutSec    int
 	Tries         int
 	RetryDelaySec int
+	FFmpegBin     string
+	ForceMP3      bool
+	EmbedLyrics   bool
 }
 
 func (d Downloader) SearchTracks(ctx context.Context, query string, limit int) ([]SearchTrack, error) {
@@ -123,6 +128,10 @@ func (d Downloader) DownloadByURL(ctx context.Context, rawURL string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("yandex track lookup failed: %w", err)
 	}
+	lyrics := ""
+	if d.EmbedLyrics {
+		lyrics, _ = client.TrackLyrics(ctx, trackID)
+	}
 	var (
 		di      *DownloadInfo
 		lastErr error
@@ -145,13 +154,159 @@ func (d Downloader) DownloadByURL(ctx context.Context, rawURL string) (string, e
 	if len(data) == 0 {
 		return "", errors.New("yandex track download is empty")
 	}
-	ext := extFromCodec(di.Codec)
+	sourceExt := extFromCodec(di.Codec)
 	base := buildTrackBaseName(trackID, track)
-	path := filepath.Join(tmpDir, base+"."+ext)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	sourcePath := filepath.Join(tmpDir, base+".source."+sourceExt)
+	if err := os.WriteFile(sourcePath, data, 0o644); err != nil {
 		return "", err
 	}
-	return path, nil
+	meta := extractTrackMeta(track, lyrics)
+	wantMP3 := d.ForceMP3
+	targetExt := sourceExt
+	if wantMP3 {
+		targetExt = "mp3"
+	}
+	targetPath := filepath.Join(tmpDir, base+"."+targetExt)
+	if err := transcodeAndTagAudio(ctx, d.ffmpegBin(), sourcePath, targetPath, wantMP3, meta); err != nil {
+		if wantMP3 {
+			return "", err
+		}
+		if renameErr := os.Rename(sourcePath, targetPath); renameErr != nil {
+			return "", renameErr
+		}
+		return targetPath, nil
+	}
+	_ = os.Remove(sourcePath)
+	return targetPath, nil
+}
+
+type trackMeta struct {
+	Title   string
+	Artist  string
+	Album   string
+	Year    int
+	TrackNo int
+	Lyrics  string
+}
+
+func extractTrackMeta(track *Track, lyrics string) trackMeta {
+	if track == nil {
+		return trackMeta{Lyrics: strings.TrimSpace(lyrics)}
+	}
+	out := trackMeta{
+		Title:  strings.TrimSpace(track.Title),
+		Lyrics: strings.TrimSpace(lyrics),
+	}
+	if len(track.Artists) > 0 {
+		out.Artist = strings.TrimSpace(track.Artists[0].Name)
+	}
+	if len(track.Albums) > 0 {
+		al := track.Albums[0]
+		out.Album = strings.TrimSpace(al.Title)
+		out.Year = al.Year
+		if al.TrackPosition != nil && al.TrackPosition.Index > 0 {
+			out.TrackNo = al.TrackPosition.Index
+		}
+	}
+	return out
+}
+
+func (d Downloader) ffmpegBin() string {
+	if v := strings.TrimSpace(d.FFmpegBin); v != "" {
+		return v
+	}
+	return "ffmpeg"
+}
+
+func transcodeAndTagAudio(ctx context.Context, ffmpegBin, sourcePath, targetPath string, toMP3 bool, meta trackMeta) error {
+	ffmpegBin = strings.TrimSpace(ffmpegBin)
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
+	args := []string{
+		"-nostdin",
+		"-y",
+		"-i", sourcePath,
+		"-map_metadata", "-1",
+		"-vn",
+	}
+	if toMP3 {
+		args = append(args,
+			"-acodec", "libmp3lame",
+			"-q:a", "2",
+			"-id3v2_version", "3",
+			"-write_id3v1", "0",
+		)
+	} else {
+		args = append(args, "-codec", "copy")
+	}
+	if v := sanitizeMetaValue(meta.Title, 256); v != "" {
+		args = append(args, "-metadata", "title="+v)
+	}
+	if v := sanitizeMetaValue(meta.Artist, 256); v != "" {
+		args = append(args, "-metadata", "artist="+v)
+	}
+	if v := sanitizeMetaValue(meta.Album, 256); v != "" {
+		args = append(args, "-metadata", "album="+v)
+	}
+	if meta.Year > 0 {
+		args = append(args, "-metadata", "date="+strconv.Itoa(meta.Year))
+	}
+	if meta.TrackNo > 0 {
+		args = append(args, "-metadata", "track="+strconv.Itoa(meta.TrackNo))
+	}
+	if v := sanitizeMetaValue(meta.Lyrics, 6000); v != "" {
+		lang := normalizeID3LyricsLang(os.Getenv("YANDEX_MUSIC_LYRICS_LANG"))
+		args = append(args, "-metadata", "lyrics-"+lang+"="+v)
+		args = append(args, "-metadata", "lyrics="+v)
+		args = append(args, "-metadata", "TEXT="+v)
+		args = append(args, "-metadata", "comment="+v)
+		args = append(args, "-metadata", "lyricist="+v)
+	}
+	args = append(args, targetPath)
+
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("ffmpeg yandex tag/transcode failed: %s", msg)
+	}
+	return nil
+}
+
+func sanitizeMetaValue(v string, maxRunes int) string {
+	v = strings.ToValidUTF8(strings.TrimSpace(v), "")
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "\x00", "")
+	v = strings.ReplaceAll(v, "\u00A0", " ")
+	v = strings.ReplaceAll(v, "\r\n", "\n")
+	v = strings.ReplaceAll(v, "\r", "\n")
+	if maxRunes > 0 {
+		r := []rune(v)
+		if len(r) > maxRunes {
+			v = string(r[:maxRunes])
+		}
+	}
+	return strings.TrimSpace(v)
+}
+
+func normalizeID3LyricsLang(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if len(v) != 3 {
+		return "eng"
+	}
+	for _, r := range v {
+		if r < 'a' || r > 'z' {
+			return "eng"
+		}
+	}
+	return v
 }
 
 func apiQuality(q int) string {

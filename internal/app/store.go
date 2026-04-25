@@ -30,6 +30,19 @@ type ScheduledUnmute struct {
 	UnmuteAt int64
 }
 
+type AdminAuth struct {
+	PasswordHash      string
+	PasswordUpdatedAt int64
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+type AdminSession struct {
+	TokenHash string
+	CreatedAt int64
+	ExpiresAt int64
+}
+
 func parseResponseTextRaw(raw json.RawMessage) []ResponseTextItem {
 	if len(raw) == 0 {
 		return nil
@@ -169,6 +182,55 @@ func (s *Store) DeleteParticipantPortrait(userID int64) error {
 		return nil
 	}
 	return s.mg.deleteParticipantPortrait(userID)
+}
+
+func (s *Store) GetAdminAuth() (*AdminAuth, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.getAdminAuth()
+}
+
+func (s *Store) SetAdminPasswordHash(passwordHash string) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.setAdminPasswordHash(passwordHash, time.Now().Unix())
+}
+
+func (s *Store) CreateAdminSession(tokenHash string, expiresAt int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.createAdminSession(tokenHash, time.Now().Unix(), expiresAt)
+}
+
+func (s *Store) GetAdminSession(tokenHash string) (*AdminSession, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.getAdminSession(tokenHash)
+}
+
+func (s *Store) DeleteAdminSession(tokenHash string) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteAdminSession(tokenHash)
+}
+
+func (s *Store) DeleteAllAdminSessions() error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteAllAdminSessions()
+}
+
+func (s *Store) DeleteExpiredAdminSessions(nowUnix int64) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteExpiredAdminSessions(nowUnix)
 }
 
 func sanitizeChance(v int) int {

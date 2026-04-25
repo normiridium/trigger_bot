@@ -34,8 +34,16 @@ type ArtistBrief struct {
 	Name string `json:"name"`
 }
 
+type TrackPosition struct {
+	Volume int `json:"volume"`
+	Index  int `json:"index"`
+}
+
 type AlbumBrief struct {
-	ID int `json:"id"`
+	ID            int            `json:"id"`
+	Title         string         `json:"title"`
+	Year          int            `json:"year"`
+	TrackPosition *TrackPosition `json:"trackPosition"`
 }
 
 type Track struct {

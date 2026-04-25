@@ -3,10 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -19,13 +23,21 @@ import (
 
 	"trigger-admin-bot/internal/match"
 	"trigger-admin-bot/internal/model"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type WebAdmin struct {
 	store      *Store
-	adminToken string
 	emojiProxy emojiProxyService
 }
+
+const adminSessionCookieName = "trigger_admin_session"
+const adminCSRFCookieName = "trigger_admin_csrf"
+const adminSessionTTL = 30 * 24 * time.Hour
+const adminAuthStateSetupRequired = "setup_required"
+const adminAuthStateLoginRequired = "login_required"
+const adminAuthStateAuthenticated = "authenticated"
 
 type settingField struct {
 	Key         string   `json:"key"`
@@ -36,33 +48,232 @@ type settingField struct {
 }
 
 func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
+	_ = adminToken
 	return &WebAdmin{
-		store:      store,
-		adminToken: strings.TrimSpace(adminToken),
+		store: store,
 		emojiProxy: emojiProxyService{
 			Token: strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", "")),
 		},
 	}
 }
 
-func (w *WebAdmin) authOK(r *http.Request) bool {
-	if w.adminToken == "" {
+func (w *WebAdmin) currentAdminAuth() (*AdminAuth, error) {
+	if w == nil || w.store == nil {
+		return nil, errors.New("store is not initialized")
+	}
+	auth, err := w.store.GetAdminAuth()
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(auth.PasswordHash) == "" {
+		return nil, nil
+	}
+	return auth, nil
+}
+
+func (w *WebAdmin) authStateForRequest(r *http.Request) (string, error) {
+	auth, err := w.currentAdminAuth()
+	if err != nil {
+		return "", err
+	}
+	if auth == nil {
+		return adminAuthStateSetupRequired, nil
+	}
+	ok, err := w.sessionAuthorized(r)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return adminAuthStateAuthenticated, nil
+	}
+	return adminAuthStateLoginRequired, nil
+}
+
+func tokenHashHex(v string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(v)))
+	return hex.EncodeToString(sum[:])
+}
+
+func newSessionToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := crand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func (w *WebAdmin) sessionAuthorized(r *http.Request) (bool, error) {
+	if w == nil || w.store == nil {
+		return false, errors.New("store is not initialized")
+	}
+	if r == nil {
+		return false, nil
+	}
+	c, err := r.Cookie(adminSessionCookieName)
+	if err != nil || strings.TrimSpace(c.Value) == "" {
+		return false, nil
+	}
+	tokenHash := tokenHashHex(c.Value)
+	now := time.Now().Unix()
+	_ = w.store.DeleteExpiredAdminSessions(now)
+	sess, err := w.store.GetAdminSession(tokenHash)
+	if err != nil || sess == nil {
+		return false, err
+	}
+	if sess.ExpiresAt <= now {
+		_ = w.store.DeleteAdminSession(tokenHash)
+		return false, nil
+	}
+	return true, nil
+}
+
+func setAdminSessionCookie(rw http.ResponseWriter, r *http.Request, token string) {
+	if rw == nil {
+		return
+	}
+	http.SetCookie(rw, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    strings.TrimSpace(token),
+		Path:     "/trigger_bot",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r != nil && r.TLS != nil,
+		MaxAge:   int(adminSessionTTL / time.Second),
+	})
+}
+
+func setCSRFCookie(rw http.ResponseWriter, r *http.Request, token string) {
+	if rw == nil {
+		return
+	}
+	http.SetCookie(rw, &http.Cookie{
+		Name:     adminCSRFCookieName,
+		Value:    strings.TrimSpace(token),
+		Path:     "/trigger_bot",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r != nil && r.TLS != nil,
+		MaxAge:   int(adminSessionTTL / time.Second),
+	})
+}
+
+func ensureCSRFCookie(rw http.ResponseWriter, r *http.Request) (string, error) {
+	if r != nil {
+		if c, err := r.Cookie(adminCSRFCookieName); err == nil {
+			v := strings.TrimSpace(c.Value)
+			if len(v) >= 32 {
+				return v, nil
+			}
+		}
+	}
+	token, err := newSessionToken()
+	if err != nil {
+		return "", err
+	}
+	setCSRFCookie(rw, r, token)
+	return token, nil
+}
+
+func clearAdminSessionCookie(rw http.ResponseWriter, r *http.Request) {
+	if rw == nil {
+		return
+	}
+	http.SetCookie(rw, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    "",
+		Path:     "/trigger_bot",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r != nil && r.TLS != nil,
+		MaxAge:   -1,
+	})
+}
+
+func clearCSRFCookie(rw http.ResponseWriter, r *http.Request) {
+	if rw == nil {
+		return
+	}
+	http.SetCookie(rw, &http.Cookie{
+		Name:     adminCSRFCookieName,
+		Value:    "",
+		Path:     "/trigger_bot",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r != nil && r.TLS != nil,
+		MaxAge:   -1,
+	})
+}
+
+func isStateChangingMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
 		return true
 	}
-	if strings.TrimSpace(r.URL.Query().Get("token")) == w.adminToken {
-		return true
+}
+
+func csrfTokenValid(r *http.Request) bool {
+	if r == nil {
+		return false
 	}
-	if strings.TrimSpace(r.Header.Get("X-Admin-Token")) == w.adminToken {
-		return true
+	c, err := r.Cookie(adminCSRFCookieName)
+	if err != nil {
+		return false
 	}
-	return false
+	cookieVal := strings.TrimSpace(c.Value)
+	headerVal := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+	if cookieVal == "" || headerVal == "" {
+		return false
+	}
+	if len(cookieVal) != len(headerVal) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookieVal), []byte(headerVal)) == 1
+}
+
+func writeJSON(rw http.ResponseWriter, code int, payload interface{}) {
+	if rw == nil {
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.WriteHeader(code)
+	_ = json.NewEncoder(rw).Encode(payload)
+}
+
+func (w *WebAdmin) writeAuthRequired(rw http.ResponseWriter, r *http.Request) {
+	state, err := w.authStateForRequest(r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
+		"ok":         false,
+		"auth_state": state,
+		"error":      "unauthorized",
+	})
 }
 
 func (w *WebAdmin) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
-		if !w.authOK(r) {
-			rw.WriteHeader(http.StatusUnauthorized)
-			_, _ = rw.Write([]byte("доступ запрещен"))
+		state, err := w.authStateForRequest(r)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if state != adminAuthStateAuthenticated {
+			w.writeAuthRequired(rw, r)
+			return
+		}
+		if isStateChangingMethod(r.Method) && !csrfTokenValid(r) {
+			writeJSON(rw, http.StatusForbidden, map[string]interface{}{
+				"ok":         false,
+				"auth_state": adminAuthStateAuthenticated,
+				"error":      "csrf_invalid",
+			})
 			return
 		}
 		next(rw, r)
@@ -76,7 +287,12 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 	})
-	mux.HandleFunc("/trigger_bot", w.withAuth(w.listPage))
+	mux.HandleFunc("/trigger_bot", w.listPage)
+	mux.HandleFunc("/trigger_bot/auth_state", w.authStateJSON)
+	mux.HandleFunc("/trigger_bot/auth_setup", w.authSetupPost)
+	mux.HandleFunc("/trigger_bot/auth_login", w.authLoginPost)
+	mux.HandleFunc("/trigger_bot/auth_logout", w.withAuth(w.authLogoutPost))
+	mux.HandleFunc("/trigger_bot/change_password", w.withAuth(w.changePasswordPost))
 	mux.HandleFunc("/trigger_bot/list", w.withAuth(w.listJSON))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
 	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
@@ -99,13 +315,16 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/export", w.withAuth(w.exportGet))
 	mux.HandleFunc("/trigger_bot/import", w.withAuth(w.importPost))
 	// legacy route compatibility
-	mux.HandleFunc("/trigger_bot/edit", w.withAuth(func(rw http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/trigger_bot/edit", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
-	}))
+	})
 	return mux
 }
 
 func (w *WebAdmin) listPage(rw http.ResponseWriter, r *http.Request) {
+	if state, err := w.authStateForRequest(r); err == nil && state == adminAuthStateAuthenticated {
+		_, _ = ensureCSRFCookie(rw, r)
+	}
 	body, err := w.renderTemplate("trigger_list.html", map[string]interface{}{})
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -115,6 +334,237 @@ func (w *WebAdmin) listPage(rw http.ResponseWriter, r *http.Request) {
 	rw.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	rw.WriteHeader(http.StatusOK)
 	_, _ = rw.Write(body)
+}
+
+func parseJSONBody(r *http.Request, out interface{}) error {
+	if r == nil {
+		return errors.New("request is nil")
+	}
+	if r.Method != http.MethodPost {
+		return fmt.Errorf("method not allowed")
+	}
+	ctype := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if !strings.HasPrefix(ctype, "application/json") {
+		return fmt.Errorf("content-type must be application/json")
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
+}
+
+func (w *WebAdmin) authStateJSON(rw http.ResponseWriter, r *http.Request) {
+	state, err := w.authStateForRequest(r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]interface{}{
+		"ok":            true,
+		"auth_state":    state,
+		"authenticated": state == adminAuthStateAuthenticated,
+	}
+	if state == adminAuthStateAuthenticated {
+		token, err := ensureCSRFCookie(rw, r)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp["csrf_token"] = token
+	}
+	writeJSON(rw, http.StatusOK, resp)
+}
+
+func (w *WebAdmin) authSetupPost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	state, err := w.authStateForRequest(r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if state != adminAuthStateSetupRequired {
+		writeJSON(rw, http.StatusConflict, map[string]interface{}{
+			"ok":         false,
+			"auth_state": state,
+			"error":      "password_already_set",
+		})
+		return
+	}
+	pass := strings.TrimSpace(payload.Password)
+	if len([]rune(pass)) < 8 {
+		http.Error(rw, "password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := w.store.SetAdminPasswordHash(string(hash)); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = w.store.DeleteAllAdminSessions()
+	token, err := newSessionToken()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := w.store.CreateAdminSession(tokenHashHex(token), time.Now().Add(adminSessionTTL).Unix()); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	setAdminSessionCookie(rw, r, token)
+	csrfToken, err := ensureCSRFCookie(rw, r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"auth_state":    adminAuthStateAuthenticated,
+		"authenticated": true,
+		"csrf_token":    csrfToken,
+	})
+}
+
+func (w *WebAdmin) authLoginPost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	auth, err := w.currentAdminAuth()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if auth == nil {
+		writeJSON(rw, http.StatusConflict, map[string]interface{}{
+			"ok":         false,
+			"auth_state": adminAuthStateSetupRequired,
+			"error":      "setup_required",
+		})
+		return
+	}
+	pass := strings.TrimSpace(payload.Password)
+	if pass == "" {
+		http.Error(rw, "password is required", http.StatusBadRequest)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(auth.PasswordHash), []byte(pass)); err != nil {
+		writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
+			"ok":         false,
+			"auth_state": adminAuthStateLoginRequired,
+			"error":      "invalid_credentials",
+		})
+		return
+	}
+	token, err := newSessionToken()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := w.store.CreateAdminSession(tokenHashHex(token), time.Now().Add(adminSessionTTL).Unix()); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	setAdminSessionCookie(rw, r, token)
+	csrfToken, err := ensureCSRFCookie(rw, r)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"auth_state":    adminAuthStateAuthenticated,
+		"authenticated": true,
+		"csrf_token":    csrfToken,
+	})
+}
+
+func (w *WebAdmin) authLogoutPost(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if c, err := r.Cookie(adminSessionCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		_ = w.store.DeleteAdminSession(tokenHashHex(c.Value))
+	}
+	clearAdminSessionCookie(rw, r)
+	clearCSRFCookie(rw, r)
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"auth_state":    adminAuthStateLoginRequired,
+		"authenticated": false,
+	})
+}
+
+func (w *WebAdmin) changePasswordPost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	auth, err := w.currentAdminAuth()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if auth == nil {
+		writeJSON(rw, http.StatusConflict, map[string]interface{}{
+			"ok":         false,
+			"auth_state": adminAuthStateSetupRequired,
+			"error":      "setup_required",
+		})
+		return
+	}
+	cur := strings.TrimSpace(payload.CurrentPassword)
+	if cur == "" {
+		http.Error(rw, "current_password is required", http.StatusBadRequest)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(auth.PasswordHash), []byte(cur)); err != nil {
+		writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
+			"ok":    false,
+			"error": "invalid_current_password",
+		})
+		return
+	}
+	newPass := strings.TrimSpace(payload.NewPassword)
+	if len([]rune(newPass)) < 8 {
+		http.Error(rw, "new_password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := w.store.SetAdminPasswordHash(string(hash)); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = w.store.DeleteAllAdminSessions()
+	clearAdminSessionCookie(rw, r)
+	clearCSRFCookie(rw, r)
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":               true,
+		"restart_required": false,
+		"message":          "Пароль изменён. Войдите снова.",
+		"auth_state":       adminAuthStateLoginRequired,
+		"authenticated":    false,
+	})
 }
 
 func (w *WebAdmin) listJSON(rw http.ResponseWriter, r *http.Request) {
@@ -202,6 +652,12 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 		{Value: "{{ .reply_label }}", Label: "{{ .reply_label }} — метка из скобок в имени адресата"},
 		{Value: "{{ .reply_user_link }}", Label: "{{ .reply_user_link }} — ссылка на адресата реплая"},
 		{Value: "{{ .reply_sender_tag }}", Label: "{{ .reply_sender_tag }} — тег адресата в чате"},
+		{Value: "{{ .reply_audio_title }}", Label: "{{ .reply_audio_title }} — название трека в реплае (если это аудио)"},
+		{Value: "{{ .reply_audio_artist }}", Label: "{{ .reply_audio_artist }} — исполнитель трека в реплае"},
+		{Value: "{{ .reply_audio_album }}", Label: "{{ .reply_audio_album }} — альбом трека в реплае"},
+		{Value: "{{ .reply_audio_year }}", Label: "{{ .reply_audio_year }} — год трека в реплае"},
+		{Value: "{{ .reply_audio_track }}", Label: "{{ .reply_audio_track }} — номер дорожки в реплае"},
+		{Value: "{{ .reply_audio_text }}", Label: "{{ .reply_audio_text }} — текст песни из тега TEXT в реплае"},
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(struct {
@@ -433,8 +889,8 @@ func (w *WebAdmin) templateSavePost(rw http.ResponseWriter, r *http.Request) {
 		Title string `json:"title"`
 		Text  string `json:"text"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	id := payload.ID
@@ -467,8 +923,8 @@ func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
 		ID  int64  `json:"id"`
 		Key string `json:"key"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	id := payload.ID
@@ -549,8 +1005,8 @@ func (w *WebAdmin) settingsGet(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
 	var payload map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	fields := settingsSchema()
@@ -565,6 +1021,8 @@ func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		val := strings.TrimSpace(v)
+		val = strings.ReplaceAll(val, "\r", " ")
+		val = strings.ReplaceAll(val, "\n", " ")
 		if f.Type == "bool" {
 			val = normalizeBoolString(val)
 		}
@@ -709,10 +1167,9 @@ func formatEnvValue(v string) string {
 	if v == "" {
 		return ""
 	}
-	if strings.ContainsAny(v, " #\t") {
-		return strconv.Quote(v)
-	}
-	return v
+	v = strings.ReplaceAll(v, "\r", " ")
+	v = strings.ReplaceAll(v, "\n", " ")
+	return strconv.Quote(v)
 }
 
 func normalizeBoolString(v string) string {
@@ -858,8 +1315,8 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		PassThrough   bool               `json:"pass_through"`
 		Chance        int                `json:"chance"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	t = Trigger{
@@ -909,8 +1366,8 @@ func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	id := payload.ID
@@ -928,15 +1385,11 @@ func (w *WebAdmin) togglePost(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebAdmin) reorderPost(rw http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	var payload struct {
 		IDs []int64 `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := w.store.ReorderTriggersByIDs(payload.IDs); err != nil {
@@ -951,8 +1404,8 @@ func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(rw, "bad json", http.StatusBadRequest)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if payload.ID <= 0 {
@@ -970,15 +1423,7 @@ func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
 }
 
 func redirectToListWithToken(rw http.ResponseWriter, r *http.Request) {
-	path := "/trigger_bot"
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
-		token = strings.TrimSpace(r.FormValue("token"))
-	}
-	if token != "" {
-		path = path + "?token=" + url.QueryEscape(token)
-	}
-	http.Redirect(rw, r, path, http.StatusFound)
+	http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 }
 
 func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {
@@ -994,15 +1439,17 @@ func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) importPost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	var raw string
 	var payload struct {
 		Raw string `json:"raw"`
 	}
-	body, _ := io.ReadAll(r.Body)
-	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Raw) != "" {
-		raw = payload.Raw
-	} else {
-		raw = string(body)
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	raw := strings.TrimSpace(payload.Raw)
+	if raw == "" {
+		http.Error(rw, "raw is required", http.StatusBadRequest)
+		return
 	}
 	added, err := w.store.ImportJSON([]byte(raw))
 	if err != nil {

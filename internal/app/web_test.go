@@ -1,36 +1,30 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"trigger-admin-bot/internal/model"
 )
 
-func TestWebAdminAuthOK(t *testing.T) {
-	w := NewWebAdmin(nil, "secret")
-
-	req := httptest.NewRequest("GET", "/trigger_bot", nil)
-	if w.authOK(req) {
-		t.Fatalf("expected unauthorized without token")
+func TestTokenHashHex(t *testing.T) {
+	a := tokenHashHex("abc")
+	b := tokenHashHex("abc")
+	c := tokenHashHex("abcd")
+	if a == "" || b == "" || c == "" {
+		t.Fatalf("expected non-empty hashes")
 	}
-
-	req = httptest.NewRequest("GET", "/trigger_bot?token=secret", nil)
-	if !w.authOK(req) {
-		t.Fatalf("expected query token to authorize")
+	if a != b {
+		t.Fatalf("same input must produce same hash")
 	}
-
-	req = httptest.NewRequest("GET", "/trigger_bot", nil)
-	req.Header.Set("X-Admin-Token", "secret")
-	if !w.authOK(req) {
-		t.Fatalf("expected header token to authorize")
-	}
-
-	open := NewWebAdmin(nil, "")
-	if !open.authOK(httptest.NewRequest("GET", "/trigger_bot", nil)) {
-		t.Fatalf("expected empty admin token to allow all")
+	if a == c {
+		t.Fatalf("different input must produce different hash")
 	}
 }
 
@@ -51,14 +45,49 @@ func TestNormalizeBoolString(t *testing.T) {
 }
 
 func TestFormatEnvValue(t *testing.T) {
-	if got := formatEnvValue("320K"); got != "320K" {
+	if got := formatEnvValue("320K"); got != `"320K"` {
 		t.Fatalf("unexpected simple env value: %q", got)
 	}
 	if got := formatEnvValue("hello world"); got != `"hello world"` {
 		t.Fatalf("expected quoted value, got %q", got)
 	}
+	if got := formatEnvValue("a\nb"); strings.Contains(got, "\n") {
+		t.Fatalf("expected newlines to be sanitized, got %q", got)
+	}
 	if got := formatEnvValue(""); got != "" {
 		t.Fatalf("expected empty value to stay empty")
+	}
+}
+
+func TestParseJSONBody(t *testing.T) {
+	var payload struct {
+		Name string `json:"name"`
+	}
+	req := httptest.NewRequest("POST", "/x", bytes.NewBufferString(`{"name":"ok"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if err := parseJSONBody(req, &payload); err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if payload.Name != "ok" {
+		t.Fatalf("payload mismatch: %#v", payload)
+	}
+
+	reqBadMethod := httptest.NewRequest("GET", "/x", nil)
+	reqBadMethod.Header.Set("Content-Type", "application/json")
+	if err := parseJSONBody(reqBadMethod, &payload); err == nil {
+		t.Fatalf("expected method validation error")
+	}
+
+	reqBadCT := httptest.NewRequest("POST", "/x", bytes.NewBufferString(`{"name":"ok"}`))
+	reqBadCT.Header.Set("Content-Type", "text/plain")
+	if err := parseJSONBody(reqBadCT, &payload); err == nil {
+		t.Fatalf("expected content-type validation error")
+	}
+
+	reqUnknown := httptest.NewRequest("POST", "/x", bytes.NewBufferString(`{"name":"ok","x":1}`))
+	reqUnknown.Header.Set("Content-Type", "application/json")
+	if err := parseJSONBody(reqUnknown, &payload); err == nil {
+		t.Fatalf("expected unknown field error")
 	}
 }
 
@@ -112,6 +141,80 @@ func TestLoadEnvSettingsPriority(t *testing.T) {
 	}
 	if vals["KEY3"] != "default3" {
 		t.Fatalf("expected KEY3 default, got %q", vals["KEY3"])
+	}
+}
+
+func TestAuthStateResponseShape(t *testing.T) {
+	w := NewWebAdmin(nil, "")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/trigger_bot/auth_state", nil)
+	w.authStateJSON(rec, req)
+	if rec.Code != 500 {
+		t.Fatalf("expected 500 with nil store, got %d", rec.Code)
+	}
+}
+
+func TestWriteJSONHelper(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, 200, map[string]string{"ok": "yes"})
+	if rec.Code != 200 {
+		t.Fatalf("status mismatch: %d", rec.Code)
+	}
+	var out map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid json body: %v", err)
+	}
+	if out["ok"] != "yes" {
+		t.Fatalf("payload mismatch: %#v", out)
+	}
+}
+
+func TestCSRFCookieValidation(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/trigger_bot/save", nil)
+	req.AddCookie(&http.Cookie{Name: adminCSRFCookieName, Value: "abc123"})
+	req.Header.Set("X-CSRF-Token", "abc123")
+	if !csrfTokenValid(req) {
+		t.Fatalf("expected csrf token to validate")
+	}
+	reqBad := httptest.NewRequest(http.MethodPost, "/trigger_bot/save", nil)
+	reqBad.AddCookie(&http.Cookie{Name: adminCSRFCookieName, Value: "abc123"})
+	reqBad.Header.Set("X-CSRF-Token", "zzz")
+	if csrfTokenValid(reqBad) {
+		t.Fatalf("expected csrf token mismatch to fail")
+	}
+}
+
+func TestIsStateChangingMethod(t *testing.T) {
+	if isStateChangingMethod(http.MethodGet) {
+		t.Fatalf("GET must not be state changing")
+	}
+	if !isStateChangingMethod(http.MethodPost) {
+		t.Fatalf("POST must be state changing")
+	}
+}
+
+func TestEnsureCSRFCookie(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/trigger_bot", nil)
+	token, err := ensureCSRFCookie(rec, req)
+	if err != nil {
+		t.Fatalf("ensureCSRFCookie failed: %v", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		t.Fatalf("expected csrf token")
+	}
+	got := rec.Result().Cookies()
+	found := false
+	for _, c := range got {
+		if c.Name == adminCSRFCookieName {
+			found = true
+			if strings.TrimSpace(c.Value) == "" {
+				t.Fatalf("csrf cookie value is empty")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected csrf cookie to be set")
 	}
 }
 
