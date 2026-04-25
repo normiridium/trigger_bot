@@ -1439,18 +1439,18 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 		out.Action = "kick"
 		out.Silent = true
 	case "!readonly", "!ro", "!channelmode", "/readonly", "/ro", "/channelmode":
-		out.Action = "readonly"
+		out.Action = cmdReadonly
 	case "!reload_admins", "/reload_admins":
-		out.Action = "reload_admins"
+		out.Action = cmdReloadAdmins
 	default:
 		return moderationRequest{}, false, nil
 	}
 
-	if out.Action == "reload_admins" {
+	if out.Action == cmdReloadAdmins {
 		return out, true, nil
 	}
 
-	if out.Action == "readonly" {
+	if out.Action == cmdReadonly {
 		if len(args) > 0 {
 			if d, ok := parseModerationDurationToken(args[0]); ok {
 				out.Duration = d
@@ -1900,7 +1900,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		senderTag = getChatMemberTagRaw(ctx.Bot.Token, msg.Chat.ID, msg.From.ID)
 	}
 
-	if req.Action == "reload_admins" {
+	if req.Action == cmdReloadAdmins {
 		if ctx.AdminCache == nil {
 			reply(sendCtx.WithReply(msg.MessageID), "Кэш админов недоступен.", false)
 			return true
@@ -1924,7 +1924,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		return true
 	}
 
-	if req.Action == "readonly" {
+	if req.Action == cmdReadonly {
 		turnOn := true
 		if ctx.Readonly != nil && ctx.Readonly.IsOn(msg.Chat.ID) {
 			turnOn = false
@@ -2420,12 +2420,14 @@ func Run() {
 		if msg.IsCommand() {
 			cmd := msg.Command()
 			switch cmd {
-			case "start", "help":
+			case cmdStart, cmdHelp:
 				s := ""
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						"Команды: /start /help /emojiid /stickerid /spsearch /my_portrait /delete_my_portrait /ban /unban /mute /unmute /kick /readonly /reload_admins\n" +
+						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
+							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
+							cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -2443,12 +2445,12 @@ func Run() {
 						"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
 						"{{reply_sender_tag}}\n\n" +
 						"Кастомный emoji ID:\n" +
-						"— команда /emojiid\n" +
+						fmt.Sprintf("— команда /%s\n", cmdEmojiID) +
 						"— или просто отправьте кастомный emoji в личку боту."
 				} else {
 					triggerInfo := "Триггеры: список временно недоступен."
 					featureInfo := "Что умею:\n— выполнять триггеры, настроенные админами"
-					usageInfo := "Как пользоваться:\n— /emojiid — показать ID кастомного эмодзи"
+					usageInfo := fmt.Sprintf("Как пользоваться:\n— /%s — показать ID кастомного эмодзи", cmdEmojiID)
 					if items, err := store.ListTriggers(); err == nil {
 						enabled := make([]string, 0, len(items))
 						hasSpotify := false
@@ -2538,15 +2540,15 @@ func Run() {
 						if hasUnifiedMusic {
 							usageLines = append(usageLines, "— напишите: включи/поставь/найди трек ..., затем выберите сервис")
 						} else if hasSpotify {
-							usageLines = append(usageLines, "— для Spotify: /spsearch <запрос>")
+							usageLines = append(usageLines, fmt.Sprintf("— для Spotify: /%s <запрос>", cmdSpotifySearch))
 						}
 						if hasYandexMusic {
 							usageLines = append(usageLines, "— для Яндекс.Музыки: отправьте ссылку music.yandex.ru")
 						}
-						usageLines = append(usageLines, "— /my_portrait — показать ваш портрет")
-						usageLines = append(usageLines, "— /delete_my_portrait — удалить ваш портрет")
-						usageLines = append(usageLines, "— если нужен ID кастомного эмодзи: /emojiid")
-						usageLines = append(usageLines, "— если нужен код стикера: отправьте /stickerid в ответ на стикер")
+						usageLines = append(usageLines, fmt.Sprintf("— /%s — показать ваш портрет", cmdMyPortrait))
+						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
+						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
+						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
 						usageInfo = strings.Join(usageLines, "\n")
 					}
 					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
@@ -2556,7 +2558,7 @@ func Run() {
 				}
 				reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
 				continue
-			case "emojiid", "emoji_id":
+			case cmdEmojiID, cmdEmojiIDAlias:
 				hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
 				if len(hits) == 0 && rawMsg != nil && rawMsg.ReplyToMessage != nil {
 					hits, entityCount = extractCustomEmojiFromRaw(rawMsg.ReplyToMessage)
@@ -2577,7 +2579,7 @@ func Run() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-			case "stickerid", "sticker_id":
+			case cmdStickerID, cmdStickerIDAlias:
 				stickerHit, stickerOK := extractStickerCode(msg)
 				if !stickerOK && msg != nil && msg.ReplyToMessage != nil {
 					stickerHit, stickerOK = extractStickerCode(msg.ReplyToMessage)
@@ -2592,10 +2594,10 @@ func Run() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-					case "spsearch", "spfind":
+					case cmdSpotifySearch, cmdSpotifySearchAlt:
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: /spsearch исполнитель или трек", false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", cmdSpotifySearch), false)
 					continue
 				}
 				if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
@@ -2620,7 +2622,7 @@ func Run() {
 				}
 						sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
 						continue
-					case "my_portrait", "portrait":
+					case cmdMyPortrait, cmdMyPortraitAlias:
 						if msg.From == nil || msg.From.ID == 0 {
 							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
 							continue
@@ -2642,7 +2644,7 @@ func Run() {
 						}
 						reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
 						continue
-					case "delete_my_portrait", "clear_my_portrait":
+					case cmdDeleteMyPortrait, cmdDeleteMyPortrait2:
 						if msg.From == nil || msg.From.ID == 0 {
 							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
 							continue
