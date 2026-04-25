@@ -11,7 +11,29 @@
 </head>
 <body class="text-light">
 <div class="container-fluid py-4 app" x-data="triggerApp()" x-init="initTriggerPage()">
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3 trigger-toolbar"></div>
+  <div id="auth_gate" class="p-4 rounded border border-secondary-subtle settings-panel d-none mb-3">
+    <h5 id="auth_gate_title" class="mb-2">Авторизация</h5>
+    <div id="auth_gate_hint" class="text-secondary small mb-3"></div>
+
+    <form id="auth_setup_form" class="d-flex flex-column gap-2 d-none">
+      <label class="form-label m-0" for="auth_setup_password">Создайте пароль администратора</label>
+      <input class="form-control bg-black text-light border-secondary" id="auth_setup_password" type="password" autocomplete="new-password" minlength="8" required>
+      <button class="btn btn-success btn-sm align-self-start" type="submit"><i class="bi bi-shield-lock"></i> Установить пароль</button>
+    </form>
+
+    <form id="auth_login_form" class="d-flex flex-column gap-2 d-none">
+      <label class="form-label m-0" for="auth_login_password">Пароль</label>
+      <input class="form-control bg-black text-light border-secondary" id="auth_login_password" type="password" autocomplete="current-password" required>
+      <div class="d-flex gap-2">
+        <button class="btn btn-success btn-sm" type="submit"><i class="bi bi-box-arrow-in-right"></i> Войти</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="admin_app_shell" class="d-none">
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-3 trigger-toolbar">
+      <button class="btn btn-outline-warning btn-sm ms-auto" type="button" id="auth_logout_btn"><i class="bi bi-box-arrow-right"></i> Выйти</button>
+    </div>
 
   <ul class="nav nav-tabs mb-3" role="tablist">
     <li class="nav-item" role="presentation">
@@ -86,7 +108,19 @@
           </div>
         </form>
       </div>
+      <div class="p-3 rounded border border-secondary-subtle settings-panel mt-3">
+        <h6 class="mb-2">Смена пароля администратора</h6>
+        <form id="change_password_form" class="d-flex flex-column gap-2">
+          <input class="form-control bg-black text-light border-secondary" id="change_password_current" type="password" autocomplete="current-password" placeholder="Текущий пароль" required>
+          <input class="form-control bg-black text-light border-secondary" id="change_password_new" type="password" autocomplete="new-password" minlength="8" placeholder="Новый пароль (мин. 8 символов)" required>
+          <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-warning btn-sm" type="submit" id="change_password_btn"><i class="bi bi-key"></i> Изменить пароль</button>
+            <span class="text-secondary small" id="change_password_hint"></span>
+          </div>
+        </form>
+      </div>
     </div>
+  </div>
   </div>
 </div>
 

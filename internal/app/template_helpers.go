@@ -2,9 +2,11 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	htmlstd "html"
 	htmltmpl "html/template"
 	"io"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -232,6 +235,27 @@ var templateWeatherCache = struct {
 type weatherCacheEntry struct {
 	value     string
 	expiresAt time.Time
+}
+
+type cachedReplyAudioDetails struct {
+	details   replyAudioDetails
+	expiresAt time.Time
+}
+
+type replyAudioDetails struct {
+	Title  string
+	Artist string
+	Album  string
+	Year   string
+	Track  string
+	Text   string
+}
+
+var replyAudioDetailsCache = struct {
+	mu    sync.RWMutex
+	items map[string]cachedReplyAudioDetails
+}{
+	items: make(map[string]cachedReplyAudioDetails),
 }
 
 func setParticipantPortraitResolver(fn func(chatID, userID int64) string) {
@@ -1277,15 +1301,15 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	vars := buildTemplateVars(ctx)
 	if ctx.Msg != nil && ctx.Msg.Chat != nil {
 		chatID := ctx.Msg.Chat.ID
-		vars["chat_context"] = htmltmpl.HTML(resolveChatContext(chatID, 12))
+		vars["chat_context"] = strings.TrimSpace(resolveChatContext(chatID, 12))
 		for _, n := range chatContextLimits {
 			key := fmt.Sprintf("__chat_context_%d", n)
-			vars[key] = htmltmpl.HTML(resolveChatContext(chatID, n))
+			vars[key] = strings.TrimSpace(resolveChatContext(chatID, n))
 		}
 	}
 	out, err := renderResponseTemplate(rewrittenTemplate, vars, ctx.TemplateLookup)
 	if err != nil {
-		return applySimpleTemplateVars(rewrittenTemplate, vars)
+		return restoreTrustedTemplateFragments(applySimpleTemplateVars(rewrittenTemplate, vars), vars)
 	}
 	return out
 }
@@ -1333,16 +1357,11 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 			name := strings.TrimSpace(strings.TrimPrefix(tag, "{{"))
 			name = strings.TrimSuffix(name, "}}")
 			if name != "" {
-				vars[name] = value
+				vars[name] = strings.TrimSpace(value)
 			}
 		}
-		// In this bot all placeholders are considered trusted and intended for Telegram HTML output.
-		// Keep html/template for structure/funcs, but mark values as safe to avoid escaping.
-		for k, v := range vars {
-			if s, ok := v.(string); ok {
-				vars[k] = htmltmpl.HTML(strings.TrimSpace(s))
-			}
-		}
+		prepareTrustedTemplateFragment(vars, "user_link", "__trusted_user_link_html", "__TRUSTED_USER_LINK_HTML_99DBF0C9__")
+		prepareTrustedTemplateFragment(vars, "reply_user_link", "__trusted_reply_user_link_html", "__TRUSTED_REPLY_USER_LINK_HTML_1C4C4B0A__")
 	}
 	cleanCapture := strings.TrimSpace(ctx.CapturingText)
 	choice := deriveCapturingChoice(ctx.MatchText, cleanCapture, ctx.CaseSensitive)
@@ -1350,6 +1369,41 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 	vars["capturing_choice"] = choice
 	vars["capturing_option"] = choice
 	return vars
+}
+
+func prepareTrustedTemplateFragment(vars map[string]interface{}, fieldName, stashName, token string) {
+	raw, ok := vars[fieldName]
+	if !ok {
+		return
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return
+	}
+	vars[stashName] = htmltmpl.HTML(s)
+	vars[fieldName] = token
+}
+
+func restoreTrustedTemplateFragments(input string, vars map[string]interface{}) string {
+	out := strings.TrimSpace(input)
+	if out == "" {
+		return out
+	}
+	if v, ok := vars["__trusted_user_link_html"]; ok {
+		if s, ok2 := v.(htmltmpl.HTML); ok2 {
+			out = strings.ReplaceAll(out, "__TRUSTED_USER_LINK_HTML_99DBF0C9__", string(s))
+		}
+	}
+	if v, ok := vars["__trusted_reply_user_link_html"]; ok {
+		if s, ok2 := v.(htmltmpl.HTML); ok2 {
+			out = strings.ReplaceAll(out, "__TRUSTED_REPLY_USER_LINK_HTML_1C4C4B0A__", string(s))
+		}
+	}
+	return out
 }
 
 func renderResponseTemplate(input string, vars map[string]interface{}, lookup func(string) string) (string, error) {
@@ -1366,7 +1420,7 @@ func renderResponseTemplate(input string, vars map[string]interface{}, lookup fu
 	if err := tpl.Execute(&buf, vars); err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(buf.String()), nil
+	return restoreTrustedTemplateFragments(buf.String(), vars), nil
 }
 
 func normalizeLegacyTemplateSyntax(input string, vars map[string]interface{}) string {
@@ -1657,6 +1711,289 @@ func firstNonEmptyUserText(msg *tgbotapi.Message) string {
 	return strings.TrimSpace(msg.Caption)
 }
 
+func firstNonEmptyMessageContent(msg *tgbotapi.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(msg.Text); v != "" {
+		return v
+	}
+	if msg.Audio != nil {
+		title := strings.TrimSpace(msg.Audio.Title)
+		performer := strings.TrimSpace(msg.Audio.Performer)
+		switch {
+		case title != "" && performer != "":
+			return performer + " - " + title
+		case title != "":
+			return title
+		case performer != "":
+			return performer
+		}
+		if v := strings.TrimSpace(msg.Audio.FileName); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(msg.Caption); v != "" {
+			return v
+		}
+		return "audio message"
+	}
+	if v := strings.TrimSpace(msg.Caption); v != "" {
+		return v
+	}
+	if msg.Animation != nil {
+		if v := strings.TrimSpace(msg.Animation.FileName); v != "" {
+			return v
+		}
+	}
+	if msg.Document != nil {
+		if v := strings.TrimSpace(msg.Document.FileName); v != "" {
+			return v
+		}
+	}
+	if msg.Video != nil {
+		if v := strings.TrimSpace(msg.Video.FileName); v != "" {
+			return v
+		}
+	}
+	if len(msg.Photo) > 0 {
+		return "photo"
+	}
+	if msg.Sticker != nil {
+		if v := strings.TrimSpace(msg.Sticker.Emoji); v != "" {
+			return "sticker " + v
+		}
+		return "sticker"
+	}
+	if msg.Voice != nil {
+		return "voice message"
+	}
+	if msg.VideoNote != nil {
+		return "video message"
+	}
+	return ""
+}
+
+func sanitizeReplyAudioTagValue(v string, max int) string {
+	v = strings.ToValidUTF8(strings.TrimSpace(v), "")
+	v = strings.ReplaceAll(v, "\x00", "")
+	v = strings.ReplaceAll(v, "\u00A0", " ")
+	v = strings.ReplaceAll(v, "\r\n", "\n")
+	v = strings.ReplaceAll(v, "\r", "\n")
+	if max > 0 {
+		r := []rune(v)
+		if len(r) > max {
+			v = string(r[:max])
+		}
+	}
+	return strings.TrimSpace(v)
+}
+
+func buildReplyAudioText(details replyAudioDetails) string {
+	title := strings.TrimSpace(details.Title)
+	artist := strings.TrimSpace(details.Artist)
+	album := strings.TrimSpace(details.Album)
+	year := strings.TrimSpace(details.Year)
+	track := strings.TrimSpace(details.Track)
+	text := strings.TrimSpace(details.Text)
+
+	head := ""
+	switch {
+	case artist != "" && title != "":
+		head = artist + " - " + title
+	case title != "":
+		head = title
+	case artist != "":
+		head = artist
+	}
+	metaBits := make([]string, 0, 3)
+	if album != "" {
+		metaBits = append(metaBits, "album: "+album)
+	}
+	if year != "" {
+		metaBits = append(metaBits, "year: "+year)
+	}
+	if track != "" {
+		metaBits = append(metaBits, "track: "+track)
+	}
+
+	lines := make([]string, 0, 3)
+	if head != "" {
+		lines = append(lines, head)
+	}
+	if len(metaBits) > 0 {
+		lines = append(lines, strings.Join(metaBits, " | "))
+	}
+	if text != "" {
+		lines = append(lines, clipText(text, 1600))
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func getCachedReplyAudioDetails(cacheKey string) (replyAudioDetails, bool) {
+	replyAudioDetailsCache.mu.RLock()
+	item, ok := replyAudioDetailsCache.items[cacheKey]
+	replyAudioDetailsCache.mu.RUnlock()
+	if !ok || time.Now().After(item.expiresAt) {
+		return replyAudioDetails{}, false
+	}
+	return item.details, true
+}
+
+func setCachedReplyAudioDetails(cacheKey string, details replyAudioDetails) {
+	replyAudioDetailsCache.mu.Lock()
+	replyAudioDetailsCache.items[cacheKey] = cachedReplyAudioDetails{
+		details:   details,
+		expiresAt: time.Now().Add(6 * time.Hour),
+	}
+	replyAudioDetailsCache.mu.Unlock()
+}
+
+func fetchReplyAudioDetails(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) replyAudioDetails {
+	var out replyAudioDetails
+	if msg == nil || msg.Audio == nil {
+		return out
+	}
+	out.Title = sanitizeReplyAudioTagValue(msg.Audio.Title, 256)
+	out.Artist = sanitizeReplyAudioTagValue(msg.Audio.Performer, 256)
+	if out.Title == "" {
+		out.Title = sanitizeReplyAudioTagValue(msg.Audio.FileName, 256)
+	}
+	if bot == nil || !envBool("REPLY_AUDIO_FETCH_TAGS", true) {
+		return out
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return out
+	}
+	cacheKey := strings.TrimSpace(msg.Audio.FileUniqueID)
+	if cacheKey == "" {
+		cacheKey = strings.TrimSpace(msg.Audio.FileID)
+	}
+	if cacheKey != "" {
+		if cached, ok := getCachedReplyAudioDetails(cacheKey); ok {
+			mergeReplyAudioDetails(&out, cached)
+			return out
+		}
+	}
+	fileURL, err := bot.GetFileDirectURL(strings.TrimSpace(msg.Audio.FileID))
+	if err != nil || strings.TrimSpace(fileURL) == "" {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	probed, err := probeReplyAudioDetailsWithFFprobe(ctx, strings.TrimSpace(fileURL))
+	if err == nil {
+		mergeReplyAudioDetails(&out, probed)
+		if cacheKey != "" {
+			setCachedReplyAudioDetails(cacheKey, out)
+		}
+	}
+	return out
+}
+
+func mergeReplyAudioDetails(dst *replyAudioDetails, src replyAudioDetails) {
+	if dst == nil {
+		return
+	}
+	if strings.TrimSpace(dst.Title) == "" {
+		dst.Title = strings.TrimSpace(src.Title)
+	}
+	if strings.TrimSpace(dst.Artist) == "" {
+		dst.Artist = strings.TrimSpace(src.Artist)
+	}
+	if strings.TrimSpace(dst.Album) == "" {
+		dst.Album = strings.TrimSpace(src.Album)
+	}
+	if strings.TrimSpace(dst.Year) == "" {
+		dst.Year = strings.TrimSpace(src.Year)
+	}
+	if strings.TrimSpace(dst.Track) == "" {
+		dst.Track = strings.TrimSpace(src.Track)
+	}
+	if strings.TrimSpace(dst.Text) == "" {
+		dst.Text = strings.TrimSpace(src.Text)
+	}
+}
+
+func probeReplyAudioDetailsWithFFprobe(ctx context.Context, input string) (replyAudioDetails, error) {
+	cmd := exec.CommandContext(
+		ctx,
+		"ffprobe",
+		"-v", "error",
+		"-show_entries", "format_tags=title,artist,album,date,track,text,lyrics,comment",
+		"-of", "json",
+		input,
+	)
+	var outBytes bytes.Buffer
+	var errBytes bytes.Buffer
+	cmd.Stdout = &outBytes
+	cmd.Stderr = &errBytes
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(errBytes.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return replyAudioDetails{}, errors.New(msg)
+	}
+	var payload struct {
+		Format struct {
+			Tags map[string]string `json:"tags"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(outBytes.Bytes(), &payload); err != nil {
+		return replyAudioDetails{}, err
+	}
+	get := func(keys ...string) string {
+		for _, key := range keys {
+			for k, v := range payload.Format.Tags {
+				if strings.EqualFold(strings.TrimSpace(k), strings.TrimSpace(key)) {
+					if s := sanitizeReplyAudioTagValue(v, 6000); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+	return replyAudioDetails{
+		Title:  get("title"),
+		Artist: get("artist"),
+		Album:  get("album"),
+		Year:   get("date"),
+		Track:  get("track"),
+		Text:   pickReplyAudioTextFromTags(payload.Format.Tags),
+	}, nil
+}
+
+func pickReplyAudioTextFromTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	get := func(keys ...string) string {
+		for _, key := range keys {
+			for k, v := range tags {
+				if strings.EqualFold(strings.TrimSpace(k), strings.TrimSpace(key)) {
+					if s := sanitizeReplyAudioTagValue(v, 6000); s != "" {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+	if v := get("text", "lyrics", "unsyncedlyrics", "uslt", "comment", "lyricist"); v != "" {
+		return v
+	}
+	for k, v := range tags {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if strings.HasPrefix(key, "lyrics-") || strings.HasPrefix(key, "uslt") {
+			if s := sanitizeReplyAudioTagValue(v, 6000); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 func extractSupportedMediaURL(input string) string {
 	matches := supportedMediaURLRe.FindAllString(input, 8)
 	for _, raw := range matches {
@@ -1761,10 +2098,40 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 	replyLabel := ""
 	replyUserLink := ""
 	replySenderTag := ""
+	replyAudioTitle := ""
+	replyAudioArtist := ""
+	replyAudioAlbum := ""
+	replyAudioYear := ""
+	replyAudioTrack := ""
+	replyAudioText := ""
 	if msg.ReplyToMessage != nil {
-		replyText = strings.TrimSpace(msg.ReplyToMessage.Text)
-		if replyText == "" {
-			replyText = strings.TrimSpace(msg.ReplyToMessage.Caption)
+		replyText = firstNonEmptyMessageContent(msg.ReplyToMessage)
+		if msg.ReplyToMessage.Audio != nil {
+			audioDetails := fetchReplyAudioDetails(bot, msg.ReplyToMessage)
+			replyAudioTitle = strings.TrimSpace(audioDetails.Title)
+			replyAudioArtist = strings.TrimSpace(audioDetails.Artist)
+			replyAudioAlbum = strings.TrimSpace(audioDetails.Album)
+			replyAudioYear = strings.TrimSpace(audioDetails.Year)
+			replyAudioTrack = strings.TrimSpace(audioDetails.Track)
+			replyAudioText = strings.TrimSpace(audioDetails.Text)
+			if formatted := strings.TrimSpace(buildReplyAudioText(audioDetails)); formatted != "" {
+				replyText = formatted
+			}
+		}
+		if strings.TrimSpace(replyText) == "" {
+			log.Printf("reply_text empty chat=%d msg=%d reply_msg=%d has_text=%v has_caption=%v has_audio=%v has_document=%v has_video=%v has_photo=%v has_voice=%v has_sticker=%v",
+				msg.Chat.ID,
+				msg.MessageID,
+				msg.ReplyToMessage.MessageID,
+				strings.TrimSpace(msg.ReplyToMessage.Text) != "",
+				strings.TrimSpace(msg.ReplyToMessage.Caption) != "",
+				msg.ReplyToMessage.Audio != nil,
+				msg.ReplyToMessage.Document != nil,
+				msg.ReplyToMessage.Video != nil,
+				len(msg.ReplyToMessage.Photo) > 0,
+				msg.ReplyToMessage.Voice != nil,
+				msg.ReplyToMessage.Sticker != nil,
+			)
 		}
 		if msg.ReplyToMessage.From != nil {
 			replyUserID = strconv.FormatInt(msg.ReplyToMessage.From.ID, 10)
@@ -1809,6 +2176,12 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{reply_label}}":             replyLabel,
 		"{{reply_user_link}}":         replyUserLink,
 		"{{reply_sender_tag}}":        replySenderTagDisplay,
+		"{{reply_audio_title}}":       replyAudioTitle,
+		"{{reply_audio_artist}}":      replyAudioArtist,
+		"{{reply_audio_album}}":       replyAudioAlbum,
+		"{{reply_audio_year}}":        replyAudioYear,
+		"{{reply_audio_track}}":       replyAudioTrack,
+		"{{reply_audio_text}}":        replyAudioText,
 	}
 }
 
@@ -1837,5 +2210,5 @@ func buildUserLink(u *tgbotapi.User) string {
 	if name == "" {
 		name = "Участник без имени"
 	}
-	return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", u.ID, name)
+	return fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", u.ID, htmlstd.EscapeString(name))
 }

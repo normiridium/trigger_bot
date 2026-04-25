@@ -18,6 +18,7 @@ function triggerApp(){
 }
 
 let __triggerPageInitialized = false;
+let __triggerAppInitialized = false;
 let triggerSortable = null;
 const rowActionBusy = new Set();
 let editLoadInFlight = false;
@@ -35,12 +36,143 @@ let emojiHelperLastID = '';
 let emojiHelperSelectedID = '';
 let stickerHelperLastSet = '';
 let stickerHelperSelectedSet = '';
+let authState = 'login_required';
+let csrfToken = '';
+
+function getCookieValue(name){
+  const key = String(name || '').trim();
+  if(!key){ return ''; }
+  const all = String(document.cookie || '').split(';');
+  for(const part of all){
+    const p = String(part || '').trim();
+    if(!p){ continue; }
+    const idx = p.indexOf('=');
+    if(idx <= 0){ continue; }
+    const k = p.slice(0, idx).trim();
+    if(k !== key){ continue; }
+    try{
+      return decodeURIComponent(p.slice(idx + 1));
+    }catch(_){
+      return p.slice(idx + 1);
+    }
+  }
+  return '';
+}
+
+function getCSRFToken(){
+  if(String(csrfToken || '').trim()){
+    return String(csrfToken).trim();
+  }
+  return String(getCookieValue('trigger_admin_csrf') || '').trim();
+}
+
+function setCSRFToken(token){
+  csrfToken = String(token || '').trim();
+}
+
+function withCSRFHeaders(base){
+  const h = Object.assign({}, base || {});
+  const token = getCSRFToken();
+  if(token){
+    h['X-CSRF-Token'] = token;
+  }
+  return h;
+}
 
 async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
   __triggerPageInitialized = true;
+  bindAuthUI();
+  await refreshAuthState();
+  if(authState === 'authenticated'){
+    await initAuthenticatedApp();
+  } else {
+    showAuthGate(authState);
+  }
+}
+
+function bindAuthUI(){
+  const setupForm = document.getElementById('auth_setup_form');
+  if(setupForm && !setupForm.dataset.boundSubmit){
+    setupForm.addEventListener('submit', handleAuthSetup);
+    setupForm.dataset.boundSubmit = '1';
+  }
+  const loginForm = document.getElementById('auth_login_form');
+  if(loginForm && !loginForm.dataset.boundSubmit){
+    loginForm.addEventListener('submit', handleAuthLogin);
+    loginForm.dataset.boundSubmit = '1';
+  }
+  const logoutBtn = document.getElementById('auth_logout_btn');
+  if(logoutBtn && !logoutBtn.dataset.boundClick){
+    logoutBtn.addEventListener('click', handleAuthLogout);
+    logoutBtn.dataset.boundClick = '1';
+  }
+  const changePasswordForm = document.getElementById('change_password_form');
+  if(changePasswordForm && !changePasswordForm.dataset.boundSubmit){
+    changePasswordForm.addEventListener('submit', handleChangePassword);
+    changePasswordForm.dataset.boundSubmit = '1';
+  }
+}
+
+async function refreshAuthState(){
+  try{
+    const r = await fetch('/trigger_bot/auth_state', {credentials: 'same-origin'});
+    if(!r.ok){
+      authState = 'login_required';
+      return authState;
+    }
+    const data = await r.json();
+    authState = String(data && data.auth_state ? data.auth_state : 'login_required');
+    if(data && data.csrf_token){
+      setCSRFToken(data.csrf_token);
+    } else {
+      setCSRFToken(getCookieValue('trigger_admin_csrf'));
+    }
+    return authState;
+  }catch(_){
+    authState = 'login_required';
+    return authState;
+  }
+}
+
+function showAuthGate(state, hint){
+  const gate = document.getElementById('auth_gate');
+  const app = document.getElementById('admin_app_shell');
+  const title = document.getElementById('auth_gate_title');
+  const hintEl = document.getElementById('auth_gate_hint');
+  const setupForm = document.getElementById('auth_setup_form');
+  const loginForm = document.getElementById('auth_login_form');
+  if(gate){ gate.classList.remove('d-none'); }
+  if(app){ app.classList.add('d-none'); }
+  if(setupForm){ setupForm.classList.add('d-none'); }
+  if(loginForm){ loginForm.classList.add('d-none'); }
+  const st = String(state || authState || 'login_required');
+  if(st === 'setup_required'){
+    if(title){ title.textContent = 'Первичная настройка'; }
+    if(hintEl){ hintEl.textContent = hint || 'Пароль администратора ещё не установлен. Создайте его ниже.'; }
+    if(setupForm){ setupForm.classList.remove('d-none'); }
+  } else {
+    if(title){ title.textContent = 'Вход в админку'; }
+    if(hintEl){ hintEl.textContent = hint || 'Введите пароль администратора.'; }
+    if(loginForm){ loginForm.classList.remove('d-none'); }
+  }
+}
+
+function showAdminApp(){
+  const gate = document.getElementById('auth_gate');
+  const app = document.getElementById('admin_app_shell');
+  if(gate){ gate.classList.add('d-none'); }
+  if(app){ app.classList.remove('d-none'); }
+}
+
+async function initAuthenticatedApp(){
+  if(__triggerAppInitialized){
+    showAdminApp();
+    return;
+  }
+  __triggerAppInitialized = true;
+  showAdminApp();
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
-  applyTokenToForms();
   await loadEnums();
   await loadTemplateTags();
   await loadTemplates();
@@ -78,6 +210,105 @@ async function initTriggerPage(){
   renderVariantControls();
   await loadTriggerList();
   initTriggerDragAndDrop();
+}
+
+async function handleAuthSetup(ev){
+  if(ev){ ev.preventDefault(); }
+  const input = document.getElementById('auth_setup_password');
+  const pass = String(input?.value || '');
+  const r = await fetch('/trigger_bot/auth_setup', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    body: JSON.stringify({password: pass}),
+    credentials: 'same-origin'
+  });
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка установки пароля: ' + (txt || r.status));
+    return false;
+  }
+  if(input){ input.value = ''; }
+  const data = await r.json().catch(() => ({}));
+  if(data && data.csrf_token){
+    setCSRFToken(data.csrf_token);
+  }
+  authState = 'authenticated';
+  await initAuthenticatedApp();
+  return false;
+}
+
+async function handleAuthLogin(ev){
+  if(ev){ ev.preventDefault(); }
+  const input = document.getElementById('auth_login_password');
+  const pass = String(input?.value || '');
+  const r = await fetch('/trigger_bot/auth_login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    body: JSON.stringify({password: pass}),
+    credentials: 'same-origin'
+  });
+  if(!r.ok){
+    let msg = '';
+    try{
+      const data = await r.json();
+      msg = String(data?.error || '');
+    }catch(_){}
+    if(!msg){
+      msg = await r.text();
+    }
+    alert('Ошибка входа: ' + (msg || r.status));
+    return false;
+  }
+  if(input){ input.value = ''; }
+  const data = await r.json().catch(() => ({}));
+  if(data && data.csrf_token){
+    setCSRFToken(data.csrf_token);
+  }
+  authState = 'authenticated';
+  await initAuthenticatedApp();
+  return false;
+}
+
+async function handleAuthLogout(){
+  await fetch('/trigger_bot/auth_logout', {
+    method: 'POST',
+    headers: withCSRFHeaders({'Accept': 'application/json'}),
+    credentials: 'same-origin'
+  });
+  setCSRFToken('');
+  authState = 'login_required';
+  showAuthGate(authState, 'Сессия завершена.');
+}
+
+async function handleChangePassword(ev){
+  if(ev){ ev.preventDefault(); }
+  const current = String(document.getElementById('change_password_current')?.value || '');
+  const next = String(document.getElementById('change_password_new')?.value || '');
+  const btn = document.getElementById('change_password_btn');
+  const hint = document.getElementById('change_password_hint');
+  lockButton(btn);
+  try{
+    const r = await fetch('/trigger_bot/change_password', {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({current_password: current, new_password: next}),
+      credentials: 'same-origin'
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      alert('Ошибка смены пароля: ' + (txt || r.status));
+      return false;
+    }
+    if(hint){ hint.textContent = 'Пароль изменён. Войдите снова.'; }
+    const curEl = document.getElementById('change_password_current');
+    const newEl = document.getElementById('change_password_new');
+    if(curEl){ curEl.value = ''; }
+    if(newEl){ newEl.value = ''; }
+    await handleAuthLogout();
+  } finally {
+    unlockButton(btn);
+  }
+  return false;
 }
 
 async function loadEnums(){
@@ -332,7 +563,7 @@ async function saveSettings(ev){
   try{
     const r = await fetch(withToken('/trigger_bot/settings_save'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
       body: JSON.stringify(payload),
     });
     if(!r.ok){
@@ -357,7 +588,7 @@ async function restartService(){
   try{
     const r = await fetch(withToken('/trigger_bot/restart'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
       body: JSON.stringify({ok: true}),
     });
     if(!r.ok){
@@ -404,7 +635,7 @@ async function submitTemplateForm(ev){
   };
   const r = await fetch(withToken('/trigger_bot/template_save'), {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
     body: JSON.stringify(payload),
   });
   if(!r.ok){
@@ -427,7 +658,7 @@ async function deleteTemplate(id, key){
   if(key){ payload.key = key; }
   const r = await fetch(withToken('/trigger_bot/template_delete'), {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+    headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
     body: JSON.stringify(payload),
   });
   if(!r.ok){
@@ -1134,10 +1365,10 @@ async function handleToggleClick(event, btn){
     const url = withToken('/trigger_bot/toggle');
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
+      headers: withCSRFHeaders({
         'Accept': 'application/json',
         'Content-Type': 'application/json'
-      },
+      }),
       body: JSON.stringify({id}),
       credentials: 'same-origin'
     });
@@ -1190,7 +1421,7 @@ async function deleteTrigger(id, btn){
   try{
     const res = await fetch(withToken('/trigger_bot/delete'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
       body: JSON.stringify({id}),
     });
     if(!res.ok){
@@ -1221,7 +1452,7 @@ function handleImportSubmit(event, form){
   file.text().then((raw) => {
     return fetch(form.getAttribute('action') || withToken('/trigger_bot/import'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
       body: JSON.stringify({raw}),
     });
   }).then(async (res) => {
@@ -1293,7 +1524,7 @@ async function submitTriggerForm(event){
     };
     const res = await fetch(form.getAttribute('action') || withToken('/trigger_bot/save'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
       body: JSON.stringify(payload),
       signal: controller.signal,
       credentials: 'same-origin'
@@ -1621,20 +1852,11 @@ function pick(o, a, b, d){
 }
 
 function withToken(path){
-  const token = new URLSearchParams(window.location.search).get('token');
-  if(!token){ return path; }
-  const u = new URL(path, window.location.origin);
-  u.searchParams.set('token', token);
-  return u.pathname + u.search;
+  return path;
 }
 
 function applyTokenToForms(){
-  document.querySelectorAll('form[action]').forEach((f)=>{
-    const action = f.getAttribute('action') || '';
-    if(action.startsWith('/')){ f.setAttribute('action', withToken(action)); }
-  });
-  const ex = document.getElementById('export_link');
-  if(ex){ ex.setAttribute('href', withToken('/trigger_bot/export')); }
+  // query-token auth is removed; keep function for backward compatibility.
 }
 
 async function persistTriggerOrder(){
@@ -1649,7 +1871,7 @@ async function persistTriggerOrder(){
     if(ids.length === 0){ return; }
     const res = await fetch(withToken('/trigger_bot/reorder'), {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: withCSRFHeaders({'Content-Type': 'application/json'}),
       credentials: 'same-origin',
       body: JSON.stringify({ids})
     });

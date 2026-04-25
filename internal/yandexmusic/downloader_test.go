@@ -124,6 +124,44 @@ func TestBuildTrackURL(t *testing.T) {
 	}
 }
 
+func TestExtractTrackMeta(t *testing.T) {
+	meta := extractTrackMeta(&Track{
+		Title:   "La Mort d'Arthur",
+		Artists: []ArtistBrief{{Name: "Sopor Aeternus & The Ensemble Of Shadows"}},
+		Albums: []AlbumBrief{{
+			ID:    2403776,
+			Title: "Les Fleurs Du Mal",
+			Year:  2007,
+			TrackPosition: &TrackPosition{
+				Index: 7,
+			},
+		}},
+	}, "lyrics line 1\nlyrics line 2")
+	if meta.Title != "La Mort d'Arthur" {
+		t.Fatalf("unexpected title: %q", meta.Title)
+	}
+	if meta.Artist != "Sopor Aeternus & The Ensemble Of Shadows" {
+		t.Fatalf("unexpected artist: %q", meta.Artist)
+	}
+	if meta.Album != "Les Fleurs Du Mal" || meta.Year != 2007 || meta.TrackNo != 7 {
+		t.Fatalf("unexpected album meta: %+v", meta)
+	}
+	if !strings.Contains(meta.Lyrics, "lyrics line 2") {
+		t.Fatalf("lyrics not propagated: %q", meta.Lyrics)
+	}
+}
+
+func TestSanitizeMetaValue(t *testing.T) {
+	got := sanitizeMetaValue("  hi\x00there  ", 20)
+	if got != "hithere" {
+		t.Fatalf("unexpected sanitized value: %q", got)
+	}
+	long := sanitizeMetaValue(strings.Repeat("x", 100), 10)
+	if len([]rune(long)) != 10 {
+		t.Fatalf("expected truncation to 10 runes, got %d", len([]rune(long)))
+	}
+}
+
 func TestYMInt64UnmarshalJSON(t *testing.T) {
 	var v YMInt64
 	if err := json.Unmarshal([]byte(`123`), &v); err != nil || int64(v) != 123 {

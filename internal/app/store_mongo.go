@@ -21,6 +21,8 @@ type mongoBackend struct {
 	db        *mongo.Database
 	triggers  *mongo.Collection
 	templates *mongo.Collection
+	auth      *mongo.Collection
+	sessions  *mongo.Collection
 	admins    *mongo.Collection
 	adminSync *mongo.Collection
 	profiles  *mongo.Collection
@@ -77,6 +79,20 @@ type mongoTemplateDoc struct {
 	Text      string `bson:"text"`
 	CreatedAt int64  `bson:"created_at"`
 	UpdatedAt int64  `bson:"updated_at"`
+}
+
+type mongoAdminAuthDoc struct {
+	ID                string `bson:"_id"`
+	PasswordHash      string `bson:"password_hash"`
+	PasswordUpdatedAt int64  `bson:"password_updated_at"`
+	CreatedAt         int64  `bson:"created_at"`
+	UpdatedAt         int64  `bson:"updated_at"`
+}
+
+type mongoAdminSessionDoc struct {
+	TokenHash string `bson:"token_hash"`
+	CreatedAt int64  `bson:"created_at"`
+	ExpiresAt int64  `bson:"expires_at"`
 }
 
 type mongoParticipantProfileDoc struct {
@@ -234,6 +250,8 @@ func openMongoStore(uri string) (*Store, error) {
 		db:        db,
 		triggers:  db.Collection("triggers"),
 		templates: db.Collection("response_templates"),
+		auth:      db.Collection("admin_auth"),
+		sessions:  db.Collection("admin_sessions"),
 		admins:    db.Collection("chat_admin_cache"),
 		adminSync: db.Collection("chat_admin_sync"),
 		profiles:  db.Collection("participant_profiles"),
@@ -289,6 +307,18 @@ func (m *mongoBackend) ensureIndexes() error {
 		{
 			Keys:    bson.D{{Key: "key", Value: 1}},
 			Options: options.Index().SetUnique(true),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = m.sessions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "token_hash", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "expires_at", Value: 1}},
 		},
 	})
 	if err != nil {
@@ -987,5 +1017,131 @@ func (m *mongoBackend) deleteParticipantPortrait(userID int64) error {
 	ctx, cancel := mongoCtx()
 	defer cancel()
 	_, err := m.profiles.DeleteOne(ctx, bson.M{"user_id": userID})
+	return err
+}
+
+func (m *mongoBackend) getAdminAuth() (*AdminAuth, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoAdminAuthDoc
+	err := m.auth.FindOne(ctx, bson.M{"_id": "admin_auth"}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &AdminAuth{
+		PasswordHash:      strings.TrimSpace(d.PasswordHash),
+		PasswordUpdatedAt: d.PasswordUpdatedAt,
+		CreatedAt:         d.CreatedAt,
+		UpdatedAt:         d.UpdatedAt,
+	}, nil
+}
+
+func (m *mongoBackend) setAdminPasswordHash(passwordHash string, now int64) error {
+	passwordHash = strings.TrimSpace(passwordHash)
+	if passwordHash == "" {
+		return errors.New("empty password hash")
+	}
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.auth.UpdateOne(
+		ctx,
+		bson.M{"_id": "admin_auth"},
+		bson.M{
+			"$set": bson.M{
+				"password_hash":       passwordHash,
+				"password_updated_at": now,
+				"updated_at":          now,
+			},
+			"$setOnInsert": bson.M{
+				"_id":        "admin_auth",
+				"created_at": now,
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (m *mongoBackend) createAdminSession(tokenHash string, createdAt, expiresAt int64) error {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return errors.New("empty token hash")
+	}
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	if expiresAt <= createdAt {
+		return errors.New("invalid session expiry")
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.sessions.UpdateOne(
+		ctx,
+		bson.M{"token_hash": tokenHash},
+		bson.M{
+			"$set": bson.M{
+				"token_hash": tokenHash,
+				"created_at": createdAt,
+				"expires_at": expiresAt,
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (m *mongoBackend) getAdminSession(tokenHash string) (*AdminSession, error) {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return nil, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoAdminSessionDoc
+	err := m.sessions.FindOne(ctx, bson.M{"token_hash": tokenHash}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &AdminSession{
+		TokenHash: d.TokenHash,
+		CreatedAt: d.CreatedAt,
+		ExpiresAt: d.ExpiresAt,
+	}, nil
+}
+
+func (m *mongoBackend) deleteAdminSession(tokenHash string) error {
+	tokenHash = strings.TrimSpace(tokenHash)
+	if tokenHash == "" {
+		return nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.sessions.DeleteOne(ctx, bson.M{"token_hash": tokenHash})
+	return err
+}
+
+func (m *mongoBackend) deleteAllAdminSessions() error {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.sessions.DeleteMany(ctx, bson.M{})
+	return err
+}
+
+func (m *mongoBackend) deleteExpiredAdminSessions(nowUnix int64) error {
+	if nowUnix <= 0 {
+		nowUnix = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.sessions.DeleteMany(ctx, bson.M{"expires_at": bson.M{"$lte": nowUnix}})
 	return err
 }

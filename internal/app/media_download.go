@@ -3,9 +3,12 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,14 +162,192 @@ func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl SpotifyDown
 	if err != nil {
 		return err
 	}
+	filePath, cleanupTagged, err := prepareSpotifyAudioForSend(ctx, filePath, req)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if rmErr := os.Remove(filePath); rmErr != nil && debugTriggerLogEnabled {
 			log.Printf("spotify temp cleanup failed path=%q err=%v", filePath, rmErr)
+		}
+		if cleanupTagged != "" {
+			if rmErr := os.Remove(cleanupTagged); rmErr != nil && debugTriggerLogEnabled {
+				log.Printf("spotify tagged cleanup failed path=%q err=%v", cleanupTagged, rmErr)
+			}
 		}
 	}()
 	performer := strings.TrimSpace(req.Artist)
 	title := strings.TrimSpace(req.Title)
 	return sendAudioFromFile(sendCtx, filePath, performer, title)
+}
+
+func prepareSpotifyAudioForSend(ctx context.Context, inputPath string, req pick.PickRequest) (finalPath string, cleanupPath string, err error) {
+	inputPath = strings.TrimSpace(inputPath)
+	if inputPath == "" {
+		return "", "", errors.New("empty spotify audio path")
+	}
+	if !envBool("SPOTIFY_AUDIO_EMBED_TAGS", true) {
+		return inputPath, "", nil
+	}
+	ffmpegBin := strings.TrimSpace(firstNonEmptyEnv("SPOTIFY_AUDIO_FFMPEG_BIN", "FFMPEG_BIN"))
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
+	title := strings.TrimSpace(req.Title)
+	artist := strings.TrimSpace(req.Artist)
+	if title == "" && artist == "" {
+		return inputPath, "", nil
+	}
+	lyrics := ""
+	if envBool("SPOTIFY_AUDIO_EMBED_TEXT_LYRICS", true) {
+		lctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		lyrics, _ = fetchLyricsFromLRCLib(lctx, artist, title)
+		cancel()
+	}
+	forceMP3 := envBool("SPOTIFY_AUDIO_FORCE_MP3", false)
+	targetExt := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(filepath.Ext(inputPath)), "."))
+	if forceMP3 || targetExt == "" {
+		targetExt = "mp3"
+	}
+	base := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+	if strings.TrimSpace(base) == "" {
+		base = "spotify-audio"
+	}
+	taggedPath := filepath.Join(filepath.Dir(inputPath), base+".tagged."+targetExt)
+	if err := transcodeAndTagSpotifyAudio(ctx, ffmpegBin, inputPath, taggedPath, forceMP3, artist, title, lyrics); err != nil {
+		if debugTriggerLogEnabled {
+			log.Printf("spotify tag pass failed path=%q err=%v", inputPath, err)
+		}
+		return inputPath, "", nil
+	}
+	return taggedPath, taggedPath, nil
+}
+
+func transcodeAndTagSpotifyAudio(ctx context.Context, ffmpegBin, inPath, outPath string, toMP3 bool, artist, title, lyrics string) error {
+	args := []string{
+		"-nostdin",
+		"-y",
+		"-i", inPath,
+		"-map_metadata", "-1",
+		"-vn",
+	}
+	if toMP3 {
+		args = append(args, "-acodec", "libmp3lame", "-q:a", "2", "-id3v2_version", "3")
+	} else {
+		args = append(args, "-codec", "copy")
+	}
+	if v := sanitizeMetaValue(artist, 256); v != "" {
+		args = append(args, "-metadata", "artist="+v)
+	}
+	if v := sanitizeMetaValue(title, 256); v != "" {
+		args = append(args, "-metadata", "title="+v)
+	}
+	if v := sanitizeMetaValue(lyrics, 6000); v != "" {
+		lang := normalizeID3LyricsLang(os.Getenv("SPOTIFY_AUDIO_LYRICS_LANG"))
+		args = append(args, "-metadata", "lyrics-"+lang+"="+v)
+		args = append(args, "-metadata", "lyrics="+v)
+		args = append(args, "-metadata", "TEXT="+v)
+		args = append(args, "-metadata", "comment="+v)
+		args = append(args, "-metadata", "lyricist="+v)
+	}
+	args = append(args, outPath)
+
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("spotify ffmpeg tag/transcode failed: %s", clipText(msg, 400))
+	}
+	return nil
+}
+
+type lrclibGetResponse struct {
+	PlainLyrics  string `json:"plainLyrics"`
+	SyncedLyrics string `json:"syncedLyrics"`
+	Instrumental bool   `json:"instrumental"`
+}
+
+func fetchLyricsFromLRCLib(ctx context.Context, artist, title string) (string, error) {
+	artist = strings.TrimSpace(artist)
+	title = strings.TrimSpace(title)
+	if artist == "" || title == "" {
+		return "", errors.New("lyrics query is empty")
+	}
+	baseURL := strings.TrimSpace(os.Getenv("SPOTIFY_AUDIO_LYRICS_API"))
+	if baseURL == "" {
+		baseURL = "https://lrclib.net/api/get"
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("artist_name", artist)
+	q.Set("track_name", title)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("lyrics api status=%d", resp.StatusCode)
+	}
+	var out lrclibGetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return extractLyricsText(out), nil
+}
+
+func extractLyricsText(resp lrclibGetResponse) string {
+	if resp.Instrumental {
+		return ""
+	}
+	if v := sanitizeMetaValue(resp.PlainLyrics, 6000); v != "" {
+		return v
+	}
+	if v := sanitizeMetaValue(resp.SyncedLyrics, 6000); v != "" {
+		return v
+	}
+	return ""
+}
+
+func sanitizeMetaValue(v string, maxRunes int) string {
+	v = strings.ToValidUTF8(strings.TrimSpace(v), "")
+	if v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(v, "\x00", "")
+	if maxRunes > 0 {
+		r := []rune(v)
+		if len(r) > maxRunes {
+			v = string(r[:maxRunes])
+		}
+	}
+	return strings.TrimSpace(v)
+}
+
+func normalizeID3LyricsLang(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if len(v) != 3 {
+		return "eng"
+	}
+	for _, r := range v {
+		if r < 'a' || r > 'z' {
+			return "eng"
+		}
+	}
+	return v
 }
 
 type spotifyPickTask struct {
@@ -257,28 +438,47 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 	}
 	q := &yandexMusicQueue{ch: make(chan yandexMusicTask, size)}
 	for i := 0; i < workers; i++ {
-		go func() {
+		workerID := i + 1
+		go func(id int) {
 			for task := range q.ch {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				err := processYandexMusic(ctx, task.SendCtx, task.DL, task.URL)
-				cancel()
-				if err != nil {
-					chatID := task.ReportTo
-					if chatID == 0 {
-						chatID = task.SendCtx.ChatID
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							chatID := task.ReportTo
+							if chatID == 0 {
+								chatID = task.SendCtx.ChatID
+							}
+							log.Printf("yandex worker=%d panic chat=%d recover=%v", id, chatID, r)
+							reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", fmt.Errorf("panic: %v", r))
+						}
+					}()
+					if debugTriggerLogEnabled {
+						log.Printf("yandex worker=%d start chat=%d replyTo=%d url=%q", id, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.URL, 220))
 					}
-					log.Printf("yandex queue send failed chat=%d err=%v", chatID, err)
-					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", err)
-					continue
-				}
-				if task.Idle != nil {
-					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
-				}
-				if task.Msg != nil && task.Trigger != nil {
-					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
-				}
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					err := processYandexMusic(ctx, task.SendCtx, task.DL, task.URL)
+					cancel()
+					if err != nil {
+						chatID := task.ReportTo
+						if chatID == 0 {
+							chatID = task.SendCtx.ChatID
+						}
+						log.Printf("yandex queue send failed chat=%d err=%v", chatID, err)
+						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", err)
+						return
+					}
+					if debugTriggerLogEnabled {
+						log.Printf("yandex worker=%d done chat=%d", id, task.SendCtx.ChatID)
+					}
+					if task.Idle != nil {
+						task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
+					}
+					if task.Msg != nil && task.Trigger != nil {
+						deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+					}
+				}()
 			}
-		}()
+		}(workerID)
 	}
 	return q
 }
