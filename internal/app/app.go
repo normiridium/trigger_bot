@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
@@ -18,6 +19,10 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 
 	"trigger-admin-bot/internal/engine"
 	"trigger-admin-bot/internal/gpt"
@@ -601,11 +606,12 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	sent := false
 	sendMode := "markdown"
 	hasHTML := containsTelegramHTMLMarkup(out)
+	hasMarkdownLite := containsMarkdownLiteMarkup(out)
 	if debugGPTLogEnabled {
-		log.Printf("gpt flow trigger=%d has_html=%v", task.Trigger.ID, hasHTML)
+		log.Printf("gpt flow trigger=%d has_html=%v has_markdown_lite=%v", task.Trigger.ID, hasHTML, hasMarkdownLite)
 	}
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.Msg.Chat.ID, ReplyTo: replyTo}
-	if hasHTML {
+	if hasHTML || hasMarkdownLite {
 		htmlOut := markdownToTelegramHTMLLite(out)
 		if debugGPTLogEnabled {
 			log.Printf("gpt flow trigger=%d html_len=%d html_tgemoji=%d html=%q",
@@ -816,58 +822,91 @@ func looksLikeTelegramFileID(s string) bool {
 	return hasLetter && hasDigit && (hasSpecial || len(s) >= 24)
 }
 
-var mdFenceRe = regexp.MustCompile("(?s)```([a-zA-Z0-9_+-]*)\\n(.*?)```")
-var mdInlineCodeRe = regexp.MustCompile("`([^`\\n]+)`")
-var mdLinkRe = regexp.MustCompile(`\[(.*?)\]\((https?://[^\s)]+)\)`)
+var mdHintRe = regexp.MustCompile("(?m)(^\\s{0,3}(#{1,6}\\s+|>\\s?|[-*+]\\s+|\\d+\\.\\s+|---\\s*$)|\\*\\*|__|~~|\\|\\||`|\\[[^\\]]+\\]\\(https?://[^)]+\\))")
 var mdSpoilerRe = regexp.MustCompile(`\|\|(.+?)\|\|`)
+var mdUnderlineRe = regexp.MustCompile(`__([^\n]+?)__`)
+var htmlHeadingRe = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`)
+var htmlHRRe = regexp.MustCompile(`(?i)<hr\s*/?>`)
+var htmlBRRe = regexp.MustCompile(`(?i)<br\s*/?>`)
+var htmlParagraphBreakRe = regexp.MustCompile(`(?is)</p>\s*<p[^>]*>`)
+var htmlParagraphOpenRe = regexp.MustCompile(`(?i)<p[^>]*>`)
+var htmlParagraphCloseRe = regexp.MustCompile(`(?i)</p>`)
+var htmlListItemParagraphRe = regexp.MustCompile(`(?is)<li>\s*<p[^>]*>(.*?)</p>\s*</li>`)
+var htmlListItemRe = regexp.MustCompile(`(?is)<li[^>]*>(.*?)</li>`)
+var htmlULOLRe = regexp.MustCompile(`(?i)</?(ul|ol)[^>]*>`)
+var htmlCodeClassRe = regexp.MustCompile(`(?i)<code[^>]*>`)
+var htmlStrongOpenRe = regexp.MustCompile(`(?i)<strong>`)
+var htmlStrongCloseRe = regexp.MustCompile(`(?i)</strong>`)
+var htmlEmOpenRe = regexp.MustCompile(`(?i)<em>`)
+var htmlEmCloseRe = regexp.MustCompile(`(?i)</em>`)
+var htmlDelOpenRe = regexp.MustCompile(`(?i)<del>`)
+var htmlDelCloseRe = regexp.MustCompile(`(?i)</del>`)
+var markdownEngine = goldmark.New(
+	goldmark.WithExtensions(extension.GFM),
+	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
+)
+const defaultMarkdownDividerTGEmoji = `<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`
+
+func containsMarkdownLiteMarkup(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	return mdHintRe.MatchString(s)
+}
 
 func markdownToTelegramHTMLLite(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return s
 	}
-	// Fenced code blocks first.
-	s = mdFenceRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := mdFenceRe.FindStringSubmatch(m)
-		if len(sub) < 3 {
-			return m
-		}
-		lang := strings.TrimSpace(sub[1])
-		code := html.EscapeString(sub[2])
-		if lang != "" {
-			return `<pre><code class="language-` + html.EscapeString(lang) + `">` + code + `</code></pre>`
-		}
-		return `<pre><code>` + code + `</code></pre>`
-	})
-	// Inline code.
-	s = mdInlineCodeRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := mdInlineCodeRe.FindStringSubmatch(m)
+	// Custom Telegram-only markdown extensions that stock markdown doesn't support.
+	s = mdSpoilerRe.ReplaceAllString(s, `<tg-spoiler>$1</tg-spoiler>`)
+	s = mdUnderlineRe.ReplaceAllString(s, `<u>$1</u>`)
+
+	var b bytes.Buffer
+	if err := markdownEngine.Convert([]byte(s), &b); err != nil {
+		return s
+	}
+	s = strings.TrimSpace(b.String())
+	divider := strings.Repeat(markdownDividerTGEmoji(), 11)
+	s = htmlHeadingRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := htmlHeadingRe.FindStringSubmatch(m)
 		if len(sub) < 2 {
 			return m
 		}
-		return `<code>` + html.EscapeString(sub[1]) + `</code>`
-	})
-	// Links.
-	s = mdLinkRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := mdLinkRe.FindStringSubmatch(m)
-		if len(sub) < 3 {
-			return m
+		title := strings.TrimSpace(html.UnescapeString(sub[1]))
+		if title == "" {
+			return ""
 		}
-		txt := html.EscapeString(strings.TrimSpace(sub[1]))
-		u := strings.TrimSpace(sub[2])
-		if txt == "" || u == "" {
-			return m
-		}
-		return `<a href="` + html.EscapeString(u) + `">` + txt + `</a>`
+		return "<b>§ " + html.EscapeString(title) + "</b>"
 	})
-	// Spoiler.
-	s = mdSpoilerRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := mdSpoilerRe.FindStringSubmatch(m)
-		if len(sub) < 2 {
-			return m
-		}
-		return `<tg-spoiler>` + html.EscapeString(sub[1]) + `</tg-spoiler>`
-	})
+	s = htmlHRRe.ReplaceAllString(s, divider)
+	s = htmlListItemParagraphRe.ReplaceAllString(s, `<li>$1</li>`)
+	s = htmlListItemRe.ReplaceAllString(s, "• $1\n")
+	s = htmlULOLRe.ReplaceAllString(s, "")
+	s = htmlParagraphBreakRe.ReplaceAllString(s, "\n\n")
+	s = htmlParagraphOpenRe.ReplaceAllString(s, "")
+	s = htmlParagraphCloseRe.ReplaceAllString(s, "")
+	s = htmlBRRe.ReplaceAllString(s, "\n")
+	s = htmlCodeClassRe.ReplaceAllString(s, "<code>")
+	s = htmlStrongOpenRe.ReplaceAllString(s, "<b>")
+	s = htmlStrongCloseRe.ReplaceAllString(s, "</b>")
+	s = htmlEmOpenRe.ReplaceAllString(s, "<i>")
+	s = htmlEmCloseRe.ReplaceAllString(s, "</i>")
+	s = htmlDelOpenRe.ReplaceAllString(s, "<s>")
+	s = htmlDelCloseRe.ReplaceAllString(s, "</s>")
+	s = strings.ReplaceAll(s, "<blockquote>\n", "<blockquote>")
+	s = strings.ReplaceAll(s, "\n</blockquote>", "</blockquote>")
+	s = strings.TrimSpace(s)
 	return s
+}
+
+func markdownDividerTGEmoji() string {
+	v := strings.TrimSpace(os.Getenv("GPT_MARKDOWN_DIVIDER_EMOJI"))
+	if v == "" {
+		return defaultMarkdownDividerTGEmoji
+	}
+	return v
 }
 
 func buildTemplateLookup(store TriggerStorePort) func(string) string {

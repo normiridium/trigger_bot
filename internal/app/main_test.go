@@ -789,8 +789,17 @@ func TestExtractStickerFileIDFromTemplate(t *testing.T) {
 }
 
 func TestMarkdownToTelegramHTMLLite(t *testing.T) {
-	in := "Код:\n```python\nprint('hi')\n```\nИ `x=1` и [сайт](https://example.com)"
+	in := "# Заголовок\n> Цитата первая\n> Вторая строка\n---\nКод:\n```python\nprint('hi')\n```\nИ `x=1` и [сайт](https://example.com)\n**жирный** *курсив* __подчеркнутый__ ~~зачеркнутый~~"
 	got := markdownToTelegramHTMLLite(in)
+	if !strings.Contains(got, `<b>§ Заголовок</b>`) {
+		t.Fatalf("heading not converted: %q", got)
+	}
+	if !strings.Contains(got, `<blockquote>Цитата первая`+"\n"+`Вторая строка</blockquote>`) {
+		t.Fatalf("blockquote not converted: %q", got)
+	}
+	if !strings.Contains(got, strings.Repeat(`<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`, 11)) {
+		t.Fatalf("hr not converted to divider emojis: %q", got)
+	}
 	if !strings.Contains(got, `<pre><code class="language-python">`) {
 		t.Fatalf("fenced code not converted: %q", got)
 	}
@@ -799,6 +808,76 @@ func TestMarkdownToTelegramHTMLLite(t *testing.T) {
 	}
 	if !strings.Contains(got, `<a href="https://example.com">сайт</a>`) {
 		t.Fatalf("link not converted: %q", got)
+	}
+	if !strings.Contains(got, `<b>жирный</b>`) {
+		t.Fatalf("bold not converted: %q", got)
+	}
+	if !strings.Contains(got, `<i>курсив</i>`) {
+		t.Fatalf("italic not converted: %q", got)
+	}
+	if !strings.Contains(got, `<u>подчеркнутый</u>`) {
+		t.Fatalf("underline not converted: %q", got)
+	}
+	if !strings.Contains(got, `<s>зачеркнутый</s>`) {
+		t.Fatalf("strike not converted: %q", got)
+	}
+}
+
+func TestContainsMarkdownLiteMarkup(t *testing.T) {
+	if !containsMarkdownLiteMarkup(`**markdown** без html`) {
+		t.Fatalf("expected true for markdown text")
+	}
+	if !containsMarkdownLiteMarkup(`# заголовок`) {
+		t.Fatalf("expected true for markdown heading")
+	}
+	if !containsMarkdownLiteMarkup(`> цитата`) {
+		t.Fatalf("expected true for markdown quote")
+	}
+	if !containsMarkdownLiteMarkup(`---`) {
+		t.Fatalf("expected true for markdown divider")
+	}
+	if containsMarkdownLiteMarkup(`обычный текст`) {
+		t.Fatalf("expected false for plain text")
+	}
+}
+
+func TestMarkdownToTelegramHTMLLite_ItalicDoesNotSpanLines(t *testing.T) {
+	in := "* пункт списка\nстрока с *курсивом* и **жирным**\nещё строка"
+	got := markdownToTelegramHTMLLite(in)
+	if strings.Contains(got, "<i> пункт списка") {
+		t.Fatalf("list marker must not become italic: %q", got)
+	}
+	if !strings.Contains(got, "<i>курсивом</i>") {
+		t.Fatalf("italic conversion missing: %q", got)
+	}
+	if !strings.Contains(got, "<b>жирным</b>") {
+		t.Fatalf("bold conversion missing: %q", got)
+	}
+	if strings.Count(got, "<i>") != strings.Count(got, "</i>") {
+		t.Fatalf("unbalanced italic tags: %q", got)
+	}
+}
+
+func TestMarkdownDividerTGEmojiFromEnv(t *testing.T) {
+	const key = "GPT_MARKDOWN_DIVIDER_EMOJI"
+	old, had := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, old)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+
+	_ = os.Unsetenv(key)
+	if got := markdownDividerTGEmoji(); got != defaultMarkdownDividerTGEmoji {
+		t.Fatalf("unexpected default divider emoji: %q", got)
+	}
+
+	custom := `<tg-emoji emoji-id="1">~</tg-emoji>`
+	_ = os.Setenv(key, custom)
+	if got := markdownDividerTGEmoji(); got != custom {
+		t.Fatalf("unexpected env divider emoji: %q", got)
 	}
 }
 
