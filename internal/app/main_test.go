@@ -447,6 +447,22 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 	}
 }
 
+func TestEstimateGPTReplyHumanPause_Disabled(t *testing.T) {
+	t.Setenv("GPT_HUMAN_PAUSE", "false")
+	if got := estimateGPTReplyHumanPause("hello"); got != 0 {
+		t.Fatalf("expected zero pause when disabled, got %v", got)
+	}
+}
+
+func TestEstimateGPTReplyHumanPause_Bounded(t *testing.T) {
+	t.Setenv("GPT_HUMAN_PAUSE", "true")
+	t.Setenv("GPT_HUMAN_PAUSE_MIN_MS", "1200")
+	t.Setenv("GPT_HUMAN_PAUSE_MAX_MS", "1200")
+	if got := estimateGPTReplyHumanPause("short"); got != 1200*time.Millisecond {
+		t.Fatalf("expected fixed 1200ms pause, got %v", got)
+	}
+}
+
 func TestBuildMediaVideoCaption(t *testing.T) {
 	f, err := os.CreateTemp("", "video-cap-*.mp4")
 	if err != nil {

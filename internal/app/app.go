@@ -522,6 +522,38 @@ func ensureMinTypingWindow(bot *tgbotapi.BotAPI, chatID int64, startedAt time.Ti
 	time.Sleep(wait)
 }
 
+func estimateGPTReplyHumanPause(text string) time.Duration {
+	if !envBool("GPT_HUMAN_PAUSE", true) {
+		return 0
+	}
+	minMS := envInt("GPT_HUMAN_PAUSE_MIN_MS", 1800)
+	maxMS := envInt("GPT_HUMAN_PAUSE_MAX_MS", 12000)
+	if minMS < 0 {
+		minMS = 0
+	}
+	if maxMS < minMS {
+		maxMS = minMS
+	}
+	cleaned := strings.TrimSpace(strings.ToValidUTF8(text, ""))
+	cleaned = canonicalizeTGEmojiTags(cleaned)
+	cleaned = htmlTagStripRe.ReplaceAllString(cleaned, " ")
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	runes := len([]rune(cleaned))
+	words := len(strings.Fields(cleaned))
+	// Typing-like pacing with small human reaction jitter.
+	estimateMS := runes*26 + 700 + rand.Intn(650)
+	if byWords := words * 260; byWords > estimateMS {
+		estimateMS = byWords + 450 + rand.Intn(400)
+	}
+	if estimateMS < minMS {
+		estimateMS = minMS
+	}
+	if estimateMS > maxMS {
+		estimateMS = maxMS
+	}
+	return time.Duration(estimateMS) * time.Millisecond
+}
+
 func executeGPTPromptTask(task gpt.PromptTask) {
 	if task.Bot == nil || task.Msg == nil {
 		return
@@ -540,7 +572,6 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	if startedAt.IsZero() {
 		startedAt = time.Now()
 	}
-	ensureMinTypingWindow(task.Bot, task.Msg.Chat.ID, startedAt, 1*time.Second)
 	replyTo := 0
 	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
 		replyTo = task.Msg.MessageID
@@ -555,6 +586,18 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical=%q",
 			task.Trigger.ID, len(out), countTGEmojiTags(out), clipText(out, 1400))
 	}
+	pause := estimateGPTReplyHumanPause(out)
+	if debugTriggerLogEnabled || debugGPTLogEnabled || envBool("GPT_HUMAN_PAUSE_LOG", false) {
+		log.Printf("gpt human pause trigger=%d chat=%d msg=%d delay_ms=%d out_len=%d out_words=%d",
+			task.Trigger.ID,
+			task.Msg.Chat.ID,
+			task.Msg.MessageID,
+			pause.Milliseconds(),
+			len([]rune(strings.TrimSpace(out))),
+			len(strings.Fields(strings.TrimSpace(htmlTagStripRe.ReplaceAllString(out, " ")))),
+		)
+	}
+	ensureMinTypingWindow(task.Bot, task.Msg.Chat.ID, startedAt, pause)
 	sent := false
 	sendMode := "markdown"
 	hasHTML := containsTelegramHTMLMarkup(out)
