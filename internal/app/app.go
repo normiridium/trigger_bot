@@ -2127,6 +2127,7 @@ func Run() {
 		log.Printf("per-user GPT response limit disabled")
 	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
+	startBotCommandsSyncLoop(bot)
 
 	allowedChats, err := parseAllowedChatIDs(os.Getenv("ALLOWED_CHAT_IDS"))
 	if err != nil {
@@ -2424,7 +2425,7 @@ func Run() {
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						"Команды: /start /help /emojiid /stickerid /spsearch\n" +
+						"Команды: /start /help /emojiid /stickerid /spsearch /my_portrait /delete_my_portrait /ban /unban /mute /unmute /kick /readonly /reload_admins\n" +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -2542,6 +2543,8 @@ func Run() {
 						if hasYandexMusic {
 							usageLines = append(usageLines, "— для Яндекс.Музыки: отправьте ссылку music.yandex.ru")
 						}
+						usageLines = append(usageLines, "— /my_portrait — показать ваш портрет")
+						usageLines = append(usageLines, "— /delete_my_portrait — удалить ваш портрет")
 						usageLines = append(usageLines, "— если нужен ID кастомного эмодзи: /emojiid")
 						usageLines = append(usageLines, "— если нужен код стикера: отправьте /stickerid в ответ на стикер")
 						usageInfo = strings.Join(usageLines, "\n")
@@ -2589,7 +2592,7 @@ func Run() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-			case "spsearch", "spfind":
+					case "spsearch", "spfind":
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: /spsearch исполнитель или трек", false)
@@ -2615,10 +2618,47 @@ func Run() {
 				for i, tr := range tracks {
 					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
 				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
-				continue
-			}
-		}
+						sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
+						continue
+					case "my_portrait", "portrait":
+						if msg.From == nil || msg.From.ID == 0 {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+							continue
+						}
+						if portraitManager == nil {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+							continue
+						}
+						portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
+						remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
+						if portrait == "" {
+							reply(cmdSendCtx.WithReply(msg.MessageID),
+								fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
+							continue
+						}
+						out := "Твой текущий портрет:\n" + portrait
+						if remaining > 0 {
+							out += fmt.Sprintf("\n\nДо следующего обновления: %d сообщений", remaining)
+						}
+						reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
+						continue
+					case "delete_my_portrait", "clear_my_portrait":
+						if msg.From == nil || msg.From.ID == 0 {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+							continue
+						}
+						if portraitManager == nil {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+							continue
+						}
+						if err := portraitManager.DeletePortrait(msg.From.ID); err != nil {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка удаления портрета: "+clipText(err.Error(), 200), false)
+							continue
+						}
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
+						continue
+					}
+				}
 		if isPrivateChat {
 			hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
 			if len(hits) > 0 {
