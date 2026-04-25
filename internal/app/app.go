@@ -1606,12 +1606,16 @@ func moderationRequiresConfirm(action string) bool {
 	}
 }
 
-func moderationConfirmQuestions() [moderationConfirmQuestionCount]string {
-	return [moderationConfirmQuestionCount]string{
+func moderationConfirmQuestions(action string) [moderationConfirmQuestionCount]string {
+	questions := [moderationConfirmQuestionCount]string{
 		"Нарушение правил действительно есть",
 		"Это не первое нарушение",
 		"Наказание соразмерно ситуации",
 	}
+	if action == cmdMute {
+		questions[1] = "Пользователь получал предупреждение"
+	}
+	return questions
 }
 
 func moderationActionLabel(req moderationRequest) string {
@@ -1654,7 +1658,7 @@ func formatModerationTargets(labels []string) string {
 }
 
 func buildModerationConfirmMessage(st moderationConfirmState) (string, tgbotapi.InlineKeyboardMarkup) {
-	questions := moderationConfirmQuestions()
+	questions := moderationConfirmQuestions(st.Req.Action)
 	lines := make([]string, 0, 10)
 	lines = append(lines, "Подтверди действие перед применением.")
 	lines = append(lines, "Действие: "+moderationActionLabel(st.Req))
