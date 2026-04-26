@@ -740,6 +740,7 @@ func reportEmptyTriggerMessage(bot *tgbotapi.BotAPI, chatID int64, tr *Trigger) 
 var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P<id>\d+)"?\s*>"?(?P<fallback>.*?)"?</tg-emoji>"?`)
 var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
 var tgEmojiAnyWithIDRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*emoji-id\s*=\s*"?(?P<id>\d+)"?[^>]*>(?P<fallback>.*?)</tg-emoji>`)
+var tgEmojiTypoTagRe = regexp.MustCompile(`(?is)<\s*(/?)\s*tr-emoji\b`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
 var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
 var supportedMediaURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
@@ -750,6 +751,9 @@ func canonicalizeTGEmojiTags(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return s
 	}
+	// Common model typo: <tr-emoji ...>...</tg-emoji>
+	// Normalize it early so Telegram parser doesn't fail on unexpected closing tags.
+	s = tgEmojiTypoTagRe.ReplaceAllString(s, "<${1}tg-emoji")
 	s = strings.ReplaceAll(s, `\"`, `"`)
 	s = strings.ReplaceAll(s, "&lt;", "<")
 	s = strings.ReplaceAll(s, "&gt;", ">")

@@ -34,8 +34,18 @@ let settingsCache = {fields: [], values: {}};
 let emojiHelperTimer = null;
 let emojiHelperLastID = '';
 let emojiHelperSelectedID = '';
+let emojiHelperForcedSetKey = '';
 let stickerHelperLastSet = '';
 let stickerHelperSelectedSet = '';
+let stickerHelperSelectedCode = '';
+let stickerHelperForcedSetKey = '';
+let recentSetsLoadInFlight = false;
+let recentSetsSaveTimer = null;
+let recentEmojiSets = [];
+let recentStickerSets = [];
+const emojiSetCache = {};
+const stickerSetCache = {};
+const RECENT_SETS_LIMIT = 300;
 let authState = 'login_required';
 let csrfToken = '';
 
@@ -177,6 +187,7 @@ async function initAuthenticatedApp(){
   await loadTemplateTags();
   await loadTemplates();
   await loadSettings();
+  await loadRecentSetsHistory();
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
@@ -781,6 +792,132 @@ function escapeHtml(v){
     .replace(/'/g, '&#39;');
 }
 
+function nowUnix(){
+  return Math.floor(Date.now() / 1000);
+}
+
+function normalizeRecentEmojiEntry(it){
+  const emojiID = String(it?.emoji_id || it?.emojiID || '').trim();
+  const setName = String(it?.set_name || '').trim();
+  if(!setName){ return null; }
+  return {
+    emoji_id: emojiID,
+    set_name: setName,
+    title: String(it?.title || '').trim(),
+    emoji: String(it?.emoji || '🙂').trim() || '🙂',
+    preview_url: String(it?.preview_url || '').trim(),
+    thumb_url: String(it?.thumb_url || '').trim(),
+    updated_at: Number(it?.updated_at || 0) || nowUnix(),
+  };
+}
+
+function normalizeRecentStickerEntry(it){
+  const setName = String(it?.set_name || it?.setName || '').trim();
+  if(!setName){ return null; }
+  return {
+    set_name: setName,
+    title: String(it?.title || '').trim(),
+    preview_url: String(it?.preview_url || '').trim(),
+    thumb_url: String(it?.thumb_url || '').trim(),
+    updated_at: Number(it?.updated_at || 0) || nowUnix(),
+  };
+}
+
+function upsertRecentEmojiSet(entry, source){
+  const n = normalizeRecentEmojiEntry(entry);
+  if(!n){ return; }
+  const key = String(n.set_name || '').trim();
+  if(!key){ return; }
+  const list = [n, ...recentEmojiSets.filter((x) => String(x?.set_name || '').trim() !== key)];
+  recentEmojiSets = list.slice(0, RECENT_SETS_LIMIT);
+  if(source !== 'server'){
+    scheduleRecentSetsSave();
+  }
+}
+
+function upsertRecentStickerSet(entry, source){
+  const n = normalizeRecentStickerEntry(entry);
+  if(!n){ return; }
+  const key = n.set_name;
+  const list = [n, ...recentStickerSets.filter((x) => String(x?.set_name || '') !== key)];
+  recentStickerSets = list.slice(0, RECENT_SETS_LIMIT);
+  if(source !== 'server'){
+    scheduleRecentSetsSave();
+  }
+}
+
+function readRecentSetsFromLocalStorage(){
+  try{
+    const raw = localStorage.getItem('trigger_recent_sets_v1');
+    if(!raw){ return null; }
+    const data = JSON.parse(raw);
+    return {
+      emoji_sets: Array.isArray(data?.emoji_sets) ? data.emoji_sets : [],
+      sticker_sets: Array.isArray(data?.sticker_sets) ? data.sticker_sets : [],
+    };
+  }catch(_){
+    return null;
+  }
+}
+
+function writeRecentSetsToLocalStorage(){
+  try{
+    localStorage.setItem('trigger_recent_sets_v1', JSON.stringify({
+      emoji_sets: recentEmojiSets,
+      sticker_sets: recentStickerSets,
+    }));
+  }catch(_){
+    // ignore storage failures
+  }
+}
+
+async function loadRecentSetsHistory(){
+  if(recentSetsLoadInFlight){ return; }
+  recentSetsLoadInFlight = true;
+  try{
+    const local = readRecentSetsFromLocalStorage();
+    if(local){
+      (local.emoji_sets || []).forEach((it) => upsertRecentEmojiSet(it, 'server'));
+      (local.sticker_sets || []).forEach((it) => upsertRecentStickerSet(it, 'server'));
+    }
+    const r = await fetch(withToken('/trigger_bot/recent_sets_get'));
+    if(r.ok){
+      const data = await r.json();
+      const fromServerEmoji = Array.isArray(data?.emoji_sets) ? data.emoji_sets : [];
+      const fromServerSticker = Array.isArray(data?.sticker_sets) ? data.sticker_sets : [];
+      fromServerEmoji.forEach((it) => upsertRecentEmojiSet(it, 'server'));
+      fromServerSticker.forEach((it) => upsertRecentStickerSet(it, 'server'));
+      writeRecentSetsToLocalStorage();
+      // Merge local additions back to Mongo if any.
+      scheduleRecentSetsSave();
+    }
+  }catch(_){
+    // keep local fallback silently
+  }finally{
+    recentSetsLoadInFlight = false;
+  }
+}
+
+function scheduleRecentSetsSave(){
+  writeRecentSetsToLocalStorage();
+  if(recentSetsSaveTimer){ clearTimeout(recentSetsSaveTimer); }
+  recentSetsSaveTimer = setTimeout(async () => {
+    recentSetsSaveTimer = null;
+    try{
+      await fetch(withToken('/trigger_bot/recent_sets_save'), {
+        method: 'POST',
+        headers: withCSRFHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({
+          emoji_sets: recentEmojiSets,
+          sticker_sets: recentStickerSets,
+        }),
+      });
+    }catch(_){
+      // best-effort sync
+    }
+  }, 500);
+}
+
 function extractCustomEmojiTagsFromText(text){
   const src = String(text || '');
   const re = /<\s*tg-emoji[^>]*emoji-id\s*=\s*["']?(\d{3,})["']?[^>]*>/ig;
@@ -856,6 +993,18 @@ function scheduleEmojiSetHelperRefresh(){
   }, 180);
 }
 
+function currentActionType(){
+  return String(document.getElementById('f_action_type')?.value || 'send').toLowerCase();
+}
+
+function shouldShowStickerHelper(){
+  return currentActionType() === 'send_sticker';
+}
+
+function shouldShowEmojiHelper(){
+  return currentActionType() !== 'send_sticker';
+}
+
 function hideEmojiSetHelper(){
   const box = document.getElementById('emoji_set_helper');
   if(!box){ return; }
@@ -863,6 +1012,15 @@ function hideEmojiSetHelper(){
   box.innerHTML = '';
   emojiHelperLastID = '';
   emojiHelperSelectedID = '';
+  emojiHelperForcedSetKey = '';
+}
+
+function emojiEntryKey(it){
+  return String(it?.set_name || '').trim();
+}
+
+function stickerEntryKey(it){
+  return String(it?.set_name || '').trim();
 }
 
 function renderEmojiSetHelperLoading(id){
@@ -879,16 +1037,78 @@ function renderEmojiSetHelperError(msg){
   box.innerHTML = `<div class="emoji-helper-title text-danger">${escapeHtml(msg || 'Не удалось загрузить набор эмодзи')}</div>`;
 }
 
-function renderEmojiSetHelper(data){
+function renderEmojiSetTabs(activeKey){
+  const tabs = recentEmojiSets.map((it) => {
+    const key = emojiEntryKey(it);
+    if(!key){ return ''; }
+    const activeClass = key === activeKey ? ' active' : '';
+    const title = String(it?.title || it?.set_name || '').trim();
+    const previewURL = String(it?.preview_url || it?.thumb_url || '').trim();
+    const fallbackURL = String(it?.thumb_url || '').trim();
+    const content = previewURL
+      ? `<img alt="emoji" loading="lazy" src="${escapeHtml(withToken(previewURL))}" data-fallback-src="${escapeHtml(fallbackURL ? withToken(fallbackURL) : '')}">`
+      : `<span class="emoji-set-tab-symbol">${escapeHtml(String(it?.emoji || '🙂').trim() || '🙂')}</span>`;
+    return `<button type="button" class="emoji-set-tab${activeClass}" data-emoji-set-key="${escapeHtml(key)}" data-emoji-id="${escapeHtml(String(it?.emoji_id || '').trim())}" title="${escapeHtml(title)}">${content}</button>`;
+  }).join('');
+  return `<div class="emoji-set-tabs">${tabs}</div>`;
+}
+
+function renderStickerSetTabs(activeKey){
+  const tabs = recentStickerSets.map((it) => {
+    const key = stickerEntryKey(it);
+    if(!key){ return ''; }
+    const activeClass = key === activeKey ? ' active' : '';
+    const title = String(it?.title || key).trim();
+    const imgURL = String(it?.preview_url || it?.thumb_url || '').trim();
+    const fallbackURL = String(it?.thumb_url || '').trim();
+    const content = imgURL
+      ? `<img alt="sticker" loading="lazy" src="${escapeHtml(withToken(imgURL))}" data-fallback-src="${escapeHtml(fallbackURL ? withToken(fallbackURL) : '')}">`
+      : `<span class="emoji-set-tab-symbol">🎟</span>`;
+    return `<button type="button" class="emoji-set-tab${activeClass}" data-sticker-set-key="${escapeHtml(key)}" title="${escapeHtml(title)}">${content}</button>`;
+  }).join('');
+  return `<div class="emoji-set-tabs">${tabs}</div>`;
+}
+
+function bindSetTabImageFallback(box){
+  box.querySelectorAll('.emoji-set-tab img').forEach((img) => {
+    const fallbackURL = String(img.getAttribute('data-fallback-src') || '').trim();
+    if(!fallbackURL){ return; }
+    img.addEventListener('error', () => {
+      if(img.src !== fallbackURL){
+        img.src = fallbackURL;
+      }
+    });
+  });
+}
+
+function renderEmojiSetHelper(){
   const box = document.getElementById('emoji_set_helper');
   if(!box){ return; }
-  const items = Array.isArray(data?.items) ? data.items : [];
-  if(items.length === 0){
+  if(recentEmojiSets.length === 0){
     hideEmojiSetHelper();
     return;
   }
-  const title = String(data?.title || data?.set_name || 'Набор эмодзи');
-  const head = `<div class="emoji-helper-title">${escapeHtml(title)} — нажми, чтобы вставить</div>`;
+  let activeKey = '';
+  if(emojiHelperForcedSetKey){
+    activeKey = emojiHelperForcedSetKey;
+  } else if(emojiHelperSelectedID){
+    const found = recentEmojiSets.find((x) => String(x?.emoji_id || '') === emojiHelperSelectedID);
+    if(found){
+      activeKey = emojiEntryKey(found);
+    }
+  }
+  if(!activeKey){
+    activeKey = emojiEntryKey(recentEmojiSets[0]);
+  }
+  const data = emojiSetCache[activeKey];
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if(items.length === 0){
+    box.classList.remove('d-none');
+    box.innerHTML = `${renderEmojiSetTabs(activeKey)}<div class="emoji-helper-title mt-2">Набор ещё не загружен…</div>`;
+    bindEmojiSetTabClicks(box);
+    return;
+  }
+  const head = `<div class="emoji-helper-title">Нажми эмодзи, чтобы вставить</div>`;
   const chips = items.map((it) => {
     const id = String(it?.custom_emoji_id || '').trim();
     if(!id){ return ''; }
@@ -901,7 +1121,9 @@ function renderEmojiSetHelper(data){
     return `<button type="button" class="emoji-chip${selectedClass}" data-emoji-id="${escapeHtml(id)}" data-emoji-fallback="${escapeHtml(emoji)}" data-preview-url="${escapeHtml(previewURL)}" data-thumb-url="${escapeHtml(thumbURL)}" title="${escapeHtml(id)}"><img alt="${escapeHtml(emoji)}" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
   }).join('');
   box.classList.remove('d-none');
-  box.innerHTML = `${head}<div class="emoji-helper-grid">${chips}</div>`;
+  box.innerHTML = `${renderEmojiSetTabs(activeKey)}${head}<div class="emoji-helper-grid">${chips}</div>`;
+  bindSetTabImageFallback(box);
+  bindEmojiSetTabClicks(box);
   box.querySelectorAll('.emoji-chip[data-emoji-id]').forEach((btn) => {
     const img = btn.querySelector('img');
     const thumbURL = String(btn.getAttribute('data-thumb-url') || '').trim();
@@ -916,6 +1138,7 @@ function renderEmojiSetHelper(data){
       const id = String(btn.getAttribute('data-emoji-id') || '').trim();
       const fallback = String(btn.getAttribute('data-emoji-fallback') || '🙂').trim() || '🙂';
       if(!id){ return; }
+      emojiHelperSelectedID = id;
       insertTextAtCursor(getResponseTextArea(), `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`);
       scheduleEmojiSetHelperRefresh();
     });
@@ -929,6 +1152,8 @@ function hideStickerSetHelper(){
   box.innerHTML = '';
   stickerHelperLastSet = '';
   stickerHelperSelectedSet = '';
+  stickerHelperSelectedCode = '';
+  stickerHelperForcedSetKey = '';
 }
 
 function renderStickerSetHelperLoading(setName){
@@ -945,17 +1170,57 @@ function renderStickerSetHelperError(msg){
   box.innerHTML = `<div class="emoji-helper-title text-danger">${escapeHtml(msg || 'Не удалось загрузить набор стикеров')}</div>`;
 }
 
-function renderStickerSetHelper(data){
+function bindEmojiSetTabClicks(box){
+  box.querySelectorAll('.emoji-set-tab[data-emoji-set-key]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = String(btn.getAttribute('data-emoji-set-key') || '').trim();
+      const emojiID = String(btn.getAttribute('data-emoji-id') || '').trim();
+      if(!key){ return; }
+      emojiHelperForcedSetKey = key;
+      if(!emojiSetCache[key] && emojiID){
+        await fetchEmojiSetByID(emojiID);
+      }
+      renderEmojiSetHelper();
+    });
+  });
+}
+
+function bindStickerSetTabClicks(box){
+  box.querySelectorAll('.emoji-set-tab[data-sticker-set-key]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = String(btn.getAttribute('data-sticker-set-key') || '').trim();
+      if(!key){ return; }
+      stickerHelperForcedSetKey = key;
+      stickerHelperSelectedSet = key;
+      if(!stickerSetCache[key]){
+        await fetchStickerSetByName(key);
+      }
+      renderStickerSetHelper();
+    });
+  });
+}
+
+function renderStickerSetHelper(){
   const box = document.getElementById('sticker_set_helper');
   if(!box){ return; }
-  const items = Array.isArray(data?.items) ? data.items : [];
-  if(items.length === 0){
+  if(recentStickerSets.length === 0){
     hideStickerSetHelper();
     return;
   }
-  const setName = String(data?.set_name || '').trim();
-  const title = String(data?.title || setName || 'Набор стикеров');
-  const head = `<div class="emoji-helper-title">${escapeHtml(title)} — нажми, чтобы вставить код</div>`;
+  let activeKey = stickerHelperForcedSetKey || stickerHelperSelectedSet;
+  if(!activeKey){
+    activeKey = stickerEntryKey(recentStickerSets[0]);
+  }
+  const data = stickerSetCache[activeKey];
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if(items.length === 0){
+    box.classList.remove('d-none');
+    box.innerHTML = `${renderStickerSetTabs(activeKey)}<div class="emoji-helper-title mt-2">Набор ещё не загружен…</div>`;
+    bindStickerSetTabClicks(box);
+    return;
+  }
+  const setName = String(data?.set_name || activeKey).trim();
+  const head = `<div class="emoji-helper-title">Нажми стикер, чтобы вставить код</div>`;
   const chips = items.map((it) => {
     const code = String(it?.code || '').trim();
     const preview = String(it?.preview_url || '').trim();
@@ -963,11 +1228,13 @@ function renderStickerSetHelper(data){
     if(!code){ return ''; }
     const previewURL = preview ? withToken(preview) : '';
     const thumbURL = thumb ? withToken(thumb) : previewURL;
-    const selectedClass = setName && setName === stickerHelperSelectedSet ? ' emoji-chip-selected' : '';
+    const selectedClass = code === stickerHelperSelectedCode ? ' emoji-chip-selected' : '';
     return `<button type="button" class="emoji-chip${selectedClass}" data-sticker-code="${escapeHtml(code)}" data-preview-url="${escapeHtml(previewURL)}" data-thumb-url="${escapeHtml(thumbURL)}" title="${escapeHtml(code)}"><img alt="sticker" loading="lazy" src="${escapeHtml(previewURL)}"></button>`;
   }).join('');
   box.classList.remove('d-none');
-  box.innerHTML = `${head}<div class="emoji-helper-grid">${chips}</div>`;
+  box.innerHTML = `${renderStickerSetTabs(activeKey)}${head}<div class="emoji-helper-grid">${chips}</div>`;
+  bindSetTabImageFallback(box);
+  bindStickerSetTabClicks(box);
   box.querySelectorAll('.emoji-chip[data-sticker-code]').forEach((btn) => {
     const img = btn.querySelector('img');
     const thumbURL = String(btn.getAttribute('data-thumb-url') || '').trim();
@@ -981,76 +1248,139 @@ function renderStickerSetHelper(data){
     btn.addEventListener('click', () => {
       const code = String(btn.getAttribute('data-sticker-code') || '').trim();
       if(!code){ return; }
-      insertTextAtCursor(getResponseTextArea(), code);
-      scheduleEmojiSetHelperRefresh();
+      stickerHelperSelectedCode = code;
+      // For send_sticker action only one sticker code is meaningful:
+      // replace the whole response instead of appending at cursor.
+      setResponseValue(code);
     });
   });
 }
 
+async function fetchEmojiSetByID(selectedID){
+  if(!selectedID){ return; }
+  renderEmojiSetHelperLoading(selectedID);
+  const r = await fetch(withToken('/trigger_bot/emoji_set?emoji_id=' + encodeURIComponent(selectedID)));
+  if(!r.ok){
+    const txt = await r.text();
+    throw new Error(txt || ('HTTP ' + r.status));
+  }
+  const data = await r.json();
+  const setName = String(data?.set_name || '').trim();
+  const key = setName;
+  if(!key){
+    return;
+  }
+  emojiSetCache[key] = data;
+  const firstItem = Array.isArray(data?.items) ? data.items[0] : null;
+  upsertRecentEmojiSet({
+    emoji_id: selectedID,
+    set_name: setName,
+    title: String(data?.title || setName || selectedID).trim(),
+    emoji: String(firstItem?.emoji || '🙂').trim() || '🙂',
+    preview_url: String(data?.thumbnail_url || firstItem?.preview_url || '').trim(),
+    thumb_url: String(data?.thumbnail_url || firstItem?.thumb_url || '').trim(),
+    updated_at: nowUnix(),
+  });
+}
+
+async function fetchStickerSetByName(setName){
+  if(!setName){ return; }
+  renderStickerSetHelperLoading(setName);
+  const r = await fetch(withToken('/trigger_bot/sticker_set?set_name=' + encodeURIComponent(setName)));
+  if(!r.ok){
+    const txt = await r.text();
+    throw new Error(txt || ('HTTP ' + r.status));
+  }
+  const data = await r.json();
+  const key = String(data?.set_name || setName).trim();
+  stickerSetCache[key] = data;
+  const firstItem = Array.isArray(data?.items) ? data.items[0] : null;
+  upsertRecentStickerSet({
+    set_name: key,
+    title: String(data?.title || key).trim(),
+    preview_url: String(firstItem?.preview_url || data?.thumbnail_url || '').trim(),
+    thumb_url: String(data?.thumbnail_url || firstItem?.thumb_url || '').trim(),
+    updated_at: nowUnix(),
+  });
+}
+
 async function refreshEmojiSetHelper(){
+  if(!shouldShowEmojiHelper()){
+    hideEmojiSetHelper();
+    return;
+  }
   const text = getResponseValue();
   const tags = extractCustomEmojiTagsFromText(text);
-  if(tags.length === 0){
+  if(tags.length === 0 && recentEmojiSets.length === 0){
     hideEmojiSetHelper();
     return;
   }
-  const selectedID = pickEmojiIDByCursor(tags, getResponseCursorOffset());
-  if(!selectedID){
-    hideEmojiSetHelper();
-    return;
-  }
-  if(selectedID === emojiHelperLastID){
-    return;
-  }
-  emojiHelperSelectedID = selectedID;
-  emojiHelperLastID = selectedID;
-  renderEmojiSetHelperLoading(selectedID);
-  try{
-    const r = await fetch(withToken('/trigger_bot/emoji_set?emoji_id=' + encodeURIComponent(selectedID)));
-    if(!r.ok){
-      const txt = await r.text();
-      throw new Error(txt || ('HTTP ' + r.status));
+  let selectedID = '';
+  if(tags.length > 0){
+    selectedID = pickEmojiIDByCursor(tags, getResponseCursorOffset());
+    emojiHelperSelectedID = selectedID;
+  } else if(recentEmojiSets.length > 0){
+    if(emojiHelperForcedSetKey){
+      const foundByKey = recentEmojiSets.find((x) => emojiEntryKey(x) === emojiHelperForcedSetKey);
+      selectedID = String(foundByKey?.emoji_id || '').trim();
+    } else {
+      selectedID = String(recentEmojiSets[0]?.emoji_id || '').trim();
     }
-    const data = await r.json();
-    renderEmojiSetHelper(data);
-  } catch(err){
-    renderEmojiSetHelperError(err && err.message ? err.message : String(err));
+    emojiHelperSelectedID = selectedID;
   }
+  if(!selectedID){
+    renderEmojiSetHelper();
+    return;
+  }
+  if(selectedID !== emojiHelperLastID){
+    emojiHelperLastID = selectedID;
+    try{
+      await fetchEmojiSetByID(selectedID);
+    } catch(err){
+      renderEmojiSetHelperError(err && err.message ? err.message : String(err));
+      return;
+    }
+  }
+  renderEmojiSetHelper();
 }
 
 async function refreshStickerSetHelper(){
+  if(!shouldShowStickerHelper()){
+    hideStickerSetHelper();
+    return;
+  }
   const text = getResponseValue();
   const tags = extractStickerSetTagsFromText(text);
-  if(tags.length === 0){
+  if(tags.length === 0 && recentStickerSets.length === 0){
     hideStickerSetHelper();
     return;
   }
-  const pick = tags.find((t) => {
-    const pos = getResponseCursorOffset();
-    return pos >= Number(t.start || 0) && pos <= Number(t.end || 0);
-  }) || tags[0];
-  const setName = String(pick?.setName || '').trim();
+  let setName = '';
+  if(tags.length > 0){
+    const pick = tags.find((t) => {
+      const pos = getResponseCursorOffset();
+      return pos >= Number(t.start || 0) && pos <= Number(t.end || 0);
+    }) || tags[0];
+    setName = String(pick?.setName || '').trim();
+    stickerHelperSelectedCode = `${String(pick?.fileID || '').trim()}:${setName}`;
+  } else if(recentStickerSets.length > 0){
+    setName = String(recentStickerSets[0]?.set_name || '').trim();
+  }
   if(!setName){
-    hideStickerSetHelper();
-    return;
-  }
-  if(setName === stickerHelperLastSet){
+    renderStickerSetHelper();
     return;
   }
   stickerHelperSelectedSet = setName;
-  stickerHelperLastSet = setName;
-  renderStickerSetHelperLoading(setName);
-  try{
-    const r = await fetch(withToken('/trigger_bot/sticker_set?set_name=' + encodeURIComponent(setName)));
-    if(!r.ok){
-      const txt = await r.text();
-      throw new Error(txt || ('HTTP ' + r.status));
+  if(setName !== stickerHelperLastSet){
+    stickerHelperLastSet = setName;
+    try{
+      await fetchStickerSetByName(setName);
+    } catch(err){
+      renderStickerSetHelperError(err && err.message ? err.message : String(err));
+      return;
     }
-    const data = await r.json();
-    renderStickerSetHelper(data);
-  } catch(err){
-    renderStickerSetHelperError(err && err.message ? err.message : String(err));
   }
+  renderStickerSetHelper();
 }
 
 function ensureResponseEditor(){
@@ -1759,13 +2089,16 @@ function applyActionTypeUI(){
   if(!response){ return; }
   if(action === 'send_sticker'){
     response.placeholder = 'Код стикера: file_id:set_id (или только file_id)';
+    scheduleEmojiSetHelperRefresh();
     return;
   }
   if(action === 'gpt_prompt'){
     response.placeholder = 'Промпт для ChatGPT';
+    scheduleEmojiSetHelperRefresh();
     return;
   }
   response.placeholder = 'Текст ответа / промпт';
+  scheduleEmojiSetHelperRefresh();
 }
 
 function toggleMatchTextArea(){

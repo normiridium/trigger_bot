@@ -35,6 +35,8 @@ type WebAdmin struct {
 const adminSessionCookieName = "trigger_admin_session"
 const adminCSRFCookieName = "trigger_admin_csrf"
 const adminSessionTTL = 30 * 24 * time.Hour
+const webStaticCacheTTL = 7 * 24 * time.Hour
+const webProxyCacheTTL = 7 * 24 * time.Hour
 const adminAuthStateSetupRequired = "setup_required"
 const adminAuthStateLoginRequired = "login_required"
 const adminAuthStateAuthenticated = "authenticated"
@@ -283,7 +285,7 @@ func (w *WebAdmin) withAuth(next http.HandlerFunc) http.HandlerFunc {
 func (w *WebAdmin) routes() http.Handler {
 	mux := http.NewServeMux()
 	staticDir := envOr("WEB_STATIC_DIR", "./static")
-	mux.Handle("/trigger_bot/static/", http.StripPrefix("/trigger_bot/static/", http.FileServer(http.Dir(staticDir))))
+	mux.Handle("/trigger_bot/static/", http.StripPrefix("/trigger_bot/static/", cacheControlMiddleware(http.FileServer(http.Dir(staticDir)), webStaticCacheTTL)))
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 	})
@@ -299,6 +301,8 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
 	mux.HandleFunc("/trigger_bot/emoji_set", w.withAuth(w.emojiSetJSON))
 	mux.HandleFunc("/trigger_bot/sticker_set", w.withAuth(w.stickerSetJSON))
+	mux.HandleFunc("/trigger_bot/recent_sets_get", w.withAuth(w.recentSetsGetJSON))
+	mux.HandleFunc("/trigger_bot/recent_sets_save", w.withAuth(w.recentSetsSavePost))
 	mux.HandleFunc("/trigger_bot/emoji_proxy/file", w.withAuth(w.emojiFileProxy))
 	mux.HandleFunc("/trigger_bot/emoji_proxy/preview", w.withAuth(w.emojiPreviewProxy))
 	mux.HandleFunc("/trigger_bot/templates", w.withAuth(w.templatesJSON))
@@ -692,6 +696,10 @@ func (w *WebAdmin) emojiSetJSON(rw http.ResponseWriter, r *http.Request) {
 		ThumbURL      string `json:"thumb_url"`
 	}
 	outItems := make([]item, 0, len(set.Items))
+	thumbURL := ""
+	if strings.TrimSpace(set.ThumbFileID) != "" {
+		thumbURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(set.ThumbFileID))
+	}
 	for _, it := range set.Items {
 		previewURL := ""
 		thumbURL := ""
@@ -717,15 +725,17 @@ func (w *WebAdmin) emojiSetJSON(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(struct {
-		OK      bool   `json:"ok"`
-		SetName string `json:"set_name"`
-		Title   string `json:"title"`
-		Items   []item `json:"items"`
+		OK           bool   `json:"ok"`
+		SetName      string `json:"set_name"`
+		Title        string `json:"title"`
+		ThumbnailURL string `json:"thumbnail_url"`
+		Items        []item `json:"items"`
 	}{
-		OK:      true,
-		SetName: strings.TrimSpace(set.SetName),
-		Title:   strings.TrimSpace(set.Title),
-		Items:   outItems,
+		OK:           true,
+		SetName:      strings.TrimSpace(set.SetName),
+		Title:        strings.TrimSpace(set.Title),
+		ThumbnailURL: thumbURL,
+		Items:        outItems,
 	})
 }
 
@@ -754,6 +764,10 @@ func (w *WebAdmin) stickerSetJSON(rw http.ResponseWriter, r *http.Request) {
 		ThumbURL   string `json:"thumb_url"`
 	}
 	outItems := make([]item, 0, len(set.Items))
+	thumbURL := ""
+	if strings.TrimSpace(set.ThumbFileID) != "" {
+		thumbURL = "/trigger_bot/emoji_proxy/file?file_id=" + url.QueryEscape(strings.TrimSpace(set.ThumbFileID))
+	}
 	for _, it := range set.Items {
 		previewURL := "/trigger_bot/emoji_proxy/preview?file_id=" + url.QueryEscape(strings.TrimSpace(it.FileID))
 		thumbURL := previewURL
@@ -771,16 +785,129 @@ func (w *WebAdmin) stickerSetJSON(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(struct {
-		OK      bool   `json:"ok"`
-		SetName string `json:"set_name"`
-		Title   string `json:"title"`
-		Items   []item `json:"items"`
+		OK           bool   `json:"ok"`
+		SetName      string `json:"set_name"`
+		Title        string `json:"title"`
+		ThumbnailURL string `json:"thumbnail_url"`
+		Items        []item `json:"items"`
 	}{
-		OK:      true,
-		SetName: strings.TrimSpace(set.SetName),
-		Title:   strings.TrimSpace(set.Title),
-		Items:   outItems,
+		OK:           true,
+		SetName:      strings.TrimSpace(set.SetName),
+		Title:        strings.TrimSpace(set.Title),
+		ThumbnailURL: thumbURL,
+		Items:        outItems,
 	})
+}
+
+func (w *WebAdmin) recentSetsGetJSON(rw http.ResponseWriter, r *http.Request) {
+	if w == nil || w.store == nil {
+		http.Error(rw, "store is not initialized", http.StatusInternalServerError)
+		return
+	}
+	v, err := w.store.GetUIPickerRecentSets()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if v == nil {
+		v = &UIPickerRecentSets{}
+	}
+	if v.EmojiSets == nil {
+		v.EmojiSets = []UIPickerRecentEmojiSet{}
+	}
+	if v.StickerSets == nil {
+		v.StickerSets = []UIPickerRecentStickerSet{}
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":           true,
+		"emoji_sets":   v.EmojiSets,
+		"sticker_sets": v.StickerSets,
+	})
+}
+
+func sanitizeUIPickerRecentSets(v UIPickerRecentSets) UIPickerRecentSets {
+	const maxEmojiSets = 300
+	const maxStickerSets = 300
+	out := UIPickerRecentSets{
+		EmojiSets:   make([]UIPickerRecentEmojiSet, 0, min(len(v.EmojiSets), maxEmojiSets)),
+		StickerSets: make([]UIPickerRecentStickerSet, 0, min(len(v.StickerSets), maxStickerSets)),
+	}
+	seenEmoji := make(map[string]struct{}, maxEmojiSets)
+	seenSticker := make(map[string]struct{}, maxStickerSets)
+	for _, it := range v.EmojiSets {
+		id := strings.TrimSpace(it.EmojiID)
+		setName := strings.TrimSpace(it.SetName)
+		if setName == "" {
+			continue
+		}
+		key := setName
+		if _, ok := seenEmoji[key]; ok {
+			continue
+		}
+		seenEmoji[key] = struct{}{}
+		out.EmojiSets = append(out.EmojiSets, UIPickerRecentEmojiSet{
+			EmojiID:   id,
+			SetName:   clipText(setName, 128),
+			Title:     clipText(strings.TrimSpace(it.Title), 256),
+			Emoji:     clipText(strings.TrimSpace(it.Emoji), 16),
+			Preview:   clipText(strings.TrimSpace(it.Preview), 1024),
+			Thumb:     clipText(strings.TrimSpace(it.Thumb), 1024),
+			UpdatedAt: it.UpdatedAt,
+		})
+		if len(out.EmojiSets) >= maxEmojiSets {
+			break
+		}
+	}
+	for _, it := range v.StickerSets {
+		setName := strings.TrimSpace(it.SetName)
+		if setName == "" {
+			continue
+		}
+		if _, ok := seenSticker[setName]; ok {
+			continue
+		}
+		seenSticker[setName] = struct{}{}
+		out.StickerSets = append(out.StickerSets, UIPickerRecentStickerSet{
+			SetName:   clipText(setName, 128),
+			Title:     clipText(strings.TrimSpace(it.Title), 256),
+			Preview:   clipText(strings.TrimSpace(it.Preview), 1024),
+			Thumb:     clipText(strings.TrimSpace(it.Thumb), 1024),
+			UpdatedAt: it.UpdatedAt,
+		})
+		if len(out.StickerSets) >= maxStickerSets {
+			break
+		}
+	}
+	return out
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (w *WebAdmin) recentSetsSavePost(rw http.ResponseWriter, r *http.Request) {
+	if r == nil || !strings.EqualFold(r.Method, http.MethodPost) {
+		writeJSON(rw, http.StatusMethodNotAllowed, map[string]interface{}{"ok": false, "error": "method_not_allowed"})
+		return
+	}
+	if w == nil || w.store == nil {
+		http.Error(rw, "store is not initialized", http.StatusInternalServerError)
+		return
+	}
+	var in UIPickerRecentSets
+	if err := parseJSONBody(r, &in); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	in = sanitizeUIPickerRecentSets(in)
+	if err := w.store.SaveUIPickerRecentSets(in); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 func (w *WebAdmin) emojiFileProxy(rw http.ResponseWriter, r *http.Request) {
@@ -802,7 +929,7 @@ func (w *WebAdmin) emojiFileProxy(rw http.ResponseWriter, r *http.Request) {
 	}
 	ctype = detectContentTypeOrDefault(body, ctype, "application/octet-stream")
 	rw.Header().Set("Content-Type", ctype)
-	rw.Header().Set("Cache-Control", "public, max-age=3600")
+	rw.Header().Set("Cache-Control", cacheControlValue(webProxyCacheTTL))
 	rw.WriteHeader(http.StatusOK)
 	_, _ = rw.Write(body)
 }
@@ -826,9 +953,30 @@ func (w *WebAdmin) emojiPreviewProxy(rw http.ResponseWriter, r *http.Request) {
 	}
 	ctype = detectContentTypeOrDefault(body, ctype, "image/webp")
 	rw.Header().Set("Content-Type", ctype)
-	rw.Header().Set("Cache-Control", "public, max-age=3600")
+	rw.Header().Set("Cache-Control", cacheControlValue(webProxyCacheTTL))
 	rw.WriteHeader(http.StatusOK)
 	_, _ = rw.Write(body)
+}
+
+func cacheControlValue(ttl time.Duration) string {
+	secs := int(ttl / time.Second)
+	if secs < 0 {
+		secs = 0
+	}
+	return fmt.Sprintf("public, max-age=%d, immutable", secs)
+}
+
+func cacheControlMiddleware(next http.Handler, ttl time.Duration) http.Handler {
+	if next == nil {
+		return http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			http.Error(rw, "handler is not configured", http.StatusInternalServerError)
+		})
+	}
+	value := cacheControlValue(ttl)
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Cache-Control", value)
+		next.ServeHTTP(rw, r)
+	})
 }
 
 func detectContentTypeOrDefault(body []byte, current, fallback string) string {

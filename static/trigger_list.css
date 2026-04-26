@@ -185,10 +185,49 @@ tr.dragging-row {
   font-size: .82rem;
   margin-bottom: .45rem;
 }
+.emoji-set-tabs {
+  display: flex;
+  gap: .35rem;
+  overflow-x: auto;
+  padding-bottom: .35rem;
+  margin-bottom: .35rem;
+}
+.emoji-set-tab {
+  border: 1px solid #374151;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: .45rem;
+  min-width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 .35rem;
+}
+.emoji-set-tab:hover {
+  border-color: #60a5fa;
+}
+.emoji-set-tab.active {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px #60a5fa inset;
+  background: #0f172a;
+}
+.emoji-set-tab img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+.emoji-set-tab-symbol {
+  font-size: 1rem;
+  line-height: 1;
+}
 .emoji-helper-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
   gap: .35rem;
+  max-height: 200px;
+  overflow-y: auto;
+  padding-right: .15rem;
 }
 .emoji-chip {
   height: 32px;
@@ -213,8 +252,9 @@ tr.dragging-row {
   display: block;
 }
 .emoji-chip-selected {
-  border-color: #f8fafc;
-  box-shadow: 0 0 0 1px #f8fafc inset;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px #60a5fa inset, 0 0 10px rgba(96, 165, 250, .35);
+  background: #0f172a;
 }
 #sticker_set_helper .emoji-helper-grid {
   grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));

@@ -35,14 +35,14 @@ func testEmojiProxyClient(ts *httptest.Server) *http.Client {
 	}
 }
 
-func TestResolveSetByEmojiID_SortsItems(t *testing.T) {
+func TestResolveSetByEmojiID_PreservesTelegramOrder(t *testing.T) {
 	token := "TEST_TOKEN"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/bot" + token + "/getCustomEmojiStickers":
 			_, _ = io.WriteString(w, `{"ok":true,"result":[{"custom_emoji_id":"2","set_name":"myset","emoji":"🎉","file_id":"f2"}]}`)
 		case "/bot" + token + "/getStickerSet":
-			_, _ = io.WriteString(w, `{"ok":true,"result":{"name":"myset","title":"My Set","stickers":[{"custom_emoji_id":"10","set_name":"myset","emoji":"😀","file_id":"f10"},{"custom_emoji_id":"2","set_name":"myset","emoji":"🎉","file_id":"f2"}]}}`)
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"name":"myset","title":"My Set","stickers":[{"custom_emoji_id":"2","set_name":"myset","emoji":"🎉","file_id":"f2"},{"custom_emoji_id":"10","set_name":"myset","emoji":"😀","file_id":"f10"}]}}`)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -64,7 +64,7 @@ func TestResolveSetByEmojiID_SortsItems(t *testing.T) {
 	if len(set.Items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(set.Items))
 	}
-	if set.Items[0].CustomEmojiID != "10" || set.Items[1].CustomEmojiID != "2" {
+	if set.Items[0].CustomEmojiID != "2" || set.Items[1].CustomEmojiID != "10" {
 		t.Fatalf("unexpected items order: %#v", set.Items)
 	}
 }

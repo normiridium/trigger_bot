@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -30,9 +29,10 @@ type emojiItem struct {
 }
 
 type emojiSet struct {
-	SetName string      `json:"set_name"`
-	Title   string      `json:"title"`
-	Items   []emojiItem `json:"items"`
+	SetName     string      `json:"set_name"`
+	Title       string      `json:"title"`
+	ThumbFileID string      `json:"thumb_file_id"`
+	Items       []emojiItem `json:"items"`
 }
 
 type stickerItem struct {
@@ -43,9 +43,10 @@ type stickerItem struct {
 }
 
 type stickerSet struct {
-	SetName string        `json:"set_name"`
-	Title   string        `json:"title"`
-	Items   []stickerItem `json:"items"`
+	SetName     string        `json:"set_name"`
+	Title       string        `json:"title"`
+	ThumbFileID string        `json:"thumb_file_id"`
+	Items       []stickerItem `json:"items"`
 }
 
 type tgSticker struct {
@@ -59,9 +60,12 @@ type tgSticker struct {
 }
 
 type tgStickerSet struct {
-	Name     string      `json:"name"`
-	Title    string      `json:"title"`
-	Stickers []tgSticker `json:"stickers"`
+	Name      string      `json:"name"`
+	Title     string      `json:"title"`
+	Stickers  []tgSticker `json:"stickers"`
+	Thumbnail *struct {
+		FileID string `json:"file_id"`
+	} `json:"thumbnail"`
 }
 
 type tgResp[T any] struct {
@@ -107,13 +111,16 @@ func (s emojiProxyService) ResolveSetByEmojiID(ctx context.Context, id string) (
 		}
 		items = append(items, mapSticker(st))
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].CustomEmojiID < items[j].CustomEmojiID
-	})
 	return emojiSet{
 		SetName: strings.TrimSpace(set.Name),
 		Title:   strings.TrimSpace(set.Title),
 		Items:   items,
+		ThumbFileID: func() string {
+			if set.Thumbnail == nil {
+				return ""
+			}
+			return strings.TrimSpace(set.Thumbnail.FileID)
+		}(),
 	}, nil
 }
 
@@ -148,6 +155,12 @@ func (s emojiProxyService) ResolveStickerSetByName(ctx context.Context, setName 
 		SetName: strings.TrimSpace(set.Name),
 		Title:   strings.TrimSpace(set.Title),
 		Items:   items,
+		ThumbFileID: func() string {
+			if set.Thumbnail == nil {
+				return ""
+			}
+			return strings.TrimSpace(set.Thumbnail.FileID)
+		}(),
 	}, nil
 }
 
