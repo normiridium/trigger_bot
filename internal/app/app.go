@@ -514,6 +514,21 @@ func startTypingLoop(bot *tgbotapi.BotAPI, chatID int64, interval time.Duration)
 	}
 }
 
+func simulateStickerPickDelay(bot *tgbotapi.BotAPI, chatID int64, delay time.Duration) {
+	if bot == nil || chatID == 0 {
+		return
+	}
+	if delay <= 0 {
+		delay = 2 * time.Second
+	}
+	if _, err := bot.Request(tgbotapi.NewChatAction(chatID, "choose_sticker")); err != nil {
+		if debugTriggerLogEnabled {
+			log.Printf("send choose_sticker action failed chat=%d err=%v", chatID, err)
+		}
+	}
+	time.Sleep(delay)
+}
+
 func ensureMinTypingWindow(bot *tgbotapi.BotAPI, chatID int64, startedAt time.Time, min time.Duration) {
 	if min <= 0 {
 		return
@@ -3529,6 +3544,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки стикера", errors.New("empty or invalid sticker file_id in response_text"))
 			return
 		}
+		simulateStickerPickDelay(deps.Bot, msg.Chat.ID, 4*time.Second)
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
 		if ok := sendSticker(sendCtx, stickerID); ok && deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
