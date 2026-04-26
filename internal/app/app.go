@@ -595,7 +595,7 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		startedAt = time.Now()
 	}
 	replyTo := 0
-	if task.Trigger.Reply || task.Trigger.TriggerMode == "command_reply" {
+	if task.Trigger.Reply || task.Trigger.TriggerMode == TriggerModeCommandReply {
 		replyTo = task.Msg.MessageID
 	}
 	rawOut := out
@@ -676,7 +676,7 @@ func deleteTriggerSourceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr 
 	if !tr.DeleteSource {
 		return
 	}
-	if tr.ActionType == "delete" {
+	if tr.ActionType == ActionTypeDelete {
 		return
 	}
 	_, err := bot.Request(tgbotapi.DeleteMessageConfig{
@@ -2921,16 +2921,16 @@ func Run() {
 							case "system-media-x-link-video":
 								hasX = true
 							}
-							if strings.TrimSpace(string(it.ActionType)) == "spotify_music_audio" {
+							if it.ActionType == ActionTypeSpotifyMusic {
 								hasSpotify = true
 							}
-							if strings.TrimSpace(string(it.ActionType)) == "music_audio" {
+							if it.ActionType == ActionTypeMusic {
 								hasUnifiedMusic = true
 							}
-							if strings.TrimSpace(string(it.ActionType)) == "yandex_music_audio" {
+							if it.ActionType == ActionTypeYandexMusic {
 								hasYandexMusic = true
 							}
-							if strings.TrimSpace(string(it.ActionType)) == "media_x_download" {
+							if it.ActionType == ActionTypeMediaX {
 								hasX = true
 							}
 							title := strings.TrimSpace(it.Title)
@@ -3621,9 +3621,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	case ActionTypeUserLimitLow:
 		// System-only action: sent from quota flow, never via regular trigger matching.
 		return
-	case "send_sticker":
+	case ActionTypeSendSticker:
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
@@ -3640,7 +3640,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
 		return
-	case "delete":
+	case ActionTypeDelete:
 		if msg.MessageID == 0 {
 			return
 		}
@@ -3654,7 +3654,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		} else if deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 		}
-	case "delete_user_portrait":
+	case ActionTypeDeletePortrait:
 		if msg.From == nil || msg.From.ID == 0 {
 			return
 		}
@@ -3668,7 +3668,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
@@ -3682,7 +3682,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
 		return
-	case "gpt_prompt":
+	case ActionTypeGPTPrompt:
 		if deps.Portraits != nil {
 			deps.Portraits.ObserveMessage(msg)
 		}
@@ -3730,7 +3730,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			},
 			ChatID: msg.Chat.ID,
 		})
-	case "gpt_image":
+	case ActionTypeGPTImage:
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
 		img, err := generateChatGPTImage(tmplCtx, resolvedTemplate)
 		if err != nil {
@@ -3739,7 +3739,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
@@ -3747,7 +3747,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
-	case "search_image":
+	case ActionTypeSearchImage:
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
 		query := buildImageSearchQueryFromMessage(tmplCtx, resolvedTemplate)
 		img, err := searchImageInSerpAPI(query)
@@ -3757,7 +3757,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
@@ -3765,7 +3765,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
-	case "spotify_music_audio":
+	case ActionTypeSpotifyMusic:
 		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 			return
@@ -3778,7 +3778,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
@@ -3893,7 +3893,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 		}
 		return
-	case "music_audio":
+	case ActionTypeMusic:
 		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		if query == "" {
 			query = strings.TrimSpace(firstNonEmptyUserText(msg))
@@ -3903,7 +3903,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		// Fast paths for direct links.
@@ -3973,14 +3973,14 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 		}
 		return
-	case "yandex_music_audio":
+	case ActionTypeYandexMusic:
 		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		targetURL := extractYandexMusicURL(query)
 		if targetURL == "" {
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		task := yandexMusicTask{
@@ -4000,7 +4000,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			log.Printf("send yandex music queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		}
 		return
-	case "media_link_audio":
+	case ActionTypeMediaAudio:
 		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		targetURL := extractSupportedMediaURL(query)
 		if targetURL == "" {
@@ -4008,7 +4008,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		mode, useInteractive := mediaModeAndInteractivity(mediaService, deps.MediaInteractive)
@@ -4055,14 +4055,14 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		log.Printf("send media queued trigger=%d replyTo=%d mode=%s service=%s url=%q", tr.ID, replyTo, mode, mediaService, clipText(targetURL, 160))
 		return
-	case "media_tiktok_download":
+	case ActionTypeMediaTikTok:
 		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		targetURL := extractSupportedMediaURLByService(query, "tiktok")
 		if targetURL == "" {
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		task := mediaDownloadTask{
@@ -4081,14 +4081,14 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		}
 		log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		return
-	case "media_x_download":
+	case ActionTypeMediaX:
 		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		targetURL := extractSupportedMediaURLByService(query, "x")
 		if targetURL == "" {
 			return
 		}
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		task := mediaDownloadTask{
@@ -4109,7 +4109,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		return
 	default:
 		replyTo := 0
-		if tr.Reply || tr.TriggerMode == "command_reply" {
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
 		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
