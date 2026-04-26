@@ -5,6 +5,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/yuin/goldmark"
@@ -587,6 +589,13 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 			task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, len(rawOut), countTGEmojiTags(rawOut), clipText(rawOut, 1400))
 	}
 	out = canonicalizeTGEmojiTags(out)
+	if task.Msg.ReplyToMessage != nil && task.Msg.ReplyToMessage.MessageID > 0 {
+		if rand.Intn(100) < gptReplyReactionChancePercent() {
+			if next, reacted := tryApplyReplyReactionFromGPTPrefix(task.Bot, task.Msg.Chat.ID, task.Msg.MessageID, out); reacted {
+				out = next
+			}
+		}
+	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical=%q",
 			task.Trigger.ID, len(out), countTGEmojiTags(out), clipText(out, 1400))
@@ -715,6 +724,7 @@ func reportEmptyTriggerMessage(bot *tgbotapi.BotAPI, chatID int64, tr *Trigger) 
 
 var tgEmojiLooseRe = regexp.MustCompile(`(?is)"?<tg-emoji\s+emoji-id\s*=\s*"?(?P<id>\d+)"?\s*>"?(?P<fallback>.*?)"?</tg-emoji>"?`)
 var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji>`)
+var tgEmojiAnyWithIDRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*emoji-id\s*=\s*"?(?P<id>\d+)"?[^>]*>(?P<fallback>.*?)</tg-emoji>`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
 var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
 var supportedMediaURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
@@ -761,6 +771,313 @@ func replaceTGEmojiTagsWithFallback(s string) string {
 		}
 		return fallback
 	})
+}
+
+type reactionCandidate struct {
+	Emoji         string
+	CustomEmojiID string
+	Consumed      string
+}
+
+type telegramReactionType struct {
+	Type          string `json:"type"`
+	Emoji         string `json:"emoji,omitempty"`
+	CustomEmojiID string `json:"custom_emoji_id,omitempty"`
+}
+
+type appliedReaction struct {
+	Type  string
+	Value string
+}
+
+func tryApplyReplyReactionFromGPTPrefix(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string) (string, bool) {
+	if bot == nil || chatID == 0 || messageID == 0 {
+		return text, false
+	}
+
+	emoji, start, end, ok := extractFirstReactionEmoji(text)
+	if !ok || emoji == "" {
+		return text, false
+	}
+	normalized, ok, rule := convertToAllowedReactionEmoji(emoji)
+	if !ok || normalized == "" {
+		if debugTriggerLogEnabled || debugGPTLogEnabled {
+			log.Printf("set reaction skipped chat=%d msg=%d strategy=first_unicode_emoji reason=%s candidate=%q", chatID, messageID, rule, emoji)
+		}
+		return text, false
+	}
+	applied, err := setMessageReaction(bot, chatID, messageID, reactionCandidate{Emoji: normalized})
+	if err != nil {
+		if debugTriggerLogEnabled || debugGPTLogEnabled {
+			log.Printf("set reaction failed chat=%d msg=%d strategy=first_unicode_emoji err=%v candidate=%q mapped=%q rule=%s", chatID, messageID, err, emoji, normalized, rule)
+		}
+		return text, false
+	}
+	if debugTriggerLogEnabled || debugGPTLogEnabled {
+		log.Printf("set reaction ok chat=%d msg=%d type=%s value=%q strategy=first_unicode_emoji candidate=%q mapped=%q rule=%s", chatID, messageID, applied.Type, applied.Value, emoji, normalized, rule)
+	}
+	return removeReactionTokenFromText(text, start, end), true
+}
+
+func extractFirstReactionEmoji(text string) (emoji string, start int, end int, ok bool) {
+	if strings.TrimSpace(text) == "" {
+		return "", -1, -1, false
+	}
+
+	custom := tgEmojiAnyWithIDRe.FindStringSubmatchIndex(text)
+	customStart := -1
+	customEnd := -1
+	customEmoji := ""
+	if len(custom) > 0 {
+		customStart = custom[0]
+		customEnd = custom[1]
+		if idxFallback := tgEmojiAnyWithIDRe.SubexpIndex("fallback"); idxFallback >= 0 {
+			from, to := custom[idxFallback*2], custom[idxFallback*2+1]
+			if from >= 0 && to >= from {
+				if _, _, em := findFirstUnicodeEmojiInText(strings.TrimSpace(text[from:to])); em != "" {
+					customEmoji = em
+				}
+			}
+		}
+	}
+
+	unicodeStart, unicodeEnd, unicodeEmoji := findFirstUnicodeEmojiInText(text)
+
+	switch {
+	case customEmoji != "" && unicodeStart >= 0:
+		if customStart <= unicodeStart {
+			return customEmoji, customStart, customEnd, true
+		}
+		return unicodeEmoji, unicodeStart, unicodeEnd, true
+	case customEmoji != "":
+		return customEmoji, customStart, customEnd, true
+	case unicodeStart >= 0 && unicodeEnd > unicodeStart && unicodeEmoji != "":
+		return unicodeEmoji, unicodeStart, unicodeEnd, true
+	default:
+		return "", -1, -1, false
+	}
+}
+
+func setMessageReaction(bot *tgbotapi.BotAPI, chatID int64, messageID int, c reactionCandidate) (appliedReaction, error) {
+	if bot == nil || chatID == 0 || messageID == 0 {
+		return appliedReaction{}, errors.New("invalid reaction target")
+	}
+	if strings.TrimSpace(c.CustomEmojiID) == "" && strings.TrimSpace(c.Emoji) == "" {
+		return appliedReaction{}, errors.New("empty reaction candidate")
+	}
+	if id := strings.TrimSpace(c.CustomEmojiID); id != "" {
+		params := tgbotapi.Params{}
+		params.AddNonZero64("chat_id", chatID)
+		params.AddNonZero("message_id", messageID)
+		b, err := json.Marshal([]telegramReactionType{{
+			Type:          "custom_emoji",
+			CustomEmojiID: id,
+		}})
+		if err != nil {
+			return appliedReaction{}, err
+		}
+		params["reaction"] = string(b)
+		if _, err := bot.MakeRequest("setMessageReaction", params); err == nil {
+			return appliedReaction{Type: "custom_emoji", Value: id}, nil
+		} else {
+			return appliedReaction{}, err
+		}
+	}
+
+	emoji := strings.TrimSpace(c.Emoji)
+	if emoji == "" {
+		return appliedReaction{}, errors.New("empty emoji reaction")
+	}
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatID)
+	params.AddNonZero("message_id", messageID)
+	b, err := json.Marshal([]telegramReactionType{{
+		Type:  "emoji",
+		Emoji: emoji,
+	}})
+	if err != nil {
+		return appliedReaction{}, err
+	}
+	params["reaction"] = string(b)
+	if _, err := bot.MakeRequest("setMessageReaction", params); err != nil {
+		return appliedReaction{}, err
+	}
+	return appliedReaction{Type: "emoji", Value: emoji}, nil
+}
+
+func extractLeadingReactionCandidate(text string) (reactionCandidate, string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return reactionCandidate{}, text, false
+	}
+
+	custom := tgEmojiAnyWithIDRe.FindStringSubmatchIndex(text)
+	customStart := -1
+	customEnd := -1
+	customID := ""
+	customFallback := "🙂"
+	if len(custom) > 0 {
+		customStart = custom[0]
+		customEnd = custom[1]
+		if idIdx := tgEmojiAnyWithIDRe.SubexpIndex("id"); idIdx >= 0 {
+			from, to := custom[idIdx*2], custom[idIdx*2+1]
+			if from >= 0 && to >= from {
+				customID = strings.TrimSpace(text[from:to])
+			}
+		}
+		if fIdx := tgEmojiAnyWithIDRe.SubexpIndex("fallback"); fIdx >= 0 {
+			from, to := custom[fIdx*2], custom[fIdx*2+1]
+			if from >= 0 && to >= from {
+				if f := strings.TrimSpace(text[from:to]); f != "" {
+					customFallback = f
+				}
+			}
+		}
+	}
+
+	uStart, uEnd, uEmoji := findFirstUnicodeEmojiInText(text)
+
+	useCustom := false
+	switch {
+	case customStart >= 0 && uStart >= 0:
+		useCustom = customStart <= uStart
+	case customStart >= 0:
+		useCustom = true
+	case uStart >= 0:
+		useCustom = false
+	default:
+		return reactionCandidate{}, text, false
+	}
+
+	if useCustom {
+		next := removeReactionTokenFromText(text, customStart, customEnd)
+		return reactionCandidate{
+			Emoji:         customFallback,
+			CustomEmojiID: customID,
+			Consumed:      text[customStart:customEnd],
+		}, next, true
+	}
+
+	next := removeReactionTokenFromText(text, uStart, uEnd)
+	return reactionCandidate{
+		Emoji:    uEmoji,
+		Consumed: text[uStart:uEnd],
+	}, next, true
+}
+
+func extractLeadingUnicodeEmoji(s string) (string, string) {
+	if s == "" {
+		return "", ""
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError || size <= 0 {
+		return "", ""
+	}
+	if isKeycapStarterRune(r) {
+		consumed := size
+		if consumed < len(s) {
+			r2, s2 := utf8.DecodeRuneInString(s[consumed:])
+			if r2 == 0xFE0F {
+				consumed += s2
+			}
+		}
+		if consumed < len(s) {
+			r3, s3 := utf8.DecodeRuneInString(s[consumed:])
+			if r3 == 0x20E3 {
+				consumed += s3
+				return s[:consumed], s[:consumed]
+			}
+		}
+		return "", ""
+	}
+	if !isLikelyEmojiRune(r) {
+		return "", ""
+	}
+	end := size
+	prevZWJ := false
+	for end < len(s) {
+		nr, ns := utf8.DecodeRuneInString(s[end:])
+		if nr == utf8.RuneError || ns <= 0 {
+			break
+		}
+		if isEmojiContinuationRune(nr) {
+			end += ns
+			prevZWJ = nr == 0x200D
+			continue
+		}
+		if prevZWJ && isLikelyEmojiRune(nr) {
+			end += ns
+			prevZWJ = false
+			continue
+		}
+		break
+	}
+	return s[:end], s[:end]
+}
+
+func findFirstUnicodeEmojiInText(s string) (start int, end int, emoji string) {
+	for i := 0; i < len(s); {
+		r, sz := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError || sz <= 0 {
+			i++
+			continue
+		}
+		e, consumed := extractLeadingUnicodeEmoji(s[i:])
+		if e != "" && consumed != "" {
+			return i, i + len(consumed), e
+		}
+		i += sz
+	}
+	return -1, -1, ""
+}
+
+func removeReactionTokenFromText(text string, start, end int) string {
+	if start < 0 || end < start || end > len(text) {
+		return text
+	}
+	before := text[:start]
+	after := text[end:]
+	if len(before) > 0 && len(after) > 0 {
+		last := before[len(before)-1]
+		first := after[0]
+		if (last == ' ' || last == '\t') && (first == ' ' || first == '\t') {
+			after = strings.TrimLeft(after, " \t")
+		}
+	}
+	next := before + after
+	if strings.TrimSpace(before) == "" {
+		next = strings.TrimLeft(next, " \t")
+	}
+	return next
+}
+
+func isLikelyEmojiRune(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF:
+		return true
+	case r >= 0x2600 && r <= 0x27BF:
+		return true
+	default:
+		return false
+	}
+}
+
+func isKeycapStarterRune(r rune) bool {
+	return (r >= '0' && r <= '9') || r == '#' || r == '*'
+}
+
+func isEmojiContinuationRune(r rune) bool {
+	switch {
+	case r == 0xFE0F || r == 0xFE0E:
+		return true
+	case r == 0x200D:
+		return true
+	case r == 0x20E3:
+		return true
+	case r >= 0x1F3FB && r <= 0x1F3FF:
+		return true
+	default:
+		return false
+	}
 }
 
 func containsTelegramHTMLMarkup(s string) bool {
@@ -846,6 +1163,7 @@ var markdownEngine = goldmark.New(
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 )
+
 const defaultMarkdownDividerTGEmoji = `<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`
 
 func containsMarkdownLiteMarkup(s string) bool {
@@ -1182,6 +1500,17 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func gptReplyReactionChancePercent() int {
+	v := envInt("GPT_REPLY_REACTION_CHANCE_PERCENT", 25)
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 func newChatUserIndex(maxSize int) *chatUserIndex {
@@ -2637,7 +2966,7 @@ func Run() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
 				continue
-					case cmdSpotifySearch, cmdSpotifySearchAlt:
+			case cmdSpotifySearch, cmdSpotifySearchAlt:
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
 					reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", cmdSpotifySearch), false)
@@ -2663,47 +2992,47 @@ func Run() {
 				for i, tr := range tracks {
 					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
 				}
-						sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
-						continue
-					case cmdMyPortrait, cmdMyPortraitAlias:
-						if msg.From == nil || msg.From.ID == 0 {
-							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
-							continue
-						}
-						if portraitManager == nil {
-							reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
-							continue
-						}
-						portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
-						remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
-						if portrait == "" {
-							reply(cmdSendCtx.WithReply(msg.MessageID),
-								fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
-							continue
-						}
-						out := "Твой текущий портрет:\n" + portrait
-						if remaining > 0 {
-							out += fmt.Sprintf("\n\nДо следующего обновления: %d сообщений", remaining)
-						}
-						reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
-						continue
-					case cmdDeleteMyPortrait, cmdDeleteMyPortrait2:
-						if msg.From == nil || msg.From.ID == 0 {
-							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
-							continue
-						}
-						if portraitManager == nil {
-							reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
-							continue
-						}
-						if err := portraitManager.DeletePortrait(msg.From.ID); err != nil {
-							reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка удаления портрета: "+clipText(err.Error(), 200), false)
-							continue
-						}
-						reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
-						continue
-					}
+				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
+				continue
+			case cmdMyPortrait, cmdMyPortraitAlias:
+				if msg.From == nil || msg.From.ID == 0 {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+					continue
 				}
+				if portraitManager == nil {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+					continue
+				}
+				portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
+				remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
+				if portrait == "" {
+					reply(cmdSendCtx.WithReply(msg.MessageID),
+						fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
+					continue
+				}
+				out := "Твой текущий портрет:\n" + portrait
+				if remaining > 0 {
+					out += fmt.Sprintf("\n\nДо следующего обновления: %d сообщений", remaining)
+				}
+				reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
+				continue
+			case cmdDeleteMyPortrait, cmdDeleteMyPortrait2:
+				if msg.From == nil || msg.From.ID == 0 {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+					continue
+				}
+				if portraitManager == nil {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+					continue
+				}
+				if err := portraitManager.DeletePortrait(msg.From.ID); err != nil {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка удаления портрета: "+clipText(err.Error(), 200), false)
+					continue
+				}
+				reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
+				continue
+			}
+		}
 		if isPrivateChat {
 			hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
 			if len(hits) > 0 {

@@ -881,6 +881,62 @@ func TestMarkdownDividerTGEmojiFromEnv(t *testing.T) {
 	}
 }
 
+func TestExtractLeadingReactionCandidateCustomEmoji(t *testing.T) {
+	in := `<tg-emoji emoji-id="123456789">🦌</tg-emoji> привет миру`
+	c, next, ok := extractLeadingReactionCandidate(in)
+	if !ok {
+		t.Fatalf("expected custom emoji reaction candidate")
+	}
+	if c.CustomEmojiID != "123456789" {
+		t.Fatalf("unexpected custom emoji id: %q", c.CustomEmojiID)
+	}
+	if c.Emoji != "🦌" {
+		t.Fatalf("unexpected fallback emoji: %q", c.Emoji)
+	}
+	if next != "привет миру" {
+		t.Fatalf("unexpected next text: %q", next)
+	}
+}
+
+func TestExtractLeadingReactionCandidateUnicodeEmoji(t *testing.T) {
+	in := "🙂 привет"
+	c, next, ok := extractLeadingReactionCandidate(in)
+	if !ok {
+		t.Fatalf("expected unicode emoji reaction candidate")
+	}
+	if c.CustomEmojiID != "" {
+		t.Fatalf("expected no custom id, got=%q", c.CustomEmojiID)
+	}
+	if c.Emoji != "🙂" {
+		t.Fatalf("unexpected emoji: %q", c.Emoji)
+	}
+	if next != "привет" {
+		t.Fatalf("unexpected next text: %q", next)
+	}
+}
+
+func TestExtractLeadingReactionCandidateFindsFirstEmojiInMessage(t *testing.T) {
+	in := "Текст до реакции 😌 и дальше"
+	c, next, ok := extractLeadingReactionCandidate(in)
+	if !ok {
+		t.Fatalf("expected unicode emoji reaction candidate in middle of text")
+	}
+	if c.Emoji != "😌" {
+		t.Fatalf("unexpected emoji: %q", c.Emoji)
+	}
+	if next != "Текст до реакции и дальше" {
+		t.Fatalf("unexpected next text: %q", next)
+	}
+}
+
+func TestExtractLeadingReactionCandidateNoEmoji(t *testing.T) {
+	in := "* пункт списка"
+	_, _, ok := extractLeadingReactionCandidate(in)
+	if ok {
+		t.Fatalf("list marker must not be treated as reaction emoji")
+	}
+}
+
 func TestGPTDebouncerLeadingImmediate(t *testing.T) {
 	var mu sync.Mutex
 	calls := []int{}
