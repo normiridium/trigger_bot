@@ -3207,6 +3207,7 @@ func Run() {
 		}
 		isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 		quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
+		runtimeItems := filterRuntimeTriggers(items)
 		matchedAny := false
 		used := make(map[int64]struct{}, 4)
 
@@ -3214,7 +3215,7 @@ func Run() {
 			Bot:      bot,
 			Msg:      msg,
 			Text:     text,
-			Triggers: filterNonPassThroughTriggers(items),
+			Triggers: filterNonPassThroughTriggers(runtimeItems),
 			IsAdminFn: func() bool {
 				return isAdminAuthor
 			},
@@ -3236,12 +3237,12 @@ func Run() {
 		}
 
 		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
-		for len(used) < len(items) {
+		for len(used) < len(runtimeItems) {
 			tr := triggerEngine.Select(engine.SelectInput{
 				Bot:      bot,
 				Msg:      msg,
 				Text:     text,
-				Triggers: filterPassThroughTriggers(filterUnusedTriggers(items, used)),
+				Triggers: filterPassThroughTriggers(filterUnusedTriggers(runtimeItems, used)),
 				IsAdminFn: func() bool {
 					return isAdminAuthor
 				},
@@ -3271,7 +3272,7 @@ func Run() {
 			log.Printf("no trigger matched for msg=%d", msg.MessageID)
 		}
 		if idleTracker != nil {
-			autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, items, func() bool {
+			autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, runtimeItems, func() bool {
 				return isAdminAuthor
 			})
 			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
@@ -3502,6 +3503,20 @@ func filterUnusedTriggers(all []Trigger, used map[int64]struct{}) []Trigger {
 	return out
 }
 
+func filterRuntimeTriggers(all []Trigger) []Trigger {
+	if len(all) == 0 {
+		return nil
+	}
+	out := make([]Trigger, 0, len(all))
+	for i := range all {
+		if all[i].ActionType == ActionTypeUserLimitLow {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out
+}
+
 func filterPassThroughTriggers(all []Trigger) []Trigger {
 	if len(all) == 0 {
 		return nil
@@ -3603,6 +3618,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	rawTemplate := pickResponseVariantText(tr.ResponseText)
 	resolvedTemplate := expandTemplateCalls(rawTemplate, deps.TemplateLookup)
 	switch tr.ActionType {
+	case ActionTypeUserLimitLow:
+		// System-only action: sent from quota flow, never via regular trigger matching.
+		return
 	case "send_sticker":
 		replyTo := 0
 		if tr.Reply || tr.TriggerMode == "command_reply" {
