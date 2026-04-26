@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_x_download
+	ActionType    ActionType         // send|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_x_download|user_limit_low_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -167,6 +167,7 @@ const (
 	ActionTypeMediaAudio     ActionType = "media_link_audio"
 	ActionTypeMediaTikTok    ActionType = "media_tiktok_download"
 	ActionTypeMediaX         ActionType = "media_x_download"
+	ActionTypeUserLimitLow   ActionType = "user_limit_low_warning"
 )
 
 var ActionTypeValues = []ActionType{
@@ -183,6 +184,7 @@ var ActionTypeValues = []ActionType{
 	ActionTypeMediaAudio,
 	ActionTypeMediaTikTok,
 	ActionTypeMediaX,
+	ActionTypeUserLimitLow,
 }
 
 func (m ActionType) String() string {
@@ -213,6 +215,8 @@ func (m ActionType) String() string {
 		return "Скачать с TikTok"
 	case ActionTypeMediaX:
 		return "Скачать с X (Twitter)"
+	case ActionTypeUserLimitLow:
+		return "Лимит GPT почти исчерпан (остаток 1)"
 	default:
 		return string(m)
 	}

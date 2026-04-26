@@ -703,6 +703,55 @@ func triggerDisplayName(tr *Trigger) string {
 	return "без названия"
 }
 
+func adminModeAllowsTrigger(tr *Trigger, isAdmin bool) bool {
+	if tr == nil {
+		return false
+	}
+	switch tr.AdminMode {
+	case AdminModeAdmins:
+		return isAdmin
+	case AdminModeNotAdmin:
+		return !isAdmin
+	default:
+		return true
+	}
+}
+
+func pickUserLimitLowWarningTrigger(items []Trigger, isAdmin bool) *Trigger {
+	for i := range items {
+		it := items[i]
+		if !it.Enabled || it.ActionType != ActionTypeUserLimitLow {
+			continue
+		}
+		if !adminModeAllowsTrigger(&it, isAdmin) {
+			continue
+		}
+		return &it
+	}
+	return nil
+}
+
+func sendUserLimitLowWarning(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger, templateLookup func(string) string) bool {
+	if bot == nil || msg == nil || tr == nil {
+		return false
+	}
+	rawTemplate := pickResponseVariantText(tr.ResponseText)
+	if strings.TrimSpace(rawTemplate) == "" {
+		return false
+	}
+	resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
+	tmplCtx := newTemplateContext(bot, msg, tr, templateLookup)
+	out := buildResponseFromMessage(tmplCtx, resolvedTemplate)
+	if strings.TrimSpace(out) == "" {
+		return false
+	}
+	replyTo := 0
+	if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+		replyTo = msg.MessageID
+	}
+	return sendHTML(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}, out, tr.Preview)
+}
+
 func triggerResponseDebugText(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger, templateLookup func(string) string) string {
 	if tr == nil {
 		return ""
@@ -1168,7 +1217,8 @@ var htmlParagraphBreakRe = regexp.MustCompile(`(?is)</p>\s*<p[^>]*>`)
 var htmlParagraphOpenRe = regexp.MustCompile(`(?i)<p[^>]*>`)
 var htmlParagraphCloseRe = regexp.MustCompile(`(?i)</p>`)
 var htmlListItemParagraphRe = regexp.MustCompile(`(?is)<li>\s*<p[^>]*>(.*?)</p>\s*</li>`)
-var htmlListItemRe = regexp.MustCompile(`(?is)<li[^>]*>(.*?)</li>`)
+var htmlListItemOpenRe = regexp.MustCompile(`(?i)<li[^>]*>`)
+var htmlListItemCloseRe = regexp.MustCompile(`(?i)</li>`)
 var htmlULOLRe = regexp.MustCompile(`(?i)</?(ul|ol)[^>]*>`)
 var htmlCodeClassRe = regexp.MustCompile(`(?i)<code[^>]*>`)
 var htmlStrongOpenRe = regexp.MustCompile(`(?i)<strong>`)
@@ -1219,8 +1269,11 @@ func markdownToTelegramHTMLLite(s string) string {
 	})
 	s = htmlHRRe.ReplaceAllString(s, divider)
 	s = htmlListItemParagraphRe.ReplaceAllString(s, `<li>$1</li>`)
-	s = htmlListItemRe.ReplaceAllString(s, "• $1\n")
 	s = htmlULOLRe.ReplaceAllString(s, "")
+	// Telegram HTML doesn't support <ul>/<ol>/<li>. Convert list tags into plain-text bullets.
+	// Replace opening/closing tags independently to avoid broken leftovers on nested lists.
+	s = htmlListItemOpenRe.ReplaceAllString(s, "• ")
+	s = htmlListItemCloseRe.ReplaceAllString(s, "\n")
 	s = htmlParagraphBreakRe.ReplaceAllString(s, "\n\n")
 	s = htmlParagraphOpenRe.ReplaceAllString(s, "")
 	s = htmlParagraphCloseRe.ReplaceAllString(s, "")
@@ -3091,6 +3144,8 @@ func Run() {
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
 		quotaConsumed := false
+		quotaLowWarningSent := false
+		var quotaLowWarningTrigger *Trigger
 		consumeDailyQuota := func() bool {
 			if quotaConsumed {
 				return true
@@ -3103,6 +3158,16 @@ func Run() {
 			}
 			if ok {
 				quotaConsumed = true
+				if !quotaLowWarningSent && quotaLowWarningTrigger != nil && userDailyBotMessagesLimit > 0 {
+					remaining, remErr := store.DailyUserBotMessagesRemaining(msg.From.ID, now, userDailyBotMessagesLimit)
+					if remErr != nil {
+						log.Printf("gpt user-limit remaining check failed user=%d: %v", msg.From.ID, remErr)
+					} else if remaining == 1 {
+						if sendUserLimitLowWarning(bot, msg, quotaLowWarningTrigger, templateLookup) {
+							quotaLowWarningSent = true
+						}
+					}
+				}
 				return true
 			}
 			if debugTriggerLogEnabled {
@@ -3140,6 +3205,8 @@ func Run() {
 		if debugTriggerLogEnabled {
 			log.Printf("triggers loaded (cached): %d", len(items))
 		}
+		isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+		quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
 		matchedAny := false
 		used := make(map[int64]struct{}, 4)
 
@@ -3149,7 +3216,7 @@ func Run() {
 			Text:     text,
 			Triggers: filterNonPassThroughTriggers(items),
 			IsAdminFn: func() bool {
-				return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+				return isAdminAuthor
 			},
 		})
 		if primary != nil {
@@ -3176,7 +3243,7 @@ func Run() {
 				Text:     text,
 				Triggers: filterPassThroughTriggers(filterUnusedTriggers(items, used)),
 				IsAdminFn: func() bool {
-					return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+					return isAdminAuthor
 				},
 			})
 			if tr == nil {
@@ -3205,7 +3272,7 @@ func Run() {
 		}
 		if idleTracker != nil {
 			autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, items, func() bool {
-				return adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+				return isAdminAuthor
 			})
 			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
 				if autoTr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {

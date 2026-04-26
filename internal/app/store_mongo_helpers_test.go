@@ -184,3 +184,10 @@ func TestNormalizeActionType_Music(t *testing.T) {
 		t.Fatalf("normalizeActionType returned %q", got)
 	}
 }
+
+func TestNormalizeActionType_UserLimitLowWarning(t *testing.T) {
+	got := normalizeActionType("user_limit_low_warning")
+	if got != ActionTypeUserLimitLow {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}

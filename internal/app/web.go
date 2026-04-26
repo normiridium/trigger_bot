@@ -1413,6 +1413,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-tiktok"
 	case model.ActionTypeMediaX:
 		return "bi-twitter-x"
+	case model.ActionTypeUserLimitLow:
+		return "bi-battery-half"
 	default:
 		return ""
 	}
