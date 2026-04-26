@@ -728,6 +728,15 @@ func TestCanonicalizeTGEmojiTags(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeTGEmojiTags_FixesTrEmojiTypo(t *testing.T) {
+	in := `<tr-emoji emoji-id="5247191236632152397">🦌</tg-emoji>`
+	got := canonicalizeTGEmojiTags(in)
+	want := `<tg-emoji emoji-id="5247191236632152397">🦌</tg-emoji>`
+	if got != want {
+		t.Fatalf("unexpected canonicalized typo tag: got=%q want=%q", got, want)
+	}
+}
+
 func TestReplaceTGEmojiTagsWithFallback(t *testing.T) {
 	in := `Привет <tg-emoji emoji-id="1">🦌</tg-emoji> мир`
 	got := replaceTGEmojiTagsWithFallback(in)

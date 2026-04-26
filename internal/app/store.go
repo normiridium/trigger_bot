@@ -43,6 +43,29 @@ type AdminSession struct {
 	ExpiresAt int64
 }
 
+type UIPickerRecentEmojiSet struct {
+	EmojiID   string `json:"emoji_id"`
+	SetName   string `json:"set_name"`
+	Title     string `json:"title"`
+	Emoji     string `json:"emoji"`
+	Preview   string `json:"preview_url"`
+	Thumb     string `json:"thumb_url"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type UIPickerRecentStickerSet struct {
+	SetName   string `json:"set_name"`
+	Title     string `json:"title"`
+	Preview   string `json:"preview_url"`
+	Thumb     string `json:"thumb_url"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type UIPickerRecentSets struct {
+	EmojiSets   []UIPickerRecentEmojiSet   `json:"emoji_sets"`
+	StickerSets []UIPickerRecentStickerSet `json:"sticker_sets"`
+}
+
 func parseResponseTextRaw(raw json.RawMessage) []ResponseTextItem {
 	if len(raw) == 0 {
 		return nil
@@ -231,6 +254,20 @@ func (s *Store) DeleteExpiredAdminSessions(nowUnix int64) error {
 		return errors.New("mongo backend not initialized")
 	}
 	return s.mg.deleteExpiredAdminSessions(nowUnix)
+}
+
+func (s *Store) GetUIPickerRecentSets() (*UIPickerRecentSets, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.getUIPickerRecentSets()
+}
+
+func (s *Store) SaveUIPickerRecentSets(v UIPickerRecentSets) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.saveUIPickerRecentSets(v)
 }
 
 func sanitizeChance(v int) int {

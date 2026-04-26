@@ -29,6 +29,7 @@ type mongoBackend struct {
 	quotas    *mongo.Collection
 	unmutes   *mongo.Collection
 	counters  *mongo.Collection
+	uiState   *mongo.Collection
 }
 
 type mongoTriggerDoc struct {
@@ -116,6 +117,13 @@ type mongoScheduledUnmuteDoc struct {
 	UserID    int64 `bson:"user_id"`
 	UnmuteAt  int64 `bson:"unmute_at"`
 	UpdatedAt int64 `bson:"updated_at"`
+}
+
+type mongoUIPickerRecentSetsDoc struct {
+	ID          string                     `bson:"_id"`
+	UpdatedAt   int64                      `bson:"updated_at"`
+	EmojiSets   []UIPickerRecentEmojiSet   `bson:"emoji_sets"`
+	StickerSets []UIPickerRecentStickerSet `bson:"sticker_sets"`
 }
 
 const gptUserQuotaWindow = 4 * time.Hour
@@ -258,6 +266,7 @@ func openMongoStore(uri string) (*Store, error) {
 		quotas:    db.Collection("user_daily_bot_quota"),
 		unmutes:   db.Collection("scheduled_unmutes"),
 		counters:  db.Collection("counters"),
+		uiState:   db.Collection("web_ui_state"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
 		_ = client.Disconnect(ctx)
@@ -1143,5 +1152,46 @@ func (m *mongoBackend) deleteExpiredAdminSessions(nowUnix int64) error {
 	ctx, cancel := mongoCtx()
 	defer cancel()
 	_, err := m.sessions.DeleteMany(ctx, bson.M{"expires_at": bson.M{"$lte": nowUnix}})
+	return err
+}
+
+func (m *mongoBackend) getUIPickerRecentSets() (*UIPickerRecentSets, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoUIPickerRecentSetsDoc
+	err := m.uiState.FindOne(ctx, bson.M{"_id": "picker_recent_sets"}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return &UIPickerRecentSets{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := &UIPickerRecentSets{
+		EmojiSets:   d.EmojiSets,
+		StickerSets: d.StickerSets,
+	}
+	if out.EmojiSets == nil {
+		out.EmojiSets = []UIPickerRecentEmojiSet{}
+	}
+	if out.StickerSets == nil {
+		out.StickerSets = []UIPickerRecentStickerSet{}
+	}
+	return out, nil
+}
+
+func (m *mongoBackend) saveUIPickerRecentSets(v UIPickerRecentSets) error {
+	now := time.Now().Unix()
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.uiState.UpdateOne(
+		ctx,
+		bson.M{"_id": "picker_recent_sets"},
+		bson.M{"$set": bson.M{
+			"updated_at":   now,
+			"emoji_sets":   v.EmojiSets,
+			"sticker_sets": v.StickerSets,
+		}},
+		options.Update().SetUpsert(true),
+	)
 	return err
 }
