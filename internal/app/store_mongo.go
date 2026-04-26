@@ -443,6 +443,28 @@ func (m *mongoBackend) tryConsumeDailyUserBotMessage(userID int64, now time.Time
 	return false, nil
 }
 
+func (m *mongoBackend) dailyUserBotMessagesRemaining(userID int64, now time.Time, limit int) (int, error) {
+	if userID == 0 || limit <= 0 {
+		return 0, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
+	var doc mongoDailyUserQuotaDoc
+	err := m.quotas.FindOne(ctx, bson.M{"user_id": userID, "day_utc": window}).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return limit, nil
+		}
+		return 0, err
+	}
+	remaining := limit - doc.Count
+	if remaining < 0 {
+		return 0, nil
+	}
+	return remaining, nil
+}
+
 func quotaWindowKeyUTC(now time.Time, window time.Duration) string {
 	if window <= 0 {
 		window = 4 * time.Hour

@@ -149,6 +149,13 @@ func (s *Store) TryConsumeDailyUserBotMessage(userID int64, now time.Time, limit
 	return s.mg.tryConsumeDailyUserBotMessage(userID, now, limit)
 }
 
+func (s *Store) DailyUserBotMessagesRemaining(userID int64, now time.Time, limit int) (int, error) {
+	if s == nil || s.mg == nil {
+		return 0, errors.New("mongo backend not initialized")
+	}
+	return s.mg.dailyUserBotMessagesRemaining(userID, now, limit)
+}
+
 func (s *Store) UpsertScheduledUnmute(chatID, userID int64, unmuteAt int64) error {
 	if s == nil || s.mg == nil {
 		return errors.New("mongo backend not initialized")
@@ -336,6 +343,8 @@ func normalizeActionType(v string) ActionType {
 		return ActionTypeMediaTikTok
 	case "media_x_download":
 		return ActionTypeMediaX
+	case "user_limit_low_warning":
+		return ActionTypeUserLimitLow
 	default:
 		return ActionTypeSend
 	}

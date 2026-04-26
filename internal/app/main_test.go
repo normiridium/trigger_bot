@@ -867,6 +867,17 @@ func TestMarkdownToTelegramHTMLLite_ItalicDoesNotSpanLines(t *testing.T) {
 	}
 }
 
+func TestMarkdownToTelegramHTMLLite_NestedListHasNoListTags(t *testing.T) {
+	in := "1. пункт\n   - подпункт A\n   - подпункт B\n2. второй пункт"
+	got := markdownToTelegramHTMLLite(in)
+	if strings.Contains(strings.ToLower(got), "<li") || strings.Contains(strings.ToLower(got), "<ul") || strings.Contains(strings.ToLower(got), "<ol") {
+		t.Fatalf("telegram html must not contain list tags: %q", got)
+	}
+	if !strings.Contains(got, "• ") {
+		t.Fatalf("expected bullet conversion for list items: %q", got)
+	}
+}
+
 func TestMarkdownDividerTGEmojiFromEnv(t *testing.T) {
 	const key = "GPT_MARKDOWN_DIVIDER_EMOJI"
 	old, had := os.LookupEnv(key)

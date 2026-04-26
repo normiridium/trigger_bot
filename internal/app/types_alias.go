@@ -55,4 +55,5 @@ const (
 	ActionTypeMediaAudio     = model.ActionTypeMediaAudio
 	ActionTypeMediaTikTok    = model.ActionTypeMediaTikTok
 	ActionTypeMediaX         = model.ActionTypeMediaX
+	ActionTypeUserLimitLow   = model.ActionTypeUserLimitLow
 )
