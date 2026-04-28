@@ -2,6 +2,9 @@ package engine
 
 import (
 	"math/rand"
+	"strconv"
+	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -11,6 +14,15 @@ import (
 
 type TriggerEngine struct {
 	randIntn func(int) int
+}
+
+var cooldownNow = time.Now
+
+var triggerCooldownState = struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}{
+	last: make(map[string]time.Time),
 }
 
 type SelectInput struct {
@@ -70,6 +82,9 @@ func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 			}
 		}
 		if cand.Chance < 100 && e.randIntn(100) >= cand.Chance {
+			continue
+		}
+		if cand.Chance > 100 && !allowCooldownChance(cand.ID, input.Msg.Chat.ID, cand.Chance) {
 			continue
 		}
 		return &cand
@@ -166,6 +181,31 @@ func hasMessageMedia(msg *tgbotapi.Message) bool {
 		return true
 	}
 	if msg.Document != nil {
+		return true
+	}
+	return false
+}
+
+func allowCooldownChance(triggerID int64, chatID int64, chance int) bool {
+	if triggerID == 0 || chatID == 0 || chance <= 100 {
+		return true
+	}
+	div := chance - 100
+	if div <= 0 {
+		return true
+	}
+	window := (24.0 / float64(div)) * float64(time.Hour)
+	if window <= 0 {
+		return true
+	}
+	key := strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(triggerID, 10)
+	now := cooldownNow()
+
+	triggerCooldownState.mu.Lock()
+	defer triggerCooldownState.mu.Unlock()
+	last, ok := triggerCooldownState.last[key]
+	if !ok || now.Sub(last) >= time.Duration(window) {
+		triggerCooldownState.last[key] = now
 		return true
 	}
 	return false
