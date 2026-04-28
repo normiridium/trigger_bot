@@ -2244,7 +2244,9 @@ function fillForm(t){
   document.getElementById('f_uid').value=pick(t,'uid','UID','');
   document.getElementById('f_title').value=pick(t,'title','Title','');
   setResponseVariantsFromRaw(pick(t,'response_text','ResponseText',''));
-  document.getElementById('f_chance').value=pick(t,'chance','Chance',100);
+  const chanceValue = Number(pick(t,'chance','Chance',100) || 100);
+  ensureChanceOption(chanceValue);
+  document.getElementById('f_chance').value=String(chanceValue);
   setSel('f_trigger_mode', pick(t,'trigger_mode','TriggerMode','all'));
   setSel('f_admin_mode', pick(t,'admin_mode','AdminMode','anybody'));
   setSel('f_match_type', pick(t,'match_type','MatchType','full'));
@@ -2256,6 +2258,26 @@ function fillForm(t){
   setBool('f_reply', !!pick(t,'reply','Reply',true));
   setBool('f_preview', !!pick(t,'preview','Preview',false));
   setBool('f_delete_source', !!pick(t,'delete_source','DeleteSource',false));
+}
+
+function ensureChanceOption(value){
+  const sel = document.getElementById('f_chance');
+  if(!sel){ return; }
+  const v = String(Number(value || 100));
+  for(const opt of sel.options){
+    if(String(opt.value) === v){ return; }
+  }
+  const opt = document.createElement('option');
+  opt.value = v;
+  if(Number(v) > 100){
+    const div = Number(v) - 100;
+    const hours = div > 0 ? (24 / div) : 0;
+    const labelHours = Number.isFinite(hours) && hours > 0 ? hours : 0;
+    opt.textContent = `${v} — раз в ${labelHours} ч`;
+  }else{
+    opt.textContent = `${v}%`;
+  }
+  sel.appendChild(opt);
 }
 
 async function openNew(){

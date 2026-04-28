@@ -281,8 +281,8 @@ func sanitizeChance(v int) int {
 	if v < 1 {
 		return 1
 	}
-	if v > 100 {
-		return 100
+	if v > 10000 {
+		return 10000
 	}
 	return v
 }

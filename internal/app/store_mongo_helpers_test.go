@@ -127,8 +127,8 @@ func TestTriggerDocRoundTripFromRaw(t *testing.T) {
 	if tr.ActionType != ActionTypeMediaAudio {
 		t.Fatalf("unexpected action type: %q", tr.ActionType)
 	}
-	if tr.Chance != 100 {
-		t.Fatalf("expected sanitized chance 100, got %d", tr.Chance)
+	if tr.Chance != 101 {
+		t.Fatalf("expected sanitized chance 101, got %d", tr.Chance)
 	}
 	if len(tr.ResponseText) != 1 || tr.ResponseText[0].Text != "answer" {
 		t.Fatalf("unexpected response text: %#v", tr.ResponseText)

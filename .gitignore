@@ -22,3 +22,6 @@ cover.out
 
 # local documents
 docs/
+
+# local backups
+backups/

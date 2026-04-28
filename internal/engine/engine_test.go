@@ -2,6 +2,7 @@ package engine
 
 import (
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -168,5 +169,76 @@ func TestTriggerModeReplyToSelfNoMedia_DocumentReplySkipped(t *testing.T) {
 	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
 	if TriggerModeMatches(bot, tr, msg) {
 		t.Fatalf("expected document reply to be skipped")
+	}
+}
+
+func TestEngineSelectCooldownChance101_OncePer24h(t *testing.T) {
+	engine := NewTriggerEngine()
+	base := time.Unix(1_700_000_000, 0)
+	cooldownNow = func() time.Time { return base }
+	defer func() { cooldownNow = time.Now }()
+
+	triggerCooldownState.mu.Lock()
+	triggerCooldownState.last = make(map[string]time.Time)
+	triggerCooldownState.mu.Unlock()
+
+	msg := &tgbotapi.Message{
+		MessageID: 500,
+		Chat:      &tgbotapi.Chat{ID: -2001},
+		From:      &tgbotapi.User{ID: 1},
+		Text:      "тревога",
+	}
+	triggers := []model.Trigger{
+		{ID: 101, Enabled: true, TriggerMode: "all", MatchText: "тревога", MatchType: "partial", Chance: 101},
+	}
+
+	got1 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got1 == nil {
+		t.Fatalf("expected first cooldown hit")
+	}
+	got2 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got2 != nil {
+		t.Fatalf("expected second hit within window to be blocked")
+	}
+	base = base.Add(24*time.Hour + time.Second)
+	got3 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got3 == nil {
+		t.Fatalf("expected hit after 24h window")
+	}
+}
+
+func TestEngineSelectCooldownChance102_OncePer12h(t *testing.T) {
+	engine := NewTriggerEngine()
+	base := time.Unix(1_700_100_000, 0)
+	cooldownNow = func() time.Time { return base }
+	defer func() { cooldownNow = time.Now }()
+
+	triggerCooldownState.mu.Lock()
+	triggerCooldownState.last = make(map[string]time.Time)
+	triggerCooldownState.mu.Unlock()
+
+	msg := &tgbotapi.Message{
+		MessageID: 501,
+		Chat:      &tgbotapi.Chat{ID: -2002},
+		From:      &tgbotapi.User{ID: 1},
+		Text:      "рпп",
+	}
+	triggers := []model.Trigger{
+		{ID: 102, Enabled: true, TriggerMode: "all", MatchText: "рпп", MatchType: "partial", Chance: 102},
+	}
+
+	got1 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got1 == nil {
+		t.Fatalf("expected first cooldown hit")
+	}
+	base = base.Add(11*time.Hour + 59*time.Minute)
+	got2 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got2 != nil {
+		t.Fatalf("expected blocked hit before 12h window")
+	}
+	base = base.Add(2 * time.Minute)
+	got3 := engine.Select(SelectInput{Msg: msg, Text: msg.Text, Triggers: triggers, IsAdminFn: func() bool { return false }})
+	if got3 == nil {
+		t.Fatalf("expected hit after 12h window")
 	}
 }
