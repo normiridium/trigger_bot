@@ -1389,6 +1389,8 @@ func iconForActionType(v model.ActionType) string {
 	switch v {
 	case model.ActionTypeSend:
 		return "bi-send"
+	case model.ActionTypeSendFile:
+		return "bi-file-earmark-arrow-up"
 	case model.ActionTypeSendSticker:
 		return "bi-file-earmark-image"
 	case model.ActionTypeDelete:

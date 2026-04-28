@@ -162,20 +162,11 @@ func hasMessageMedia(msg *tgbotapi.Message) bool {
 	if msg == nil {
 		return false
 	}
-	if len(msg.Photo) > 0 || msg.Audio != nil || msg.Video != nil || msg.Animation != nil || msg.Voice != nil || msg.VideoNote != nil {
+	if len(msg.Photo) > 0 || msg.Audio != nil || msg.Video != nil || msg.Animation != nil || msg.Voice != nil || msg.VideoNote != nil || msg.Sticker != nil {
 		return true
 	}
 	if msg.Document != nil {
-		mime := msg.Document.MimeType
-		if len(mime) >= 6 && mime[:6] == "image/" {
-			return true
-		}
-		if len(mime) >= 6 && mime[:6] == "audio/" {
-			return true
-		}
-		if len(mime) >= 6 && mime[:6] == "video/" {
-			return true
-		}
+		return true
 	}
 	return false
 }

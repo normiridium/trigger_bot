@@ -43,6 +43,7 @@ const (
 
 const (
 	ActionTypeSend           = model.ActionTypeSend
+	ActionTypeSendFile       = model.ActionTypeSendFile
 	ActionTypeSendSticker    = model.ActionTypeSendSticker
 	ActionTypeDelete         = model.ActionTypeDelete
 	ActionTypeDeletePortrait = model.ActionTypeDeletePortrait

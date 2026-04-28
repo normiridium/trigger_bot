@@ -153,3 +153,20 @@ func TestTriggerModeReplyToSelfNoMedia_ReplyToMediaMessageSkipped(t *testing.T) 
 		t.Fatalf("expected reply to media message to be skipped")
 	}
 }
+
+func TestTriggerModeReplyToSelfNoMedia_DocumentReplySkipped(t *testing.T) {
+	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
+	msg := &tgbotapi.Message{
+		MessageID: 203,
+		From:      &tgbotapi.User{ID: 100},
+		Document:  &tgbotapi.Document{FileID: "doc-1", FileName: "memo.pdf", MimeType: "application/pdf"},
+		ReplyToMessage: &tgbotapi.Message{
+			MessageID: 100,
+			From:      &tgbotapi.User{ID: 999, IsBot: true, UserName: "olenyam_bot"},
+		},
+	}
+	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
+	if TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected document reply to be skipped")
+	}
+}

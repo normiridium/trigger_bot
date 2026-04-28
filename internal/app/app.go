@@ -3640,6 +3640,34 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}
 		return
+	case ActionTypeSendFile:
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		raw := strings.TrimSpace(buildResponseFromMessage(tmplCtx, resolvedTemplate))
+		if raw == "" {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки файла", errors.New("empty file path in response_text"))
+			return
+		}
+		filePath := raw
+		caption := ""
+		if i := strings.Index(raw, "\n"); i >= 0 {
+			filePath = strings.TrimSpace(raw[:i])
+			caption = strings.TrimSpace(raw[i+1:])
+		}
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if err := sendDocumentFromFile(sendCtx, filePath, caption); err != nil {
+			log.Printf("send file failed path=%q: %v", clipText(filePath, 180), err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки файла", err)
+			return
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
+		return
 	case ActionTypeDelete:
 		if msg.MessageID == 0 {
 			return

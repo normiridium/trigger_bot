@@ -171,6 +171,13 @@ func TestNormalizeActionType_SendSticker(t *testing.T) {
 	}
 }
 
+func TestNormalizeActionType_SendFile(t *testing.T) {
+	got := normalizeActionType("send_file")
+	if got != ActionTypeSendFile {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}
+
 func TestNormalizeActionType_YandexMusic(t *testing.T) {
 	got := normalizeActionType("yandex_music_audio")
 	if got != ActionTypeYandexMusic {
