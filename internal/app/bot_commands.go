@@ -17,6 +17,8 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdEmojiID, Description: "ID кастомного эмодзи"},
 		{Command: cmdStickerID, Description: "Код стикера из реплая"},
 		{Command: cmdGifID, Description: "ID гифки и подпись"},
+		{Command: cmdQuoteSticker, Description: "Сделать quote-стикер (/q [N])"},
+		{Command: cmdQuoteDelete, Description: "Удалить стикер из стикерпака"},
 		{Command: cmdSpotifySearch, Description: "Поиск трека в Spotify"},
 		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
