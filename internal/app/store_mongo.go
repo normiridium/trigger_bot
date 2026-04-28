@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"trigger-admin-bot/internal/match"
+	"trigger-admin-bot/internal/model"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -290,6 +291,9 @@ func (m *mongoBackend) close() error {
 func (m *mongoBackend) ensureIndexes() error {
 	ctx, cancel := mongoCtx()
 	defer cancel()
+	if err := m.ensureTriggerCollectionValidator(ctx); err != nil {
+		return err
+	}
 	_, err := m.triggers.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "id", Value: 1}},
@@ -391,6 +395,83 @@ func (m *mongoBackend) ensureIndexes() error {
 		},
 	})
 	return err
+}
+
+func enumStrings[T ~string](vals []T) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		s := strings.TrimSpace(string(v))
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func triggerCollectionValidatorDoc() bson.M {
+	return bson.M{
+		"$jsonSchema": bson.M{
+			"bsonType": "object",
+			"required": bson.A{
+				"id", "title", "enabled", "trigger_mode", "admin_mode", "match_text",
+				"match_type", "action_type", "response_text", "send_as_reply",
+				"preview_first_link", "delete_source_message", "pass_through", "chance",
+				"created_at", "updated_at",
+			},
+			"properties": bson.M{
+				"id":                    bson.M{"bsonType": "long"},
+				"uid":                   bson.M{"bsonType": []string{"string", "null"}},
+				"priority":              bson.M{"bsonType": []string{"int", "long"}},
+				"regex_bench_us":        bson.M{"bsonType": []string{"int", "long"}},
+				"title":                 bson.M{"bsonType": "string"},
+				"enabled":               bson.M{"bsonType": "bool"},
+				"trigger_mode":          bson.M{"enum": enumStrings(model.TriggerModeValues)},
+				"admin_mode":            bson.M{"enum": enumStrings(model.AdminModeValues)},
+				"match_text":            bson.M{"bsonType": "string"},
+				"match_type":            bson.M{"enum": enumStrings(model.MatchTypeValues)},
+				"case_sensitive":        bson.M{"bsonType": []string{"bool", "null"}},
+				"action_type":           bson.M{"enum": enumStrings(model.ActionTypeValues)},
+				"response_text":         bson.M{"bsonType": []string{"array", "null"}},
+				"send_as_reply":         bson.M{"bsonType": "bool"},
+				"preview_first_link":    bson.M{"bsonType": "bool"},
+				"delete_source_message": bson.M{"bsonType": "bool"},
+				"pass_through":          bson.M{"bsonType": "bool"},
+				"chance":                bson.M{"bsonType": []string{"int", "long"}},
+				"created_at":            bson.M{"bsonType": []string{"int", "long"}},
+				"updated_at":            bson.M{"bsonType": []string{"int", "long"}},
+				"regex_error":           bson.M{"bsonType": []string{"string", "null"}},
+			},
+		},
+	}
+}
+
+func (m *mongoBackend) ensureTriggerCollectionValidator(ctx context.Context) error {
+	if m == nil || m.db == nil {
+		return errors.New("mongo db not initialized")
+	}
+	validator := triggerCollectionValidatorDoc()
+	collName := "triggers"
+	cmd := bson.D{
+		{Key: "collMod", Value: collName},
+		{Key: "validator", Value: validator},
+		{Key: "validationLevel", Value: "strict"},
+		{Key: "validationAction", Value: "error"},
+	}
+	if err := m.db.RunCommand(ctx, cmd).Err(); err != nil {
+		var cmdErr mongo.CommandError
+		if errors.As(err, &cmdErr) && cmdErr.Code == 26 {
+			createCmd := bson.D{
+				{Key: "create", Value: collName},
+				{Key: "validator", Value: validator},
+				{Key: "validationLevel", Value: "strict"},
+				{Key: "validationAction", Value: "error"},
+			}
+			return m.db.RunCommand(ctx, createCmd).Err()
+		}
+		return err
+	}
+	return nil
 }
 
 func (m *mongoBackend) tryConsumeDailyUserBotMessage(userID int64, now time.Time, limit int) (bool, error) {

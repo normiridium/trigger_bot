@@ -2869,8 +2869,8 @@ func Run() {
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
-							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
+						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
+							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
 							cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
@@ -2993,6 +2993,7 @@ func Run() {
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
+						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
 						usageInfo = strings.Join(usageLines, "\n")
 					}
 					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
@@ -3037,6 +3038,17 @@ func Run() {
 					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+				continue
+			case cmdGifID, cmdGifIDAlias:
+				animationHit, animationOK := extractAnimationCode(msg)
+				if !animationOK && msg != nil && msg.ReplyToMessage != nil {
+					animationHit, animationOK = extractAnimationCode(msg.ReplyToMessage)
+				}
+				if !animationOK {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Гифка не найдена. Отправьте гифку или ответьте этой командой на гифку.", false)
+					continue
+				}
+				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
 				continue
 			case cmdSpotifySearch, cmdSpotifySearchAlt:
 				query := strings.TrimSpace(msg.CommandArguments())
@@ -3127,6 +3139,10 @@ func Run() {
 					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+				continue
+			}
+			if animationHit, ok := extractAnimationCode(msg); ok {
+				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
 				continue
 			}
 		}
@@ -3664,6 +3680,29 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
+		return
+	case ActionTypeSendGIF:
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		raw := strings.TrimSpace(buildResponseFromMessage(tmplCtx, resolvedTemplate))
+		if raw == "" {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки GIF", errors.New("empty gif file_id in response_text"))
+			return
+		}
+		fileID := raw
+		caption := ""
+		if i := strings.Index(raw, "\n"); i >= 0 {
+			fileID = strings.TrimSpace(raw[:i])
+			caption = strings.TrimSpace(raw[i+1:])
+		}
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if ok := sendGIF(sendCtx, fileID, caption); ok && deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}

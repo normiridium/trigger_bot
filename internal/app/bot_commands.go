@@ -16,6 +16,7 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdHelp, Description: "Справка по командам"},
 		{Command: cmdEmojiID, Description: "ID кастомного эмодзи"},
 		{Command: cmdStickerID, Description: "Код стикера из реплая"},
+		{Command: cmdGifID, Description: "ID гифки и подпись"},
 		{Command: cmdSpotifySearch, Description: "Поиск трека в Spotify"},
 		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
@@ -71,15 +72,15 @@ func syncBotCommands(bot *tgbotapi.BotAPI) {
 		commands []tgbotapi.BotCommand
 	}{
 		{
-			scope: &tgbotapi.BotCommandScope{Type: "default"},
+			scope:    &tgbotapi.BotCommandScope{Type: "default"},
 			commands: allVisibleBotCommands(),
 		},
 		{
-			scope: &tgbotapi.BotCommandScope{Type: "all_group_chats"},
+			scope:    &tgbotapi.BotCommandScope{Type: "all_group_chats"},
 			commands: allVisibleBotCommands(),
 		},
 		{
-			scope: &tgbotapi.BotCommandScope{Type: "all_chat_administrators"},
+			scope:    &tgbotapi.BotCommandScope{Type: "all_chat_administrators"},
 			commands: allVisibleBotCommands(),
 		},
 	}

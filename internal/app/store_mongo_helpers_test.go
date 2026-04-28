@@ -178,6 +178,13 @@ func TestNormalizeActionType_SendFile(t *testing.T) {
 	}
 }
 
+func TestNormalizeActionType_SendGIF(t *testing.T) {
+	got := normalizeActionType("send_gif")
+	if got != ActionTypeSendGIF {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}
+
 func TestNormalizeActionType_YandexMusic(t *testing.T) {
 	got := normalizeActionType("yandex_music_audio")
 	if got != ActionTypeYandexMusic {
@@ -196,5 +203,50 @@ func TestNormalizeActionType_UserLimitLowWarning(t *testing.T) {
 	got := normalizeActionType("user_limit_low_warning")
 	if got != ActionTypeUserLimitLow {
 		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}
+
+func TestParseActionType_Unknown(t *testing.T) {
+	if _, ok := parseActionType("typo_send_giff"); ok {
+		t.Fatalf("expected unknown action type to be rejected")
+	}
+}
+
+func TestParseActionType_Known(t *testing.T) {
+	if got, ok := parseActionType("send"); !ok || got != ActionTypeSend {
+		t.Fatalf("expected send to be accepted, got=%q ok=%v", got, ok)
+	}
+	if got, ok := parseActionType("send_gif"); !ok || got != ActionTypeSendGIF {
+		t.Fatalf("expected send_gif to be accepted, got=%q ok=%v", got, ok)
+	}
+}
+
+func TestTriggerCollectionValidatorContainsSendGIF(t *testing.T) {
+	v := triggerCollectionValidatorDoc()
+	root, ok := v["$jsonSchema"].(bson.M)
+	if !ok {
+		t.Fatalf("expected $jsonSchema object")
+	}
+	props, ok := root["properties"].(bson.M)
+	if !ok {
+		t.Fatalf("expected properties object")
+	}
+	actionTypeNode, ok := props["action_type"].(bson.M)
+	if !ok {
+		t.Fatalf("expected action_type node")
+	}
+	rawEnum, ok := actionTypeNode["enum"].([]string)
+	if !ok {
+		t.Fatalf("expected []string enum for action_type")
+	}
+	found := false
+	for _, v := range rawEnum {
+		if v == string(ActionTypeSendGIF) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("action_type enum must contain %q", ActionTypeSendGIF)
 	}
 }

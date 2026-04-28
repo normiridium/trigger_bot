@@ -231,4 +231,7 @@ func TestIconMappings(t *testing.T) {
 	if got := iconForActionType(model.ActionTypeMediaAudio); got == "" {
 		t.Fatalf("expected icon for media action")
 	}
+	if got := iconForActionType(model.ActionTypeSendGIF); got == "" {
+		t.Fatalf("expected icon for send gif action")
+	}
 }
