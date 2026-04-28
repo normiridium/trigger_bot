@@ -975,14 +975,27 @@ func ensureDefaultChatStickerSet(bot *tgbotapi.BotAPI, chat *tgbotapi.Chat, setN
 	}
 	currentName := strings.TrimSpace(chat.StickerSetName)
 	canSet := chat.CanSetStickerSet
-	if currentName == "" || !canSet {
-		if fresh, err := bot.GetChat(tgbotapi.ChatInfoConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: chat.ID}}); err == nil {
-			currentName = strings.TrimSpace(fresh.StickerSetName)
-			canSet = fresh.CanSetStickerSet
-		}
+	if fresh, err := bot.GetChat(tgbotapi.ChatInfoConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: chat.ID}}); err == nil {
+		currentName = strings.TrimSpace(fresh.StickerSetName)
+		canSet = fresh.CanSetStickerSet
+	} else if debugTriggerLogEnabled {
+		log.Printf("set chat sticker set getChat failed chat=%d err=%v", chat.ID, err)
 	}
-	if currentName != "" || !canSet {
+	if !canSet {
+		if debugTriggerLogEnabled {
+			log.Printf("set chat sticker set skipped chat=%d set=%q can_set=false current=%q", chat.ID, setName, currentName)
+		}
 		return
+	}
+	if currentName != "" {
+		// Keep existing live sticker set as-is.
+		if _, err := bot.GetStickerSet(tgbotapi.GetStickerSetConfig{Name: currentName}); err == nil {
+			return
+		}
+		// Existing chat sticker set reference is stale/missing; re-bind below.
+		if debugTriggerLogEnabled {
+			log.Printf("set chat sticker set stale current chat=%d current=%q target=%q", chat.ID, currentName, setName)
+		}
 	}
 	_, err := bot.Request(tgbotapi.SetChatStickerSetConfig{
 		ChatID:         chat.ID,
