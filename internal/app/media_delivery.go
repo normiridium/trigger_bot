@@ -562,6 +562,34 @@ func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
 	return nil
 }
 
+func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
+	filePath = strings.TrimSpace(filePath)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return errors.New("invalid document file send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	m := tgbotapi.NewDocument(ctx.ChatID, tgbotapi.FilePath(filePath))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send document file ok chat=%d msg=%d replyTo=%d file=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(filePath, 160))
+	}
+	return nil
+}
+
 func buildMediaAudioTitle(title, sourceURL, service string) string {
 	title = strings.TrimSpace(title)
 	_ = sourceURL

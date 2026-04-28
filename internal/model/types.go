@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_x_download|user_limit_low_warning
+	ActionType    ActionType         // send|send_file|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_x_download|user_limit_low_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -155,6 +155,7 @@ type ActionType string
 
 const (
 	ActionTypeSend           ActionType = "send"
+	ActionTypeSendFile       ActionType = "send_file"
 	ActionTypeSendSticker    ActionType = "send_sticker"
 	ActionTypeDelete         ActionType = "delete"
 	ActionTypeDeletePortrait ActionType = "delete_user_portrait"
@@ -172,6 +173,7 @@ const (
 
 var ActionTypeValues = []ActionType{
 	ActionTypeSend,
+	ActionTypeSendFile,
 	ActionTypeSendSticker,
 	ActionTypeDelete,
 	ActionTypeDeletePortrait,
@@ -191,6 +193,8 @@ func (m ActionType) String() string {
 	switch m {
 	case ActionTypeSend:
 		return "Отправить сообщение"
+	case ActionTypeSendFile:
+		return "Отправить файл"
 	case ActionTypeSendSticker:
 		return "Отправить стикер"
 	case ActionTypeDelete:
