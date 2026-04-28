@@ -37,16 +37,16 @@ func TestConvertToAllowedReactionEmoji_ButterflyAlias(t *testing.T) {
 	}
 }
 
-func TestExtractFirstReactionEmoji_PrefersLeadingCustomTag(t *testing.T) {
+func TestExtractFirstReactionEmoji_PrefersUnicodeOutsideCustomTag(t *testing.T) {
 	in := `<tg-emoji emoji-id="5474174773552516493">💋</tg-emoji> привет 😎`
 	emoji, start, end, ok := extractFirstReactionEmoji(in)
 	if !ok {
 		t.Fatalf("expected emoji")
 	}
-	if emoji != "💋" {
+	if emoji != "😎" {
 		t.Fatalf("unexpected emoji: %q", emoji)
 	}
-	if start != 0 || end <= start {
+	if start <= 0 || end <= start {
 		t.Fatalf("unexpected range: %d..%d", start, end)
 	}
 }

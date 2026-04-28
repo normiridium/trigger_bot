@@ -949,6 +949,23 @@ func TestExtractLeadingReactionCandidateCustomEmoji(t *testing.T) {
 	}
 }
 
+func TestExtractLeadingReactionCandidate_PrefersUnicodeOutsideCustomTag(t *testing.T) {
+	in := `<tg-emoji emoji-id="123456789">🦌</tg-emoji> привет 😎 миру`
+	c, next, ok := extractLeadingReactionCandidate(in)
+	if !ok {
+		t.Fatalf("expected unicode emoji reaction candidate")
+	}
+	if c.CustomEmojiID != "" {
+		t.Fatalf("expected no custom id, got=%q", c.CustomEmojiID)
+	}
+	if c.Emoji != "😎" {
+		t.Fatalf("unexpected emoji: %q", c.Emoji)
+	}
+	if strings.Contains(next, "😎") {
+		t.Fatalf("expected unicode emoji to be consumed, next=%q", next)
+	}
+}
+
 func TestExtractLeadingReactionCandidateUnicodeEmoji(t *testing.T) {
 	in := "🙂 привет"
 	c, next, ok := extractLeadingReactionCandidate(in)
