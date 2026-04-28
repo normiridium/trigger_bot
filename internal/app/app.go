@@ -892,38 +892,34 @@ func extractFirstReactionEmoji(text string) (emoji string, start int, end int, o
 		return "", -1, -1, false
 	}
 
-	custom := tgEmojiAnyWithIDRe.FindStringSubmatchIndex(text)
-	customStart := -1
-	customEnd := -1
-	customEmoji := ""
-	if len(custom) > 0 {
-		customStart = custom[0]
-		customEnd = custom[1]
+	customAll := tgEmojiAnyWithIDRe.FindAllStringSubmatchIndex(text, -1)
+	customRanges := make([][2]int, 0, len(customAll))
+	for _, m := range customAll {
+		if len(m) >= 2 && m[0] >= 0 && m[1] > m[0] {
+			customRanges = append(customRanges, [2]int{m[0], m[1]})
+		}
+	}
+
+	// New priority: first prefer plain unicode emoji outside custom tg-emoji tags.
+	unicodeStart, unicodeEnd, unicodeEmoji := findFirstUnicodeEmojiOutsideRanges(text, customRanges)
+	if unicodeStart >= 0 && unicodeEnd > unicodeStart && unicodeEmoji != "" {
+		return unicodeEmoji, unicodeStart, unicodeEnd, true
+	}
+
+	// Fallback to custom tg-emoji if no plain unicode emoji is found.
+	for _, custom := range customAll {
+		customStart := custom[0]
+		customEnd := custom[1]
 		if idxFallback := tgEmojiAnyWithIDRe.SubexpIndex("fallback"); idxFallback >= 0 {
 			from, to := custom[idxFallback*2], custom[idxFallback*2+1]
 			if from >= 0 && to >= from {
 				if _, _, em := findFirstUnicodeEmojiInText(strings.TrimSpace(text[from:to])); em != "" {
-					customEmoji = em
+					return em, customStart, customEnd, true
 				}
 			}
 		}
 	}
-
-	unicodeStart, unicodeEnd, unicodeEmoji := findFirstUnicodeEmojiInText(text)
-
-	switch {
-	case customEmoji != "" && unicodeStart >= 0:
-		if customStart <= unicodeStart {
-			return customEmoji, customStart, customEnd, true
-		}
-		return unicodeEmoji, unicodeStart, unicodeEnd, true
-	case customEmoji != "":
-		return customEmoji, customStart, customEnd, true
-	case unicodeStart >= 0 && unicodeEnd > unicodeStart && unicodeEmoji != "":
-		return unicodeEmoji, unicodeStart, unicodeEnd, true
-	default:
-		return "", -1, -1, false
-	}
+	return "", -1, -1, false
 }
 
 func setMessageReaction(bot *tgbotapi.BotAPI, chatID int64, messageID int, c reactionCandidate) (appliedReaction, error) {
@@ -978,14 +974,30 @@ func extractLeadingReactionCandidate(text string) (reactionCandidate, string, bo
 		return reactionCandidate{}, text, false
 	}
 
-	custom := tgEmojiAnyWithIDRe.FindStringSubmatchIndex(text)
-	customStart := -1
-	customEnd := -1
-	customID := ""
-	customFallback := "🙂"
-	if len(custom) > 0 {
-		customStart = custom[0]
-		customEnd = custom[1]
+	customAll := tgEmojiAnyWithIDRe.FindAllStringSubmatchIndex(text, -1)
+	customRanges := make([][2]int, 0, len(customAll))
+	for _, m := range customAll {
+		if len(m) >= 2 && m[0] >= 0 && m[1] > m[0] {
+			customRanges = append(customRanges, [2]int{m[0], m[1]})
+		}
+	}
+
+	// New priority: plain unicode emoji outside tg-emoji tags.
+	uStart, uEnd, uEmoji := findFirstUnicodeEmojiOutsideRanges(text, customRanges)
+	if uStart >= 0 && uEnd > uStart && uEmoji != "" {
+		next := removeReactionTokenFromText(text, uStart, uEnd)
+		return reactionCandidate{
+			Emoji:    uEmoji,
+			Consumed: text[uStart:uEnd],
+		}, next, true
+	}
+
+	// Fallback to first custom tg-emoji candidate.
+	for _, custom := range customAll {
+		customStart := custom[0]
+		customEnd := custom[1]
+		customID := ""
+		customFallback := "🙂"
 		if idIdx := tgEmojiAnyWithIDRe.SubexpIndex("id"); idIdx >= 0 {
 			from, to := custom[idIdx*2], custom[idIdx*2+1]
 			if from >= 0 && to >= from {
@@ -1000,23 +1012,6 @@ func extractLeadingReactionCandidate(text string) (reactionCandidate, string, bo
 				}
 			}
 		}
-	}
-
-	uStart, uEnd, uEmoji := findFirstUnicodeEmojiInText(text)
-
-	useCustom := false
-	switch {
-	case customStart >= 0 && uStart >= 0:
-		useCustom = customStart <= uStart
-	case customStart >= 0:
-		useCustom = true
-	case uStart >= 0:
-		useCustom = false
-	default:
-		return reactionCandidate{}, text, false
-	}
-
-	if useCustom {
 		next := removeReactionTokenFromText(text, customStart, customEnd)
 		return reactionCandidate{
 			Emoji:         customFallback,
@@ -1024,12 +1019,38 @@ func extractLeadingReactionCandidate(text string) (reactionCandidate, string, bo
 			Consumed:      text[customStart:customEnd],
 		}, next, true
 	}
+	return reactionCandidate{}, text, false
+}
 
-	next := removeReactionTokenFromText(text, uStart, uEnd)
-	return reactionCandidate{
-		Emoji:    uEmoji,
-		Consumed: text[uStart:uEnd],
-	}, next, true
+func findFirstUnicodeEmojiOutsideRanges(s string, ranges [][2]int) (start int, end int, emoji string) {
+	if len(ranges) == 0 {
+		return findFirstUnicodeEmojiInText(s)
+	}
+	inRange := func(i int) bool {
+		for _, r := range ranges {
+			if i >= r[0] && i < r[1] {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < len(s); {
+		if inRange(i) {
+			i++
+			continue
+		}
+		st, en, em := findFirstUnicodeEmojiInText(s[i:])
+		if st < 0 || em == "" {
+			return -1, -1, ""
+		}
+		absStart := i + st
+		absEnd := i + en
+		if !inRange(absStart) {
+			return absStart, absEnd, em
+		}
+		i = absEnd
+	}
+	return -1, -1, ""
 }
 
 func extractLeadingUnicodeEmoji(s string) (string, string) {
