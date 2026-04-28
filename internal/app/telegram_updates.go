@@ -77,6 +77,11 @@ type stickerCodeHit struct {
 	SetID  string
 }
 
+type animationCodeHit struct {
+	FileID  string
+	Caption string
+}
+
 func getUpdatesChanWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) <-chan updateWithEmojiMeta {
 	ch := make(chan updateWithEmojiMeta, 100)
 	go func() {
@@ -223,4 +228,22 @@ func extractStickerCode(msg *tgbotapi.Message) (stickerCodeHit, bool) {
 
 func buildStickerPairCode(hit stickerCodeHit) string {
 	return strings.TrimSpace(hit.FileID) + ":" + strings.TrimSpace(hit.SetID)
+}
+
+func extractAnimationCode(msg *tgbotapi.Message) (animationCodeHit, bool) {
+	if msg == nil || msg.Animation == nil {
+		return animationCodeHit{}, false
+	}
+	fileID := strings.TrimSpace(msg.Animation.FileID)
+	if fileID == "" {
+		return animationCodeHit{}, false
+	}
+	return animationCodeHit{
+		FileID:  fileID,
+		Caption: strings.TrimSpace(msg.Caption),
+	}, true
+}
+
+func buildAnimationReplyText(hit animationCodeHit) string {
+	return strings.TrimSpace(hit.FileID) + "\n" + strings.TrimSpace(hit.Caption)
 }

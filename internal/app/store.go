@@ -318,37 +318,48 @@ func normalizeAdminMode(v string) AdminMode {
 }
 
 func normalizeActionType(v string) ActionType {
+	if out, ok := parseActionType(v); ok {
+		return out
+	}
+	return ActionTypeSend
+}
+
+func parseActionType(v string) (ActionType, bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "send":
+		return ActionTypeSend, true
 	case "send_file":
-		return ActionTypeSendFile
+		return ActionTypeSendFile, true
+	case "send_gif":
+		return ActionTypeSendGIF, true
 	case "send_sticker":
-		return ActionTypeSendSticker
+		return ActionTypeSendSticker, true
 	case "delete":
-		return ActionTypeDelete
+		return ActionTypeDelete, true
 	case "delete_user_portrait":
-		return ActionTypeDeletePortrait
+		return ActionTypeDeletePortrait, true
 	case "gpt_prompt":
-		return ActionTypeGPTPrompt
+		return ActionTypeGPTPrompt, true
 	case "gpt_image":
-		return ActionTypeGPTImage
+		return ActionTypeGPTImage, true
 	case "search_image":
-		return ActionTypeSearchImage
+		return ActionTypeSearchImage, true
 	case "spotify_music_audio":
-		return ActionTypeSpotifyMusic
+		return ActionTypeSpotifyMusic, true
 	case "music_audio":
-		return ActionTypeMusic
+		return ActionTypeMusic, true
 	case "yandex_music_audio":
-		return ActionTypeYandexMusic
+		return ActionTypeYandexMusic, true
 	case "media_link_audio":
-		return ActionTypeMediaAudio
+		return ActionTypeMediaAudio, true
 	case "media_tiktok_download":
-		return ActionTypeMediaTikTok
+		return ActionTypeMediaTikTok, true
 	case "media_x_download":
-		return ActionTypeMediaX
+		return ActionTypeMediaX, true
 	case "user_limit_low_warning":
-		return ActionTypeUserLimitLow
+		return ActionTypeUserLimitLow, true
 	default:
-		return ActionTypeSend
+		return "", false
 	}
 }
 
@@ -380,7 +391,11 @@ func (s *Store) SaveTrigger(t Trigger) error {
 	t.TriggerMode = normalizeTriggerMode(string(t.TriggerMode))
 	t.AdminMode = normalizeAdminMode(string(t.AdminMode))
 	t.MatchType = match.NormalizeMatchType(string(t.MatchType))
-	t.ActionType = normalizeActionType(string(t.ActionType))
+	actionType, ok := parseActionType(string(t.ActionType))
+	if !ok {
+		return fmt.Errorf("unknown action_type: %q", strings.TrimSpace(string(t.ActionType)))
+	}
+	t.ActionType = actionType
 	t.Chance = sanitizeChance(t.Chance)
 	t.RegexError = ""
 	t.RegexBenchUS = 0
@@ -687,6 +702,10 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			chance = *it.Chance
 		}
 
+		parsedActionType, ok := parseActionType(actionType)
+		if !ok {
+			return added, fmt.Errorf("unknown action_type in import: %q", actionType)
+		}
 		tr := Trigger{
 			UID:           strings.TrimSpace(it.UID),
 			Title:         title,
@@ -696,7 +715,7 @@ func (s *Store) ImportJSON(raw []byte) (int, error) {
 			MatchText:     matchText,
 			MatchType:     match.NormalizeMatchType(matchType),
 			CaseSensitive: caseSensitive,
-			ActionType:    normalizeActionType(actionType),
+			ActionType:    parsedActionType,
 			ResponseText:  responseItems,
 			Reply:         reply,
 			Preview:       preview,

@@ -788,6 +788,37 @@ func TestExtractStickerCodeEmpty(t *testing.T) {
 	}
 }
 
+func TestExtractAnimationCode(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Animation: &tgbotapi.Animation{
+			FileID: "gif_file_id_1",
+		},
+		Caption: "  подпись  ",
+	}
+	hit, ok := extractAnimationCode(msg)
+	if !ok {
+		t.Fatalf("expected animation code hit")
+	}
+	if hit.FileID != "gif_file_id_1" {
+		t.Fatalf("unexpected file id: %q", hit.FileID)
+	}
+	if hit.Caption != "подпись" {
+		t.Fatalf("unexpected caption: %q", hit.Caption)
+	}
+	if got := buildAnimationReplyText(hit); got != "gif_file_id_1\nподпись" {
+		t.Fatalf("unexpected animation reply text: %q", got)
+	}
+}
+
+func TestExtractAnimationCodeEmpty(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Animation: &tgbotapi.Animation{},
+	}
+	if _, ok := extractAnimationCode(msg); ok {
+		t.Fatalf("expected no animation code hit when file id is empty")
+	}
+}
+
 func TestExtractStickerFileIDFromTemplate(t *testing.T) {
 	raw := "<code>CAACAgIAAxkBAAMnaeQ1_jOjPuH6zZsuFC1qwh0Q0NYAAntOAAIuXRhLED6vCxOdgOw7BA:Nokotanfx</code>"
 	got := extractStickerFileIDFromTemplate(raw)

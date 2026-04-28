@@ -1391,6 +1391,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-send"
 	case model.ActionTypeSendFile:
 		return "bi-file-earmark-arrow-up"
+	case model.ActionTypeSendGIF:
+		return "bi-film"
 	case model.ActionTypeSendSticker:
 		return "bi-file-earmark-image"
 	case model.ActionTypeDelete:
@@ -1473,6 +1475,11 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
+	actionType, ok := parseActionType(payload.ActionType)
+	if !ok {
+		http.Error(rw, "unknown action_type", http.StatusBadRequest)
+		return
+	}
 	t = Trigger{
 		ID:            payload.ID,
 		UID:           strings.TrimSpace(payload.UID),
@@ -1483,7 +1490,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		MatchText:     payload.MatchText,
 		MatchType:     match.NormalizeMatchType(payload.MatchType),
 		CaseSensitive: payload.CaseSensitive,
-		ActionType:    normalizeActionType(payload.ActionType),
+		ActionType:    actionType,
 		ResponseText:  payload.ResponseText,
 		Reply:         payload.Reply,
 		Preview:       payload.Preview,

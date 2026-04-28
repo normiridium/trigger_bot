@@ -39,6 +39,9 @@ func TestActionTypeString(t *testing.T) {
 	if got := ActionTypeSendFile.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeSendFile")
 	}
+	if got := ActionTypeSendGIF.String(); got == "" {
+		t.Fatalf("empty string for ActionTypeSendGIF")
+	}
 	if got := ActionTypeMediaAudio.String(); got == "" {
 		t.Fatalf("empty string for ActionTypeMediaAudio")
 	}

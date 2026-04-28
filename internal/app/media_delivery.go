@@ -385,6 +385,31 @@ func sendSticker(ctx sendContext, fileID string) bool {
 	return true
 }
 
+func sendGIF(ctx sendContext, fileID, caption string) bool {
+	fileID = strings.TrimSpace(fileID)
+	caption = strings.TrimSpace(caption)
+	if fileID == "" {
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки GIF", errors.New("empty gif file_id"))
+		return false
+	}
+	m := tgbotapi.NewAnimation(ctx.ChatID, tgbotapi.FileID(fileID))
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	m.Caption = caption
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		log.Printf("send gif failed: %v", err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки GIF", err)
+		return false
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send gif ok chat=%d msg=%d replyTo=%d file_id=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(fileID, 120))
+	}
+	return true
+}
+
 type generatedImage struct {
 	URL   string
 	Bytes []byte

@@ -44,6 +44,7 @@ const (
 const (
 	ActionTypeSend           = model.ActionTypeSend
 	ActionTypeSendFile       = model.ActionTypeSendFile
+	ActionTypeSendGIF        = model.ActionTypeSendGIF
 	ActionTypeSendSticker    = model.ActionTypeSendSticker
 	ActionTypeDelete         = model.ActionTypeDelete
 	ActionTypeDeletePortrait = model.ActionTypeDeletePortrait
