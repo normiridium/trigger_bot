@@ -113,8 +113,6 @@ type quoteHistoryItem struct {
 type quoteMediaPayload struct {
 	FileID string `json:"file_id,omitempty"`
 	URL    string `json:"url,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
 }
 
 func newQuoteStickerHistory(maxPer int) *quoteStickerHistory {
@@ -609,8 +607,6 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 			return &quoteMediaPayload{
 				FileID: fileID,
 				URL:    url,
-				Width:  p.Width,
-				Height: p.Height,
 			}
 		}
 	}
@@ -628,8 +624,6 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 				return &quoteMediaPayload{
 					FileID: fileID,
 					URL:    url,
-					Width:  th.Width,
-					Height: th.Height,
 				}
 			}
 		}
@@ -644,16 +638,16 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 						upURL := resolveTelegramFileURL(bot, urlCache, upID)
 						quoteMediaChoiceLog(msg, "animation.uploaded_frame", upURL, upID, msg.Animation.Width, msg.Animation.Height)
 						if upURL != "" {
-							return &quoteMediaPayload{URL: upURL, Width: msg.Animation.Width, Height: msg.Animation.Height}
+							return &quoteMediaPayload{URL: upURL}
 						}
-						return &quoteMediaPayload{FileID: upID, Width: msg.Animation.Width, Height: msg.Animation.Height}
+						quoteMediaLogf(msg, "animation frame uploaded but URL unavailable; fallback to original file_id")
 					}
 					quoteMediaLogf(msg, "animation frame extracted but upload failed; fallback to original file_id")
 				}
 			}
 			fileID := id
 			quoteMediaChoiceLog(msg, "animation.file_id_only", "", fileID, msg.Animation.Width, msg.Animation.Height)
-			return &quoteMediaPayload{FileID: fileID, Width: msg.Animation.Width, Height: msg.Animation.Height}
+			return &quoteMediaPayload{FileID: fileID}
 		}
 	}
 	// Telegram "GIF" may come as regular video in some clients/chats.
@@ -670,8 +664,6 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 				return &quoteMediaPayload{
 					FileID: fileID,
 					URL:    url,
-					Width:  th.Width,
-					Height: th.Height,
 				}
 			}
 		}
@@ -686,16 +678,16 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 						upURL := resolveTelegramFileURL(bot, urlCache, upID)
 						quoteMediaChoiceLog(msg, "video.uploaded_frame", upURL, upID, msg.Video.Width, msg.Video.Height)
 						if upURL != "" {
-							return &quoteMediaPayload{URL: upURL, Width: msg.Video.Width, Height: msg.Video.Height}
+							return &quoteMediaPayload{URL: upURL}
 						}
-						return &quoteMediaPayload{FileID: upID, Width: msg.Video.Width, Height: msg.Video.Height}
+						quoteMediaLogf(msg, "video frame uploaded but URL unavailable; fallback to original file_id")
 					}
 					quoteMediaLogf(msg, "video frame extracted but upload failed; fallback to original file_id")
 				}
 			}
 			fileID := id
 			quoteMediaChoiceLog(msg, "video.file_id_only", "", fileID, msg.Video.Width, msg.Video.Height)
-			return &quoteMediaPayload{FileID: fileID, Width: msg.Video.Width, Height: msg.Video.Height}
+			return &quoteMediaPayload{FileID: fileID}
 		}
 	}
 	if msg.Document != nil {
@@ -721,7 +713,7 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 						fileID = id
 					}
 					quoteMediaChoiceLog(msg, "document.video.thumbnail", url, fileID, th.Width, th.Height)
-					return &quoteMediaPayload{FileID: fileID, URL: url, Width: th.Width, Height: th.Height}
+					return &quoteMediaPayload{FileID: fileID, URL: url}
 				}
 			}
 			if id := strings.TrimSpace(msg.Document.FileID); id != "" {
@@ -737,7 +729,7 @@ func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, ms
 							if upURL != "" {
 								return &quoteMediaPayload{URL: upURL}
 							}
-							return &quoteMediaPayload{FileID: upID}
+							quoteMediaLogf(msg, "document.video frame uploaded but URL unavailable; fallback to original file_id")
 						}
 						quoteMediaLogf(msg, "document.video frame extracted but upload failed; fallback to original file_id")
 					}
@@ -759,14 +751,8 @@ func resolveTelegramFileURL(bot *tgbotapi.BotAPI, cache map[string]string, fileI
 	}
 	if cache != nil {
 		if v, ok := cache[fileID]; ok {
-			if debugTriggerLogEnabled {
-				log.Printf("quote media file url cache hit file_id=%q has_url=%v", clipText(fileID, 24), strings.TrimSpace(v) != "")
-			}
 			return v
 		}
-	}
-	if debugTriggerLogEnabled {
-		log.Printf("quote media file url fetch file_id=%q", clipText(fileID, 24))
 	}
 	url, err := bot.GetFileDirectURL(fileID)
 	if err != nil {
@@ -779,9 +765,6 @@ func resolveTelegramFileURL(bot *tgbotapi.BotAPI, cache map[string]string, fileI
 		return ""
 	}
 	url = strings.TrimSpace(url)
-	if debugTriggerLogEnabled {
-		log.Printf("quote media file url ok file_id=%q has_url=%v", clipText(fileID, 24), url != "")
-	}
 	if cache != nil {
 		cache[fileID] = url
 	}

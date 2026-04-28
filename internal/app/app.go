@@ -2613,6 +2613,8 @@ func Run() {
 	readonly := newReadonlyManager()
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
+	quoteSessions := newQuoteStickerSessionManager(time.Duration(envInt("QS_SESSION_TTL_SEC", 900)) * time.Second)
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
 		return chatRecent.RecentText(chatID, limit)
@@ -2787,6 +2789,9 @@ func Run() {
 			) {
 				continue
 			}
+			if handleQuoteStickerCallback(bot, quoteSessions, update.Update.CallbackQuery) {
+				continue
+			}
 		}
 		if update.Update.Message == nil {
 			continue
@@ -2850,6 +2855,7 @@ func Run() {
 			}
 			continue
 		}
+		quoteHistory.Add(msg, rawMsg)
 		isPrivateChat := msg.Chat.IsPrivate()
 		if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
 			now := time.Now()
@@ -2890,8 +2896,8 @@ func Run() {
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
-							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
+						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
+							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
 							cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
@@ -3015,6 +3021,8 @@ func Run() {
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
+						usageLines = append(usageLines, fmt.Sprintf("— /%s [N] — сделать quote-стикер (по reply или сообщению выше)", cmdQuoteSticker))
+						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить стикер из стикерпака (по reply или сообщению выше)", cmdQuoteDelete))
 						usageInfo = strings.Join(usageLines, "\n")
 					}
 					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
@@ -3071,6 +3079,33 @@ func Run() {
 				}
 				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
 				continue
+			case cmdQuoteSticker, cmdQuoteStickerAlias:
+				handled, errText, st := handleQuoteStickerCommand(bot, quoteSessions, quoteHistory, msg)
+				if handled {
+					if errText != "" {
+						reply(cmdSendCtx.WithReply(msg.MessageID), errText, false)
+						continue
+					}
+					if st == nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось создать сессию quote-стикера.", false)
+						continue
+					}
+					out := tgbotapi.NewMessage(msg.Chat.ID, buildQuoteStickerPickerText(*st))
+					kb := buildQuoteStickerPickerKeyboard(*st)
+					out.ReplyMarkup = kb
+					_, _ = bot.Send(out)
+					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+						ChatID:    msg.Chat.ID,
+						MessageID: msg.MessageID,
+					})
+					continue
+				}
+			case cmdQuoteDelete:
+				handled, out := handleQuoteStickerDelete(bot, quoteHistory, msg)
+				if handled {
+					reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
+					continue
+				}
 			case cmdSpotifySearch, cmdSpotifySearchAlt:
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
