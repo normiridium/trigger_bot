@@ -421,21 +421,28 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 	if limit <= 0 {
 		limit = 12
 	}
-	now := time.Now()
 	s.mu.RLock()
 	items := s.messages[chatID]
 	s.mu.RUnlock()
+	return renderRecentContextLines(items, s.maxAge, limit)
+}
+
+func renderRecentContextLines(items []recentChatMessage, maxAge time.Duration, limit int) string {
+	if limit <= 0 {
+		limit = 12
+	}
+	charBudget := limit * 150
+	if charBudget <= 0 {
+		charBudget = 12 * 150
+	}
+	now := time.Now()
 	if len(items) == 0 {
 		return ""
 	}
 
-	start := len(items) - limit
-	if start < 0 {
-		start = 0
-	}
-	lines := make([]string, 0, len(items)-start)
-	for _, it := range items[start:] {
-		if now.Sub(it.At) > s.maxAge {
+	candidates := make([]string, 0, len(items))
+	for _, it := range items {
+		if maxAge > 0 && now.Sub(it.At) > maxAge {
 			continue
 		}
 		txt := strings.TrimSpace(it.Text)
@@ -446,7 +453,36 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 		if user == "" {
 			user = "участник"
 		}
-		lines = append(lines, fmt.Sprintf("[%s] %s: %s", it.At.Local().Format("02.01.2006 15:04"), user, txt))
+		candidates = append(candidates, fmt.Sprintf("[%s] %s: %s", it.At.Local().Format("02.01.2006 15:04"), user, txt))
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Fill from newest to oldest by char budget, only whole lines.
+	// If the next full line does not fit, stop (do not truncate).
+	chosenReversed := make([]string, 0, len(candidates))
+	used := 0
+	for i := len(candidates) - 1; i >= 0; i-- {
+		line := candidates[i]
+		lineLen := len([]rune(line))
+		extra := lineLen
+		if len(chosenReversed) > 0 {
+			extra++ // newline between lines in final join
+		}
+		if used+extra > charBudget {
+			break
+		}
+		chosenReversed = append(chosenReversed, line)
+		used += extra
+	}
+	if len(chosenReversed) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(chosenReversed))
+	for i := len(chosenReversed) - 1; i >= 0; i-- {
+		lines = append(lines, chosenReversed[i])
 	}
 	return strings.Join(lines, "\n")
 }
@@ -480,11 +516,17 @@ func addOutgoingChatRecentMessage(chatID int64, text string) {
 	})
 }
 
-func sendTypingAction(bot *tgbotapi.BotAPI, chatID int64) {
+func sendTypingAction(bot *tgbotapi.BotAPI, chatID int64) bool {
 	if bot == nil || chatID == 0 {
-		return
+		return false
 	}
-	_, _ = bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+	if _, err := bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
+		if debugTriggerLogEnabled {
+			log.Printf("send typing action failed chat=%d err=%v", chatID, err)
+		}
+		return false
+	}
+	return true
 }
 
 func startTypingLoop(bot *tgbotapi.BotAPI, chatID int64, interval time.Duration) func() {
@@ -497,7 +539,7 @@ func startTypingLoop(bot *tgbotapi.BotAPI, chatID int64, interval time.Duration)
 	done := make(chan struct{})
 	var once sync.Once
 	go func() {
-		sendTypingAction(bot, chatID)
+		_ = sendTypingAction(bot, chatID)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -505,7 +547,7 @@ func startTypingLoop(bot *tgbotapi.BotAPI, chatID int64, interval time.Duration)
 			case <-done:
 				return
 			case <-ticker.C:
-				sendTypingAction(bot, chatID)
+				_ = sendTypingAction(bot, chatID)
 			}
 		}
 	}()
@@ -525,6 +567,8 @@ func simulateStickerPickDelay(bot *tgbotapi.BotAPI, chatID int64, delay time.Dur
 		if debugTriggerLogEnabled {
 			log.Printf("send choose_sticker action failed chat=%d err=%v", chatID, err)
 		}
+		// Some chats/clients may reject choose_sticker; fallback to typing.
+		_ = sendTypingAction(bot, chatID)
 	}
 	time.Sleep(delay)
 }
@@ -540,7 +584,7 @@ func ensureMinTypingWindow(bot *tgbotapi.BotAPI, chatID int64, startedAt time.Ti
 	if wait <= 0 {
 		return
 	}
-	sendTypingAction(bot, chatID)
+	_ = sendTypingAction(bot, chatID)
 	time.Sleep(wait)
 }
 
@@ -2604,6 +2648,10 @@ func Run() {
 	readonly := newReadonlyManager()
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	summaryTracker := newChatSummaryTracker(store, envInt("CHAT_SUMMARY_EVERY_MESSAGES", 200), envInt("CHAT_SUMMARY_POOL_MESSAGES", 1000))
+	if summaryTracker != nil {
+		defer summaryTracker.Close()
+	}
 	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
 	qsSessionTTLSec := envInt("QS_SESSION_TTL_SEC", int(quoteStickerSessionTTL/time.Second))
 	if qsSessionTTLSec < 300 {
@@ -2612,11 +2660,22 @@ func Run() {
 	quoteSessions := newQuoteStickerSessionManager(time.Duration(qsSessionTTLSec) * time.Second)
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
+		if summaryTracker != nil {
+			return summaryTracker.RecentText(chatID, limit)
+		}
 		return chatRecent.RecentText(chatID, limit)
+	})
+	setChatSummaryResolver(func(chatID int64) string {
+		rec, err := store.GetChatSummary(chatID)
+		if err != nil || rec == nil {
+			return ""
+		}
+		return strings.TrimSpace(rec.Summary)
 	})
 	defer func() {
 		setOutgoingChatRecentStore(nil, "")
 		setChatContextResolver(nil)
+		setChatSummaryResolver(nil)
 	}()
 	disallowedNotifier := newDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
 	portraitManager := newParticipantPortraitManager(store)
@@ -2891,9 +2950,9 @@ func Run() {
 				if isPrivateChat {
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
+						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
 							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
-							cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
+							cmdSummary, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -3013,6 +3072,7 @@ func Run() {
 						}
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — показать ваш портрет", cmdMyPortrait))
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
+						usageLines = append(usageLines, fmt.Sprintf("— /%s — краткая сводка по переписке чата", cmdSummary))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
@@ -3128,6 +3188,18 @@ func Run() {
 					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
+				continue
+			case cmdSummary, cmdSummaryAlias:
+				rec, err := store.GetChatSummary(msg.Chat.ID)
+				if err != nil {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось получить сводку: "+clipText(err.Error(), 200), false)
+					continue
+				}
+				if rec == nil || strings.TrimSpace(rec.Summary) == "" {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка пока не собрана. Нужно накопить сообщения в чате.", false)
+					continue
+				}
+				sendHTML(cmdSendCtx.WithReply(msg.MessageID), rec.Summary, false)
 				continue
 			case cmdMyPortrait, cmdMyPortraitAlias:
 				if msg.From == nil || msg.From.ID == 0 {
@@ -3256,6 +3328,7 @@ func Run() {
 				Text:      text,
 				At:        time.Now(),
 			})
+			summaryTracker.ObserveMessage(msg, text)
 		}
 
 		if debugTriggerLogEnabled {

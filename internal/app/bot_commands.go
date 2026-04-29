@@ -20,6 +20,7 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdQuoteSticker, Description: "Сделать quote-стикер (/q [N])"},
 		{Command: cmdQuoteDelete, Description: "Удалить стикер из стикерпака"},
 		{Command: cmdSpotifySearch, Description: "Поиск трека в Spotify"},
+		{Command: cmdSummary, Description: "Краткая сводка переписки"},
 		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
 	}

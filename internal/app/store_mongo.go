@@ -31,6 +31,7 @@ type mongoBackend struct {
 	unmutes   *mongo.Collection
 	counters  *mongo.Collection
 	uiState   *mongo.Collection
+	summaries *mongo.Collection
 }
 
 type mongoTriggerDoc struct {
@@ -125,6 +126,16 @@ type mongoUIPickerRecentSetsDoc struct {
 	UpdatedAt   int64                      `bson:"updated_at"`
 	EmojiSets   []UIPickerRecentEmojiSet   `bson:"emoji_sets"`
 	StickerSets []UIPickerRecentStickerSet `bson:"sticker_sets"`
+}
+
+type mongoChatSummaryDoc struct {
+	ChatID             int64  `bson:"chat_id"`
+	Summary            string `bson:"summary"`
+	MessagesSince      int    `bson:"messages_since"`
+	LastMessageID      int    `bson:"last_message_id"`
+	LastMessageUnix    int64  `bson:"last_message_unix"`
+	SummarizedMessages int    `bson:"summarized_messages"`
+	UpdatedAt          int64  `bson:"updated_at"`
 }
 
 const gptUserQuotaWindow = 4 * time.Hour
@@ -268,6 +279,7 @@ func openMongoStore(uri string) (*Store, error) {
 		unmutes:   db.Collection("scheduled_unmutes"),
 		counters:  db.Collection("counters"),
 		uiState:   db.Collection("web_ui_state"),
+		summaries: db.Collection("chat_summaries"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
 		_ = client.Disconnect(ctx)
@@ -392,6 +404,18 @@ func (m *mongoBackend) ensureIndexes() error {
 		},
 		{
 			Keys: bson.D{{Key: "unmute_at", Value: 1}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = m.summaries.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "chat_id", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{Key: "updated_at", Value: 1}},
 		},
 	})
 	return err
@@ -1293,6 +1317,57 @@ func (m *mongoBackend) saveUIPickerRecentSets(v UIPickerRecentSets) error {
 			"updated_at":   now,
 			"emoji_sets":   v.EmojiSets,
 			"sticker_sets": v.StickerSets,
+		}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (m *mongoBackend) getChatSummary(chatID int64) (*ChatSummary, error) {
+	if chatID == 0 {
+		return nil, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	var d mongoChatSummaryDoc
+	err := m.summaries.FindOne(ctx, bson.M{"chat_id": chatID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ChatSummary{
+		ChatID:             d.ChatID,
+		Summary:            strings.TrimSpace(d.Summary),
+		MessagesSince:      d.MessagesSince,
+		LastMessageID:      d.LastMessageID,
+		LastMessageUnix:    d.LastMessageUnix,
+		SummarizedMessages: d.SummarizedMessages,
+		UpdatedAt:          d.UpdatedAt,
+	}, nil
+}
+
+func (m *mongoBackend) saveChatSummary(v ChatSummary) error {
+	if v.ChatID == 0 {
+		return nil
+	}
+	if v.UpdatedAt <= 0 {
+		v.UpdatedAt = time.Now().Unix()
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, err := m.summaries.UpdateOne(
+		ctx,
+		bson.M{"chat_id": v.ChatID},
+		bson.M{"$set": bson.M{
+			"chat_id":             v.ChatID,
+			"summary":             strings.TrimSpace(v.Summary),
+			"messages_since":      v.MessagesSince,
+			"last_message_id":     v.LastMessageID,
+			"last_message_unix":   v.LastMessageUnix,
+			"summarized_messages": v.SummarizedMessages,
+			"updated_at":          v.UpdatedAt,
 		}},
 		options.Update().SetUpsert(true),
 	)

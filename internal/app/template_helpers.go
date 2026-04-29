@@ -225,6 +225,14 @@ var participantPortraitRemainingResolverMu sync.RWMutex
 var participantPortraitRemainingResolver func(chatID, userID int64) int
 var chatContextResolverMu sync.RWMutex
 var chatContextResolver func(chatID int64, limit int) string
+var chatSummaryResolverMu sync.RWMutex
+var chatSummaryResolver func(chatID int64) string
+var chatAdminsCache = struct {
+	mu    sync.RWMutex
+	items map[int64]chatAdminsCacheEntry
+}{
+	items: make(map[int64]chatAdminsCacheEntry),
+}
 var templateWeatherCache = struct {
 	mu    sync.RWMutex
 	items map[string]weatherCacheEntry
@@ -234,6 +242,11 @@ var templateWeatherCache = struct {
 
 type weatherCacheEntry struct {
 	value     string
+	expiresAt time.Time
+}
+
+type chatAdminsCacheEntry struct {
+	value     []map[string]interface{}
 	expiresAt time.Time
 }
 
@@ -325,6 +338,25 @@ func resolveChatContext(chatID int64, limit int) string {
 	return strings.TrimSpace(fn(chatID, limit))
 }
 
+func setChatSummaryResolver(fn func(chatID int64) string) {
+	chatSummaryResolverMu.Lock()
+	chatSummaryResolver = fn
+	chatSummaryResolverMu.Unlock()
+}
+
+func resolveChatSummary(chatID int64) string {
+	if chatID == 0 {
+		return ""
+	}
+	chatSummaryResolverMu.RLock()
+	fn := chatSummaryResolver
+	chatSummaryResolverMu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn(chatID))
+}
+
 var responseTemplateFuncs = htmltmpl.FuncMap{
 	"default": func(def string, v interface{}) string {
 		if isTemplateEmptyValue(v) {
@@ -364,6 +396,31 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 			return ""
 		}
 		return strings.Join(items, sep)
+	},
+	"get": func(field string, v interface{}) []string {
+		field = strings.TrimSpace(field)
+		if field == "" || v == nil {
+			return nil
+		}
+		rv := reflect.ValueOf(v)
+		for rv.Kind() == reflect.Ptr {
+			if rv.IsNil() {
+				return nil
+			}
+			rv = rv.Elem()
+		}
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			return nil
+		}
+		out := make([]string, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			item := rv.Index(i).Interface()
+			val := extractObjectField(item, field)
+			if val != "" {
+				out = append(out, val)
+			}
+		}
+		return out
 	},
 	"first": func(v interface{}) string {
 		items := toStringSlice(v)
@@ -1302,6 +1359,7 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	if ctx.Msg != nil && ctx.Msg.Chat != nil {
 		chatID := ctx.Msg.Chat.ID
 		vars["chat_context"] = strings.TrimSpace(resolveChatContext(chatID, 12))
+		vars["summary"] = strings.TrimSpace(resolveChatSummary(chatID))
 		for _, n := range chatContextLimits {
 			key := fmt.Sprintf("__chat_context_%d", n)
 			vars[key] = strings.TrimSpace(resolveChatContext(chatID, n))
@@ -1362,6 +1420,9 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 		}
 		prepareTrustedTemplateFragment(vars, "user_link", "__trusted_user_link_html", "__TRUSTED_USER_LINK_HTML_99DBF0C9__")
 		prepareTrustedTemplateFragment(vars, "reply_user_link", "__trusted_reply_user_link_html", "__TRUSTED_REPLY_USER_LINK_HTML_1C4C4B0A__")
+		if ctx.Bot != nil && ctx.Msg.Chat != nil {
+			vars["admins"] = resolveChatAdmins(ctx.Bot, ctx.Msg.Chat.ID)
+		}
 	}
 	cleanCapture := strings.TrimSpace(ctx.CapturingText)
 	choice := deriveCapturingChoice(ctx.MatchText, cleanCapture, ctx.CaseSensitive)
@@ -1403,6 +1464,64 @@ func restoreTrustedTemplateFragments(input string, vars map[string]interface{}) 
 			out = strings.ReplaceAll(out, "__TRUSTED_REPLY_USER_LINK_HTML_1C4C4B0A__", string(s))
 		}
 	}
+	return out
+}
+
+func resolveChatAdmins(bot *tgbotapi.BotAPI, chatID int64) []map[string]interface{} {
+	if bot == nil || chatID == 0 {
+		return nil
+	}
+	now := time.Now()
+	chatAdminsCache.mu.RLock()
+	if cached, ok := chatAdminsCache.items[chatID]; ok && now.Before(cached.expiresAt) {
+		chatAdminsCache.mu.RUnlock()
+		return cached.value
+	}
+	chatAdminsCache.mu.RUnlock()
+
+	admins, err := bot.GetChatAdministrators(tgbotapi.ChatAdministratorsConfig{
+		ChatConfig: tgbotapi.ChatConfig{ChatID: chatID},
+	})
+	if err != nil {
+		return nil
+	}
+
+	out := make([]map[string]interface{}, 0, len(admins))
+	for _, member := range admins {
+		u := member.User
+		if u == nil || u.IsBot {
+			continue
+		}
+		nickname := strings.TrimSpace(buildUserDisplayName(u))
+		if nickname == "" {
+			if username := strings.TrimSpace(u.UserName); username != "" {
+				nickname = "@" + username
+			}
+		}
+		fullName := strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName))
+		if fullName == "" {
+			fullName = nickname
+		}
+		item := map[string]interface{}{
+			"id":         u.ID,
+			"nickname":   nickname,
+			"full_name":  fullName,
+			"first_name": strings.TrimSpace(u.FirstName),
+			"last_name":  strings.TrimSpace(u.LastName),
+			"username":   strings.TrimSpace(u.UserName),
+		}
+		out = append(out, item)
+	}
+
+	chatAdminsCache.mu.Lock()
+	if len(chatAdminsCache.items) > 4096 {
+		chatAdminsCache.items = make(map[int64]chatAdminsCacheEntry)
+	}
+	chatAdminsCache.items[chatID] = chatAdminsCacheEntry{
+		value:     out,
+		expiresAt: now.Add(45 * time.Second),
+	}
+	chatAdminsCache.mu.Unlock()
 	return out
 }
 
@@ -1581,6 +1700,52 @@ func toStringSlice(v interface{}) []string {
 		}
 		return []string{s}
 	}
+}
+
+func extractObjectField(v interface{}, field string) string {
+	if strings.TrimSpace(field) == "" || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case map[string]interface{}:
+		if raw, ok := t[field]; ok {
+			return toTemplateString(raw)
+		}
+		for k, raw := range t {
+			if strings.EqualFold(strings.TrimSpace(k), field) {
+				return toTemplateString(raw)
+			}
+		}
+		return ""
+	case map[string]string:
+		if raw, ok := t[field]; ok {
+			return strings.TrimSpace(raw)
+		}
+		for k, raw := range t {
+			if strings.EqualFold(strings.TrimSpace(k), field) {
+				return strings.TrimSpace(raw)
+			}
+		}
+		return ""
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return ""
+	}
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		sf := rt.Field(i)
+		if strings.EqualFold(strings.TrimSpace(sf.Name), field) {
+			return toTemplateString(rv.Field(i).Interface())
+		}
+	}
+	return ""
 }
 
 func isTemplateEmptyValue(v interface{}) bool {
@@ -2086,9 +2251,6 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		senderTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID)
 	}
 	senderTagDisplay := senderTag
-	if strings.TrimSpace(senderTagDisplay) == "" {
-		senderTagDisplay = "не указан"
-	}
 
 	replyText := ""
 	replyUserID := ""

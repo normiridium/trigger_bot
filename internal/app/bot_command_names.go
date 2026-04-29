@@ -14,6 +14,8 @@ const (
 	cmdQuoteDelete       = "qd"
 	cmdSpotifySearch     = "spsearch"
 	cmdSpotifySearchAlt  = "spfind"
+	cmdSummary           = "summary"
+	cmdSummaryAlias      = "sum"
 	cmdMyPortrait        = "my_portrait"
 	cmdMyPortraitAlias   = "portrait"
 	cmdDeleteMyPortrait  = "delete_my_portrait"
