@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func TestParseQuoteStickerCountArg(t *testing.T) {
@@ -108,5 +110,22 @@ func TestBuildQuoteAPIMediaField_GIFFrameFallbackPrefersURL(t *testing.T) {
 	}
 	if _, ok := mediaDecoded["file_id"]; ok {
 		t.Fatalf("encoded media unexpectedly has file_id: %#v", mediaDecoded)
+	}
+}
+
+func TestBuildQuoteMediaPayload_StickerFileIDFallback(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Sticker: &tgbotapi.Sticker{
+			FileID: "sticker-file-id",
+			Width:  512,
+			Height: 512,
+		},
+	}
+	media := buildQuoteMediaPayload(nil, nil, msg)
+	if media == nil {
+		t.Fatalf("expected non-nil media payload for sticker")
+	}
+	if media.FileID != "sticker-file-id" {
+		t.Fatalf("unexpected media file_id: %q", media.FileID)
 	}
 }

@@ -440,6 +440,7 @@ func requestQuoteStickerPNG(bot *tgbotapi.BotAPI, items []quoteHistoryItem) ([]b
 		if text == "" {
 			if m.Sticker != nil {
 				text = "стикер"
+				hasMedia = true
 			} else if len(m.Photo) > 0 {
 				text = "фото"
 				hasMedia = true
@@ -612,6 +613,37 @@ func buildQuoteEntitiesPayload(raw *rawMessageWithEmoji, chosenText string) []st
 func buildQuoteMediaPayload(bot *tgbotapi.BotAPI, urlCache map[string]string, msg *tgbotapi.Message) *quoteMediaPayload {
 	if msg == nil {
 		return nil
+	}
+	// Stickers: prefer thumbnail; for static stickers fallback to sticker file itself.
+	if msg.Sticker != nil {
+		st := msg.Sticker
+		if st.Thumbnail != nil {
+			th := st.Thumbnail
+			if id := strings.TrimSpace(th.FileID); id != "" {
+				url := resolveTelegramFileURL(bot, urlCache, id)
+				fileID := ""
+				if url == "" {
+					fileID = id
+				}
+				quoteMediaChoiceLog(msg, "sticker.thumbnail", url, fileID, th.Width, th.Height)
+				return &quoteMediaPayload{FileID: fileID, URL: url}
+			}
+		}
+		if !st.IsAnimated {
+			if id := strings.TrimSpace(st.FileID); id != "" {
+				url := resolveTelegramFileURL(bot, urlCache, id)
+				fileID := ""
+				if url == "" {
+					fileID = id
+				}
+				quoteMediaChoiceLog(msg, "sticker.file", url, fileID, st.Width, st.Height)
+				return &quoteMediaPayload{FileID: fileID, URL: url}
+			}
+		}
+		if id := strings.TrimSpace(st.FileID); id != "" {
+			quoteMediaChoiceLog(msg, "sticker.file_id_only", "", id, st.Width, st.Height)
+			return &quoteMediaPayload{FileID: id}
+		}
 	}
 	// Prefer plain photos.
 	if len(msg.Photo) > 0 {
