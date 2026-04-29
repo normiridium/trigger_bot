@@ -60,8 +60,7 @@ func TestBuildQuoteStickerPickerKeyboard_HasExpectedPages(t *testing.T) {
 	if len(nav) != 3 {
 		t.Fatalf("unexpected nav row size: %d", len(nav))
 	}
-	totalPages := (len(quoteStickerEmojiOptions) + quoteStickerEmojiPerPage - 1) / quoteStickerEmojiPerPage
-	totalPages = (len(effectiveQuoteStickerEmojiOptions()) + quoteStickerEmojiPerPage - 1) / quoteStickerEmojiPerPage
+	totalPages := (len(effectiveQuoteStickerEmojiOptions()) + quoteStickerEmojiPerPage - 1) / quoteStickerEmojiPerPage
 	want := "1/" + strconv.Itoa(totalPages)
 	if nav[1].Text != want {
 		t.Fatalf("unexpected page marker: %q", nav[1].Text)

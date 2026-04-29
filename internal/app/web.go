@@ -1099,7 +1099,7 @@ func (w *WebAdmin) templateDeletePost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "template not found", http.StatusNotFound)
 		return
 	}
-	if tpl != nil && strings.TrimSpace(tpl.Key) != "" {
+	if strings.TrimSpace(tpl.Key) != "" {
 		usedBy, err := w.store.findTemplateUsageByKey(tpl.Key)
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -1581,10 +1581,6 @@ func (w *WebAdmin) deletePost(rw http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(rw).Encode(struct {
 		OK bool `json:"ok"`
 	}{OK: true})
-}
-
-func redirectToListWithToken(rw http.ResponseWriter, r *http.Request) {
-	http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 }
 
 func (w *WebAdmin) exportGet(rw http.ResponseWriter, r *http.Request) {

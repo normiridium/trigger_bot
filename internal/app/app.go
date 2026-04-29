@@ -993,7 +993,8 @@ func extractLeadingReactionCandidate(text string) (reactionCandidate, string, bo
 	}
 
 	// Fallback to first custom tg-emoji candidate.
-	for _, custom := range customAll {
+	if len(customAll) > 0 {
+		custom := customAll[0]
 		customStart := custom[0]
 		customEnd := custom[1]
 		customID := ""
@@ -1939,14 +1940,6 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 	return out, true, nil
 }
 
-func htmlUserLabel(label string, userID int64) string {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		label = strconv.FormatInt(userID, 10)
-	}
-	return html.EscapeString(label) + ` (<code>` + strconv.FormatInt(userID, 10) + `</code>)`
-}
-
 func htmlUserLink(label string, userID int64) string {
 	name := strings.TrimSpace(label)
 	if name == "" {
@@ -2501,8 +2494,6 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 }
 
 func Run() {
-	rand.Seed(time.Now().UnixNano())
-
 	token := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN is required")
@@ -2614,7 +2605,11 @@ func Run() {
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
-	quoteSessions := newQuoteStickerSessionManager(time.Duration(envInt("QS_SESSION_TTL_SEC", 900)) * time.Second)
+	qsSessionTTLSec := envInt("QS_SESSION_TTL_SEC", int(quoteStickerSessionTTL/time.Second))
+	if qsSessionTTLSec < 300 {
+		qsSessionTTLSec = 300
+	}
+	quoteSessions := newQuoteStickerSessionManager(time.Duration(qsSessionTTLSec) * time.Second)
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
 		return chatRecent.RecentText(chatID, limit)
@@ -2789,7 +2784,7 @@ func Run() {
 			) {
 				continue
 			}
-			if handleQuoteStickerCallback(bot, quoteSessions, update.Update.CallbackQuery) {
+			if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
 				continue
 			}
 		}
@@ -3090,10 +3085,10 @@ func Run() {
 						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось создать сессию quote-стикера.", false)
 						continue
 					}
-					out := tgbotapi.NewMessage(msg.Chat.ID, buildQuoteStickerPickerText(*st))
-					kb := buildQuoteStickerPickerKeyboard(*st)
-					out.ReplyMarkup = kb
-					_, _ = bot.Send(out)
+					if err := sendQuoteStickerPickerMessage(bot, msg.Chat.ID, *st); err != nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось показать меню выбора эмодзи.", false)
+						continue
+					}
 					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
 						ChatID:    msg.Chat.ID,
 						MessageID: msg.MessageID,
@@ -3386,34 +3381,6 @@ func Run() {
 		}
 		continue
 	}
-}
-
-func extractNewMemberDisplayNames(msg *tgbotapi.Message) []string {
-	if msg == nil {
-		return nil
-	}
-	seen := make(map[int64]struct{})
-	out := make([]string, 0, 4)
-	add := func(u *tgbotapi.User) {
-		if u == nil {
-			return
-		}
-		if _, ok := seen[u.ID]; ok {
-			return
-		}
-		seen[u.ID] = struct{}{}
-		name := strings.TrimSpace(buildUserDisplayName(u))
-		if name != "" {
-			out = append(out, name)
-		}
-	}
-	if len(msg.NewChatMembers) > 0 {
-		for i := range msg.NewChatMembers {
-			u := &msg.NewChatMembers[i]
-			add(u)
-		}
-	}
-	return out
 }
 
 type triggerActionDeps struct {
