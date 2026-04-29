@@ -1,7 +1,6 @@
 package spotifymusic
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -239,8 +238,4 @@ func (c *Client) ensureToken(ctx context.Context) (string, error) {
 	c.token = strings.TrimSpace(payload.AccessToken)
 	c.expiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
 	return c.token, nil
-}
-
-func trimBody(raw []byte) string {
-	return strings.TrimSpace(string(bytes.TrimSpace(raw)))
 }

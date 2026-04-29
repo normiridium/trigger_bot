@@ -37,17 +37,6 @@ func sanitizeTelegramText(s string) string {
 	return strings.ToValidUTF8(s, "")
 }
 
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return s
-	}
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
-}
-
 type htmlOpenTag struct {
 	name string
 	open string
@@ -459,42 +448,6 @@ func sendPhoto(ctx sendContext, img generatedImage, caption string, spoiler bool
 		}
 	}
 	return true
-}
-
-func sendAudioFromURL(ctx sendContext, audioURL, performer, title string) error {
-	audioURL = strings.TrimSpace(audioURL)
-	if ctx.Bot == nil || ctx.ChatID == 0 || audioURL == "" {
-		return errors.New("invalid audio send params")
-	}
-	tmpPath, err := downloadAudioToTempFile(audioURL)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if rmErr := os.Remove(tmpPath); rmErr != nil && debugTriggerLogEnabled {
-			log.Printf("audio temp cleanup failed path=%q err=%v", tmpPath, rmErr)
-		}
-	}()
-
-	m := tgbotapi.NewAudio(ctx.ChatID, tgbotapi.FilePath(tmpPath))
-	if ctx.ReplyTo > 0 {
-		m.ReplyToMessageID = ctx.ReplyTo
-		m.AllowSendingWithoutReply = true
-	}
-	m.Performer = strings.TrimSpace(performer)
-	m.Title = strings.TrimSpace(title)
-	if caption := buildAudioCaption(tmpPath, "", audioURL); caption != "" {
-		m.Caption = caption
-		m.ParseMode = "HTML"
-	}
-	sent, err := ctx.Bot.Send(m)
-	if err != nil {
-		return err
-	}
-	if debugTriggerLogEnabled {
-		log.Printf("send audio ok chat=%d msg=%d replyTo=%d performer=%q title=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, m.Performer, m.Title)
-	}
-	return nil
 }
 
 func sendAudioFromFile(ctx sendContext, filePath, performer, title string) error {

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	quoteStickerSessionTTL        = 15 * time.Minute
+	quoteStickerSessionTTL        = 60 * time.Minute
 	quoteStickerHistoryMaxPerChat = 1000
 	quoteStickerEmojiPerPage      = 48
 	quoteStickerEmojiRowSize      = 6
@@ -93,10 +93,18 @@ func quoteMediaChoiceLog(msg *tgbotapi.Message, source, url, fileID string, widt
 
 func effectiveQuoteStickerEmojiOptions() []string {
 	max := quoteStickerEmojiPerPage * quoteStickerTotalPages
-	if max <= 0 || len(quoteStickerEmojiOptions) <= max {
+	if max <= 0 || len(quoteStickerEmojiOptions) == 0 {
 		return quoteStickerEmojiOptions
 	}
-	return quoteStickerEmojiOptions[:max]
+	if len(quoteStickerEmojiOptions) >= max {
+		return quoteStickerEmojiOptions[:max]
+	}
+	out := make([]string, 0, max)
+	out = append(out, quoteStickerEmojiOptions...)
+	for len(out) < max {
+		out = append(out, quoteStickerEmojiOptions[len(out)%len(quoteStickerEmojiOptions)])
+	}
+	return out
 }
 
 type quoteStickerHistory struct {
@@ -193,8 +201,8 @@ type quoteStickerSession struct {
 	CreatedAt   time.Time
 	Page        int
 	Emoji       string
+	Count       int
 	TargetMsgID int
-	StickerPNG  []byte
 }
 
 type quoteStickerSessionManager struct {
@@ -246,6 +254,17 @@ func (m *quoteStickerSessionManager) Delete(id string) {
 	m.mu.Lock()
 	delete(m.items, id)
 	m.mu.Unlock()
+}
+
+func sendQuoteStickerPickerMessage(bot *tgbotapi.BotAPI, chatID int64, st quoteStickerSession) error {
+	if bot == nil || chatID == 0 || strings.TrimSpace(st.ID) == "" {
+		return errors.New("invalid quote sticker picker params")
+	}
+	out := tgbotapi.NewMessage(chatID, buildQuoteStickerPickerText(st))
+	kb := buildQuoteStickerPickerKeyboard(st)
+	out.ReplyMarkup = kb
+	_, err := bot.Send(out)
+	return err
 }
 
 func parseQuoteStickerCountArg(raw string) int {
@@ -1048,10 +1067,6 @@ func handleQuoteStickerCommand(bot *tgbotapi.BotAPI, sessions *quoteStickerSessi
 	if len(items) == 0 {
 		return true, "Не удалось собрать сообщения для цитаты.", nil
 	}
-	img, err := requestQuoteStickerPNG(bot, items)
-	if err != nil {
-		return true, "Не удалось собрать quote-стикер: " + clipText(err.Error(), 160), nil
-	}
 	sid, _ := newUUID4()
 	st := quoteStickerSession{
 		ID:          sid,
@@ -1060,15 +1075,15 @@ func handleQuoteStickerCommand(bot *tgbotapi.BotAPI, sessions *quoteStickerSessi
 		CreatedAt:   time.Now(),
 		Page:        0,
 		Emoji:       "",
+		Count:       count,
 		TargetMsgID: target.MessageID,
-		StickerPNG:  img,
 	}
 	sessions.Put(st)
 	return true, "", &st
 }
 
-func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSessionManager, cb *tgbotapi.CallbackQuery) bool {
-	if bot == nil || sessions == nil || cb == nil {
+func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSessionManager, history *quoteStickerHistory, cb *tgbotapi.CallbackQuery) bool {
+	if bot == nil || sessions == nil || history == nil || cb == nil {
 		return false
 	}
 	raw := strings.TrimSpace(cb.Data)
@@ -1124,6 +1139,14 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 		}
 		sessions.Put(st)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+		if cb.Message != nil {
+			kb := buildQuoteStickerPickerKeyboard(st)
+			edit := tgbotapi.NewEditMessageReplyMarkup(cb.Message.Chat.ID, cb.Message.MessageID, kb)
+			if _, err := bot.Request(edit); err != nil && debugTriggerLogEnabled {
+				log.Printf("quote sticker page edit markup failed sid=%s chat=%d user=%d err=%v", st.ID, st.ChatID, st.UserID, err)
+			}
+		}
+		return true
 	case "pick":
 		idx, err := strconv.Atoi(strings.TrimSpace(arg))
 		opts := effectiveQuoteStickerEmojiOptions()
@@ -1140,7 +1163,21 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Сначала выберите эмодзи"))
 			return true
 		}
-		err := ensureQuoteStickerSetAndAdd(bot, cb.Message.Chat, cb.From.ID, st.Emoji, st.StickerPNG)
+		count := st.Count
+		if count < 1 {
+			count = 1
+		}
+		items := history.CollectBefore(st.ChatID, st.TargetMsgID, count)
+		if len(items) == 0 {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Сообщения для цитаты не найдены"))
+			return true
+		}
+		img, err := requestQuoteStickerPNG(bot, items)
+		if err != nil {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, clipText("Не удалось собрать quote-стикер: "+err.Error(), 180)))
+			return true
+		}
+		err = ensureQuoteStickerSetAndAdd(bot, cb.Message.Chat, cb.From.ID, st.Emoji, img)
 		if err != nil {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, clipText("Не удалось сохранить: "+err.Error(), 180)))
 			if debugTriggerLogEnabled {
