@@ -271,6 +271,7 @@ func reply(ctx sendContext, text string, preview bool) {
 }
 
 func sendHTML(ctx sendContext, html string, preview bool) bool {
+	html = canonicalizeTGEmojiTags(html)
 	html = normalizeTelegramLineBreaks(html)
 	html = sanitizeTelegramText(html)
 	if strings.TrimSpace(html) == "" {

@@ -66,6 +66,16 @@ type UIPickerRecentSets struct {
 	StickerSets []UIPickerRecentStickerSet `json:"sticker_sets"`
 }
 
+type ChatSummary struct {
+	ChatID             int64
+	Summary            string
+	MessagesSince      int
+	LastMessageID      int
+	LastMessageUnix    int64
+	SummarizedMessages int
+	UpdatedAt          int64
+}
+
 func parseResponseTextRaw(raw json.RawMessage) []ResponseTextItem {
 	if len(raw) == 0 {
 		return nil
@@ -275,6 +285,29 @@ func (s *Store) SaveUIPickerRecentSets(v UIPickerRecentSets) error {
 		return errors.New("mongo backend not initialized")
 	}
 	return s.mg.saveUIPickerRecentSets(v)
+}
+
+func (s *Store) GetChatSummary(chatID int64) (*ChatSummary, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	if chatID == 0 {
+		return nil, nil
+	}
+	return s.mg.getChatSummary(chatID)
+}
+
+func (s *Store) SaveChatSummary(v ChatSummary) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	if v.ChatID == 0 {
+		return nil
+	}
+	if v.UpdatedAt <= 0 {
+		v.UpdatedAt = time.Now().Unix()
+	}
+	return s.mg.saveChatSummary(v)
 }
 
 func sanitizeChance(v int) int {

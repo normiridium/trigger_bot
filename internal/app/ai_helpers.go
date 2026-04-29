@@ -406,6 +406,99 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	return out, nil
 }
 
+func generateChatSummary(oldSummary string, messages []string) (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return "", errors.New("OPENAI_API_KEY is empty")
+	}
+	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	if model == "" {
+		model = "gpt-5-mini"
+	}
+	cleanMessages := make([]string, 0, len(messages))
+	for _, message := range messages {
+		val := strings.TrimSpace(message)
+		if val == "" {
+			continue
+		}
+		cleanMessages = append(cleanMessages, clipText(val, 900))
+	}
+	if len(cleanMessages) == 0 {
+		return "", errors.New("empty message batch")
+	}
+	var batch strings.Builder
+	for i, message := range cleanMessages {
+		fmt.Fprintf(&batch, "%d) %s\n", i+1, message)
+	}
+	var userPrompt strings.Builder
+	if strings.TrimSpace(oldSummary) == "" {
+		userPrompt.WriteString("Составь краткую сводку переписки чата по новым сообщениям.\n")
+		userPrompt.WriteString("Верни только сводку на русском, без вводных фраз и без дисклеймеров.\n")
+	} else {
+		userPrompt.WriteString("Обнови краткую сводку переписки чата.\n")
+		userPrompt.WriteString("Учитывай предыдущую сводку и новые сообщения.\n")
+		userPrompt.WriteString("Верни только обновленную сводку на русском, без вводных фраз и дисклеймеров.\n\n")
+		userPrompt.WriteString("Предыдущая сводка:\n")
+		userPrompt.WriteString(strings.TrimSpace(oldSummary))
+		userPrompt.WriteString("\n\n")
+	}
+	userPrompt.WriteString("Новые сообщения чата:\n")
+	userPrompt.WriteString(strings.TrimSpace(batch.String()))
+
+	systemPrompt := "Ты делаешь сжатую полезную сводку чата. " +
+		"Пиши нейтрально и бережно. " +
+		"Формат: 6-12 коротких пунктов с ключевыми темами, решениями и договоренностями без лишних деталей."
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt.String()},
+		},
+		"temperature": 0.2,
+		"max_tokens":  700,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 35 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("openai summary status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+	}
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "", err
+	}
+	if len(result.Choices) == 0 {
+		return "", errors.New("empty summary choices")
+	}
+	out := strings.TrimSpace(result.Choices[0].Message.Content)
+	if out == "" {
+		return "", errors.New("empty summary answer")
+	}
+	return out, nil
+}
+
 func generateChatGPTImage(ctx templateContext, promptTemplate string) (generatedImage, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
