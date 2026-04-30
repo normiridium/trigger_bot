@@ -3,6 +3,7 @@ trigger_admin_bot
 
 # secrets
 .env
+cookies.txt
 
 # local databases
 *.db

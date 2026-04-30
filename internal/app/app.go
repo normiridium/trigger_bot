@@ -2598,13 +2598,15 @@ func Run() {
 		mediaMaxMB = telegramUploadMaxMB
 	}
 	mediaDownloader := mediadl.Downloader{
-		YTDLPBin:      strings.TrimSpace(os.Getenv("YTDLP_BIN")),
-		ProxySocks:    strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
-		AudioFormat:   strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
-		AudioQuality:  strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
-		ExtractorArgs: strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
-		MaxSizeMB:     mediaMaxMB,
-		MaxHeight:     envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
+		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		ProxySocks:         strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		AudioFormat:        strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
+		AudioQuality:       strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
+		ExtractorArgs:      strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
+		CookiesFile:        strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FILE")),
+		CookiesFromBrowser: strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
+		MaxSizeMB:          mediaMaxMB,
+		MaxHeight:          envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
 	}
 	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
@@ -4018,12 +4020,6 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			if _, err := deps.Bot.Send(m); err != nil {
 				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки списка Spotify", err)
 				return
-			}
-			if tr.DeleteSource && msg.MessageID > 0 {
-				_, _ = deps.Bot.Request(tgbotapi.DeleteMessageConfig{
-					ChatID:    msg.Chat.ID,
-					MessageID: msg.MessageID,
-				})
 			}
 			if deps.IdleTracker != nil {
 				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
