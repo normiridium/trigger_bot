@@ -31,7 +31,15 @@ func TestDownloaderDefaults(t *testing.T) {
 }
 
 func TestDownloaderBuildDownloadArgs(t *testing.T) {
-	d := Downloader{AudioFormat: "m4a", AudioQuality: "192K", ExtractorArgs: "youtube:player_client=web", MaxSizeMB: 77, MaxHeight: 480, ProxySocks: "127.0.0.1:1234"}
+	d := Downloader{
+		AudioFormat:        "m4a",
+		AudioQuality:       "192K",
+		ExtractorArgs:      "youtube:player_client=web",
+		CookiesFromBrowser: "firefox",
+		MaxSizeMB:          77,
+		MaxHeight:          480,
+		ProxySocks:         "127.0.0.1:1234",
+	}
 	args := d.buildDownloadArgs("https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--proxy socks5://127.0.0.1:1234") {
@@ -46,8 +54,22 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 	if !strings.Contains(joined, "--max-filesize 77M") {
 		t.Fatalf("expected max-filesize arg, got: %s", joined)
 	}
+	if !strings.Contains(joined, "--cookies-from-browser firefox") {
+		t.Fatalf("expected cookies-from-browser arg, got: %s", joined)
+	}
 	if !strings.Contains(joined, "height<=480") {
 		t.Fatalf("expected max height in format selector, got: %s", joined)
+	}
+}
+
+func TestAudioFormatSelectorsForRetry(t *testing.T) {
+	d := Downloader{MaxHeight: 480}
+	got := strings.Join(d.audioFormatSelectorsForRetry(), " | ")
+	if !strings.Contains(got, "bestaudio/best[height<=480]/best") {
+		t.Fatalf("expected primary selector with max height, got: %s", got)
+	}
+	if !strings.Contains(got, "18/best") {
+		t.Fatalf("expected compat selector, got: %s", got)
 	}
 }
 
@@ -67,11 +89,14 @@ func TestDownloaderBuildVideoDownloadArgs(t *testing.T) {
 }
 
 func TestDownloaderBuildProbeArgsWithoutFormat(t *testing.T) {
-	d := Downloader{}
+	d := Downloader{CookiesFile: "/tmp/cookies.txt"}
 	args := d.buildProbeArgs("https://instagram.com/reel/abc", "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, " -f ") || strings.HasPrefix(joined, "-f ") {
 		t.Fatalf("unexpected format flag in probe args: %s", joined)
+	}
+	if !strings.Contains(joined, "--cookies /tmp/cookies.txt") {
+		t.Fatalf("expected cookies arg, got: %s", joined)
 	}
 }
 

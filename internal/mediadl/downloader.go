@@ -25,13 +25,15 @@ const (
 )
 
 type Downloader struct {
-	YTDLPBin      string
-	ProxySocks    string
-	AudioFormat   string
-	AudioQuality  string
-	ExtractorArgs string
-	MaxSizeMB     int
-	MaxHeight     int
+	YTDLPBin           string
+	ProxySocks         string
+	AudioFormat        string
+	AudioQuality       string
+	ExtractorArgs      string
+	CookiesFile        string
+	CookiesFromBrowser string
+	MaxSizeMB          int
+	MaxHeight          int
 }
 
 func (d Downloader) ConfiguredMaxSizeMB() int {
@@ -101,9 +103,7 @@ func (d Downloader) DownloadAudioFromURL(ctx context.Context, rawURL string) (Do
 		return DownloadResult{}, err
 	}
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
-	args := d.buildDownloadArgs(probe.SourceURL, outTpl)
-
-	path, err := d.runDownload(ctx, args)
+	path, err := d.downloadAudioWithFallbacks(ctx, probe.Service, probe.SourceURL, outTpl)
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -218,6 +218,19 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 	args := d.buildProbeArgs(normURL, formatSelector)
 	out, err := d.runJSON(ctx, args)
 	if err != nil {
+		if strings.TrimSpace(formatSelector) != "" && isYTDLPFormatUnavailable(err) {
+			// Some YouTube videos expose inconsistent format maps for selected clients.
+			// Retry metadata probe without explicit -f selector.
+			out, err = d.runJSON(ctx, d.buildProbeArgs(normURL, ""))
+		}
+	}
+	if err == nil && service == "youtube" && !hasPlayableFormats(out) {
+		out, err = d.runJSON(ctx, d.buildProbeArgsYouTubeAndroidNoAuth(normURL, formatSelector))
+		if err != nil && strings.TrimSpace(formatSelector) != "" && isYTDLPFormatUnavailable(err) {
+			out, err = d.runJSON(ctx, d.buildProbeArgsYouTubeAndroidNoAuth(normURL, ""))
+		}
+	}
+	if err != nil {
 		return ProbeResult{}, err
 	}
 	artist := firstNonEmpty(strings.TrimSpace(out.Artist), strings.TrimSpace(out.Uploader), strings.TrimSpace(out.Channel), strings.TrimSpace(out.Creator))
@@ -321,10 +334,12 @@ func (d Downloader) buildProbeArgs(url, formatSelector string) []string {
 		"--skip-download",
 		"--quiet",
 		"--no-warnings",
+		"--ignore-no-formats-error",
 		"--extractor-args", d.extractorArgs(),
 		"--dump-single-json",
 		url,
 	}
+	args = append(d.ytDLPAuthArgs(), args...)
 	if strings.TrimSpace(formatSelector) != "" {
 		args = append(args[:len(args)-1], "-f", formatSelector, url)
 	}
@@ -335,17 +350,24 @@ func (d Downloader) buildProbeArgs(url, formatSelector string) []string {
 }
 
 func (d Downloader) buildDownloadArgs(url, outTpl string) []string {
+	return d.buildDownloadArgsWithOptions(url, outTpl, d.audioFormatSelector(), d.extractorArgs(), true)
+}
+
+func (d Downloader) buildDownloadArgsWithOptions(url, outTpl, formatSelector, extractorArgs string, includeAuth bool) []string {
 	args := []string{
-		"-f", d.audioFormatSelector(),
+		"-f", formatSelector,
 		"-x",
 		"--audio-format", d.audioFormat(),
 		"--audio-quality", d.audioQuality(),
 		"--no-playlist",
 		"--quiet",
 		"--no-warnings",
-		"--extractor-args", d.extractorArgs(),
+		"--extractor-args", extractorArgs,
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
+	}
+	if includeAuth {
+		args = append(d.ytDLPAuthArgs(), args...)
 	}
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
@@ -368,6 +390,7 @@ func (d Downloader) buildVideoDownloadArgs(url, outTpl string) []string {
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
 	}
+	args = append(d.ytDLPAuthArgs(), args...)
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
 	}
@@ -387,6 +410,7 @@ func (d Downloader) buildGenericDownloadArgs(url, outTpl string) []string {
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
 	}
+	args = append(d.ytDLPAuthArgs(), args...)
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
 	}
@@ -463,6 +487,200 @@ func (d Downloader) extractorArgs() string {
 		return v
 	}
 	return "youtube:player_client=android,web"
+}
+
+func (d Downloader) ytDLPAuthArgs() []string {
+	if v := strings.TrimSpace(d.CookiesFromBrowser); v != "" {
+		return []string{"--cookies-from-browser", v}
+	}
+	if v := strings.TrimSpace(d.CookiesFile); v != "" {
+		return []string{"--cookies", v}
+	}
+	return nil
+}
+
+func isYTDLPFormatUnavailable(err error) bool {
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "requested format is not available")
+}
+
+func hasPlayableFormats(meta probeJSON) bool {
+	for _, f := range meta.Formats {
+		if strings.EqualFold(strings.TrimSpace(f.Acodec), "none") && strings.EqualFold(strings.TrimSpace(f.Vcodec), "none") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (d Downloader) buildProbeArgsYouTubeAndroidNoAuth(url, formatSelector string) []string {
+	args := []string{
+		"--no-playlist",
+		"--skip-download",
+		"--quiet",
+		"--no-warnings",
+		"--ignore-no-formats-error",
+		"--extractor-args", "youtube:player_client=android",
+		"--dump-single-json",
+		url,
+	}
+	if strings.TrimSpace(formatSelector) != "" {
+		args = append(args[:len(args)-1], "-f", formatSelector, url)
+	}
+	if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
+		args = append([]string{"--proxy", "socks5://" + proxy}, args...)
+	}
+	return args
+}
+
+func (d Downloader) buildDownloadArgsYouTubeAndroidNoAuth(url, outTpl string) []string {
+	return d.buildDownloadArgsWithOptions(url, outTpl, d.audioFormatSelector(), "youtube:player_client=android", false)
+}
+
+func (d Downloader) audioFormatSelectorsForRetry() []string {
+	return []string{
+		d.audioFormatSelector(),
+		"bestaudio/best",
+		"18/best",
+	}
+}
+
+func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service, url, outTpl string) (string, error) {
+	if service != "youtube" {
+		return d.runDownload(ctx, d.buildDownloadArgs(url, outTpl))
+	}
+	type candidate struct {
+		format      string
+		extractor   string
+		includeAuth bool
+	}
+	ids, useAndroidNoAuth := d.discoverYouTubeAudioFormatIDs(ctx, url)
+	candidates := make([]candidate, 0, 6)
+	primaryExtractor := d.extractorArgs()
+	primaryAuth := true
+	if useAndroidNoAuth {
+		primaryExtractor = "youtube:player_client=android"
+		primaryAuth = false
+	}
+	for _, f := range ids {
+		ff := strings.TrimSpace(f)
+		if ff == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{format: ff, extractor: primaryExtractor, includeAuth: primaryAuth})
+		if len(candidates) >= 3 {
+			break
+		}
+	}
+	for _, f := range d.audioFormatSelectorsForRetry() {
+		ff := strings.TrimSpace(f)
+		if ff == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{format: ff, extractor: primaryExtractor, includeAuth: primaryAuth})
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	var lastErr error
+	attempts := 0
+	for _, c := range candidates {
+		key := fmt.Sprintf("%s|%s|%t", c.format, c.extractor, c.includeAuth)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		attempts++
+		if attempts > 5 {
+			break
+		}
+		path, err := d.runDownload(ctx, d.buildDownloadArgsWithOptions(url, outTpl, c.format, c.extractor, c.includeAuth))
+		if err == nil {
+			return path, nil
+		}
+		lastErr = err
+		if !isYTDLPFormatUnavailable(err) {
+			return "", err
+		}
+	}
+	if !useAndroidNoAuth {
+		// Final compact fallback to reduce request spam.
+		for _, f := range []string{"bestaudio/best", "18/best"} {
+			path, err := d.runDownload(ctx, d.buildDownloadArgsWithOptions(url, outTpl, f, "youtube:player_client=android", false))
+			if err == nil {
+				return path, nil
+			}
+			lastErr = err
+			if !isYTDLPFormatUnavailable(err) {
+				return "", err
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no yt-dlp candidates were attempted")
+	}
+	return "", lastErr
+}
+
+func (d Downloader) discoverYouTubeAudioFormatIDs(ctx context.Context, url string) ([]string, bool) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 8)
+	appendIDs := func(meta probeJSON) {
+		for _, id := range playableAudioFormatIDs(meta, d.maxHeight()) {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	if meta, err := d.runJSON(ctx, d.buildProbeArgs(url, "")); err == nil {
+		appendIDs(meta)
+		if len(out) > 0 {
+			return out, false
+		}
+	}
+	if meta, err := d.runJSON(ctx, d.buildProbeArgsYouTubeAndroidNoAuth(url, "")); err == nil {
+		appendIDs(meta)
+		return out, true
+	}
+	return out, false
+}
+
+func playableAudioFormatIDs(meta probeJSON, maxHeight int) []string {
+	ids := make([]string, 0, 8)
+	seen := map[string]struct{}{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	// Prefer audio-only formats first.
+	for _, f := range meta.Formats {
+		if strings.EqualFold(strings.TrimSpace(f.Acodec), "none") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(f.Vcodec), "none") {
+			continue
+		}
+		add(f.FormatID)
+	}
+	// Then progressive streams with embedded audio.
+	for _, f := range meta.Formats {
+		if strings.EqualFold(strings.TrimSpace(f.Acodec), "none") || strings.EqualFold(strings.TrimSpace(f.Vcodec), "none") {
+			continue
+		}
+		if maxHeight > 0 && f.Height > 0 && f.Height > maxHeight {
+			continue
+		}
+		add(f.FormatID)
+	}
+	return ids
 }
 
 func (d Downloader) maxSizeMB() int {
