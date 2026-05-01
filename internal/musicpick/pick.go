@@ -89,12 +89,8 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 				MessageID: cb.Message.MessageID,
 			})
 		}
-		if req.DeleteSource && req.SourceMsgID > 0 {
-			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-				ChatID:    req.ChatID,
-				MessageID: req.SourceMsgID,
-			})
-		}
+		// On cancel we intentionally keep source message even when delete flag is enabled.
+		_ = req
 		return true
 	}
 	if !strings.HasPrefix(cb.Data, "musicpick_s:") && !strings.HasPrefix(cb.Data, "musicpick_y:") {
