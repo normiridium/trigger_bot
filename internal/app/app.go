@@ -2830,11 +2830,13 @@ func Run() {
 					_ = ctx
 					log.Printf("media choice selected chat=%d user=%d mode=%s url=%q", req.ChatID, req.UserID, mode, clipText(req.URL, 220))
 					task := mediaDownloadTask{
-						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-						URL:      req.URL,
-						Mode:     mode,
-						DL:       mediaDownloader,
-						ReportTo: req.ChatID,
+						SendCtx:      sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+						URL:          req.URL,
+						Mode:         mode,
+						DL:           mediaDownloader,
+						SourceMsgID:  req.SourceMsgID,
+						DeleteSource: req.DeleteSource,
+						ReportTo:     req.ChatID,
 					}
 					if mediaQueue == nil || !mediaQueue.enqueue(task) {
 						return errors.New("media queue is full")

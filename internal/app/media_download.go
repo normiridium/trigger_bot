@@ -536,14 +536,16 @@ func yandexPerformerTitleFromPath(path string) (string, string) {
 }
 
 type mediaDownloadTask struct {
-	SendCtx  sendContext
-	URL      string
-	Mode     string
-	DL       MediaDownloadPort
-	Msg      *tgbotapi.Message
-	Trigger  *Trigger
-	Idle     *trigger.IdleTracker
-	ReportTo int64
+	SendCtx      sendContext
+	URL          string
+	Mode         string
+	DL           MediaDownloadPort
+	Msg          *tgbotapi.Message
+	Trigger      *Trigger
+	SourceMsgID  int
+	DeleteSource bool
+	Idle         *trigger.IdleTracker
+	ReportTo     int64
 }
 
 type mediaDownloadQueue struct {
@@ -590,7 +592,14 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 						chatID = task.SendCtx.ChatID
 					}
 					log.Printf("media queue send failed chat=%d err=%v", chatID, err)
-					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания аудио", err)
+					title := "ошибка скачивания файла"
+					switch strings.TrimSpace(strings.ToLower(task.Mode)) {
+					case mediadl.ModeVideo:
+						title = "ошибка скачивания видео"
+					case mediadl.ModeAudio:
+						title = "ошибка скачивания аудио"
+					}
+					reportChatFailure(task.SendCtx.Bot, chatID, title, errors.New(userFacingMediaDownloadError(err)))
 					continue
 				}
 				log.Printf("media worker=%d success mode=%s chat=%d url=%q", id, task.Mode, task.SendCtx.ChatID, clipText(task.URL, 220))
@@ -599,11 +608,39 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 				}
 				if task.Msg != nil && task.Trigger != nil {
 					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+				} else if task.DeleteSource && task.SourceMsgID > 0 {
+					_, _ = task.SendCtx.Bot.Request(tgbotapi.DeleteMessageConfig{
+						ChatID:    task.SendCtx.ChatID,
+						MessageID: task.SourceMsgID,
+					})
 				}
 			}
 		}(workerID)
 	}
 	return q
+}
+
+func userFacingMediaDownloadError(err error) string {
+	if err == nil {
+		return "не удалось скачать: неизвестная ошибка"
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "sign in to confirm your age"):
+		return "не прошло по возрастному ограничению YouTube"
+	case strings.Contains(msg, "sign in to confirm you're not a bot") || strings.Contains(msg, "sign in to confirm you’re not a bot"):
+		return "YouTube запросил подтверждение, что это не бот"
+	case strings.Contains(msg, "requested format is not available"):
+		return "не удалось подобрать доступный формат для этого видео"
+	case strings.Contains(msg, "n challenge solving failed"):
+		return "YouTube временно не выдал медиа-потоки для этого видео"
+	case strings.Contains(msg, "only images are available for download") || strings.Contains(msg, "storyboard"):
+		return "YouTube вернул только storyboard вместо аудио/видео"
+	case strings.Contains(msg, "unsupported media url"):
+		return "ссылка не поддерживается"
+	default:
+		return "не удалось скачать: неизвестная ошибка"
+	}
 }
 
 func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {

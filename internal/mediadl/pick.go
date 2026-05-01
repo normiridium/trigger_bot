@@ -111,9 +111,6 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 	if cb.Message != nil {
 		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: cb.Message.Chat.ID, MessageID: cb.Message.MessageID})
 	}
-	if req.DeleteSource && req.SourceMsgID > 0 {
-		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: req.ChatID, MessageID: req.SourceMsgID})
-	}
 	return true
 }
 
