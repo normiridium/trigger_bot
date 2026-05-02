@@ -406,7 +406,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	return out, nil
 }
 
-func generateChatSummary(oldSummary string, messages []string) (string, error) {
+func generateChatSummary(messages []string) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return "", errors.New("OPENAI_API_KEY is empty")
@@ -431,17 +431,9 @@ func generateChatSummary(oldSummary string, messages []string) (string, error) {
 		fmt.Fprintf(&batch, "%d) %s\n", i+1, message)
 	}
 	var userPrompt strings.Builder
-	if strings.TrimSpace(oldSummary) == "" {
-		userPrompt.WriteString("Составь краткую сводку переписки чата по новым сообщениям.\n")
-		userPrompt.WriteString("Верни только сводку на русском, без вводных фраз и без дисклеймеров.\n")
-	} else {
-		userPrompt.WriteString("Обнови краткую сводку переписки чата.\n")
-		userPrompt.WriteString("Учитывай предыдущую сводку и новые сообщения.\n")
-		userPrompt.WriteString("Верни только обновленную сводку на русском, без вводных фраз и дисклеймеров.\n\n")
-		userPrompt.WriteString("Предыдущая сводка:\n")
-		userPrompt.WriteString(strings.TrimSpace(oldSummary))
-		userPrompt.WriteString("\n\n")
-	}
+	userPrompt.WriteString("Составь новую краткую сводку переписки чата только по этим сообщениям.\n")
+	userPrompt.WriteString("Не используй никакие прошлые сводки или внешний контекст.\n")
+	userPrompt.WriteString("Верни только сводку на русском, без вводных фраз и без дисклеймеров.\n")
 	userPrompt.WriteString("Новые сообщения чата:\n")
 	userPrompt.WriteString(strings.TrimSpace(batch.String()))
 

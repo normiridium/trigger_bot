@@ -17,7 +17,6 @@ const (
 type chatSummaryTask struct {
 	chatID       int64
 	messages     []string
-	oldSummary   string
 	lastMessage  int
 	lastUnixTime int64
 }
@@ -108,20 +107,9 @@ func (t *chatSummaryTracker) ObserveMessage(msg *tgbotapi.Message, text string) 
 	if !ok || len(batch) == 0 {
 		return
 	}
-	prev, err := t.store.GetChatSummary(chatID)
-	if err != nil {
-		log.Printf("chat summary load failed chat=%d err=%v", chatID, err)
-		t.prependBatch(chatID, batch)
-		return
-	}
-	oldSummary := ""
-	if prev != nil {
-		oldSummary = strings.TrimSpace(prev.Summary)
-	}
 	task := chatSummaryTask{
 		chatID:       chatID,
 		messages:     append([]string(nil), batch...),
-		oldSummary:   oldSummary,
 		lastMessage:  msg.MessageID,
 		lastUnixTime: time.Now().Unix(),
 	}
@@ -247,7 +235,7 @@ func (t *chatSummaryTracker) worker() {
 }
 
 func (t *chatSummaryTracker) processTask(task chatSummaryTask) {
-	summary, err := generateChatSummary(task.oldSummary, task.messages)
+	summary, err := generateChatSummary(task.messages)
 	if err != nil {
 		log.Printf("chat summary generation failed chat=%d err=%v", task.chatID, err)
 		t.prependBatch(task.chatID, task.messages)
