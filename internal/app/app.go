@@ -848,9 +848,6 @@ func canonicalizeTGEmojiTags(s string) string {
 	// Normalize it early so Telegram parser doesn't fail on unexpected closing tags.
 	s = tgEmojiTypoTagRe.ReplaceAllString(s, "<${1}tg-emoji")
 	s = strings.ReplaceAll(s, `\"`, `"`)
-	s = strings.ReplaceAll(s, "&lt;", "<")
-	s = strings.ReplaceAll(s, "&gt;", ">")
-	s = strings.ReplaceAll(s, "&quot;", `"`)
 	if !strings.Contains(strings.ToLower(s), "tg-emoji") {
 		return s
 	}
@@ -4241,6 +4238,32 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 		log.Printf("send tiktok queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
+		return
+	case ActionTypeMediaCoub:
+		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		targetURL := extractSupportedMediaURLByService(query, "coub")
+		if targetURL == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+			replyTo = msg.MessageID
+		}
+		task := mediaDownloadTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			URL:      targetURL,
+			Mode:     mediadl.ModeAuto,
+			DL:       deps.MediaDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.MediaQueue == nil || !deps.MediaQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания Coub", errors.New("media download queue is full"))
+			return
+		}
+		log.Printf("send coub queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 		return
 	case ActionTypeMediaX:
 		query := buildMediaDownloadQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)

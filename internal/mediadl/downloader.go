@@ -215,6 +215,10 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 	if !ok {
 		return ProbeResult{}, ErrUnsupportedURL
 	}
+	if service != "youtube" {
+		// Non-YouTube extractors often don't expose/accept height constraints for audio probing.
+		formatSelector = ""
+	}
 	args := d.buildProbeArgs(normURL, formatSelector)
 	out, err := d.runJSON(ctx, args)
 	if err != nil {
@@ -548,7 +552,7 @@ func (d Downloader) audioFormatSelectorsForRetry() []string {
 
 func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service, url, outTpl string) (string, error) {
 	if service != "youtube" {
-		return d.runDownload(ctx, d.buildDownloadArgs(url, outTpl))
+		return d.runDownload(ctx, d.buildDownloadArgsWithOptions(url, outTpl, "bestaudio/best", d.extractorArgs(), true))
 	}
 	type candidate struct {
 		format      string

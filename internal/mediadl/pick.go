@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,24 @@ var choiceMu sync.Mutex
 var choiceRequests = make(map[string]ChoiceRequest)
 
 func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.InlineKeyboardMarkup {
+	_, service, _ := NormalizeSupportedURL(req.URL)
+	if service == "coub" {
+		audioToken := putChoice(req)
+		videoToken := putChoice(req)
+		cancelToken := putChoice(req)
+		rows := [][]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "mdpick_a:"+audioToken),
+				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_cv:"+videoToken),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		}
+		_ = msg
+		return tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+
 	audioToken := putChoice(req)
 	videoToken := putChoice(req)
 	cancelToken := putChoice(req)
@@ -80,6 +99,74 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		// On cancel we intentionally keep source message even if delete flag is enabled.
 		_ = req
 		return true
+	case strings.HasPrefix(cb.Data, "mdpick_cv:"):
+		token = strings.TrimPrefix(cb.Data, "mdpick_cv:")
+		req, ok, msg := takeChoice(token, cb.From.ID)
+		if !ok {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+			return true
+		}
+		token1 := putChoice(req)
+		token2 := putChoice(req)
+		token5 := putChoice(req)
+		tokenAll := putChoice(req)
+		backToken := putChoice(req)
+		cancelToken := putChoice(req)
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("1", "mdpick_cl1:"+token1),
+				tgbotapi.NewInlineKeyboardButtonData("2", "mdpick_cl2:"+token2),
+				tgbotapi.NewInlineKeyboardButtonData("5", "mdpick_cl5:"+token5),
+				tgbotapi.NewInlineKeyboardButtonData("Все", "mdpick_cla:"+tokenAll),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Назад", "mdpick_cb:"+backToken),
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		)
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(cb.Message.Chat.ID, cb.Message.MessageID, "Сколько кусочков Coub оставить?", kb)
+			_, _ = bot.Request(edit)
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Выбери количество"))
+		return true
+	case strings.HasPrefix(cb.Data, "mdpick_cb:"):
+		token = strings.TrimPrefix(cb.Data, "mdpick_cb:")
+		req, ok, msg := takeChoice(token, cb.From.ID)
+		if !ok {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+			return true
+		}
+		audioToken := putChoice(req)
+		videoToken := putChoice(req)
+		cancelToken := putChoice(req)
+		kb := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "mdpick_a:"+audioToken),
+				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_cv:"+videoToken),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		)
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(cb.Message.Chat.ID, cb.Message.MessageID, "Выбери формат скачивания:", kb)
+			_, _ = bot.Request(edit)
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Назад"))
+		return true
+	case strings.HasPrefix(cb.Data, "mdpick_cl1:"):
+		mode = "coub_loop:1"
+		token = strings.TrimPrefix(cb.Data, "mdpick_cl1:")
+	case strings.HasPrefix(cb.Data, "mdpick_cl2:"):
+		mode = "coub_loop:2"
+		token = strings.TrimPrefix(cb.Data, "mdpick_cl2:")
+	case strings.HasPrefix(cb.Data, "mdpick_cl5:"):
+		mode = "coub_loop:5"
+		token = strings.TrimPrefix(cb.Data, "mdpick_cl5:")
+	case strings.HasPrefix(cb.Data, "mdpick_cla:"):
+		mode = "coub_loop:all"
+		token = strings.TrimPrefix(cb.Data, "mdpick_cla:")
 	default:
 		return false
 	}
@@ -94,6 +181,12 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		status := "🎞 Выбрано: видео"
 		if mode == ModeAudio {
 			status = "🎵 Выбрано: аудио"
+		} else if strings.HasPrefix(mode, "coub_loop:") {
+			label := strings.TrimPrefix(mode, "coub_loop:")
+			if label == "all" {
+				label = "все"
+			}
+			status = fmt.Sprintf("🎞 Coub: %s кусочков", label)
 		}
 		_, _ = bot.Request(tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, status))
 	}

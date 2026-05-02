@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -142,6 +143,18 @@ func targetVideoBitrateKbps(limitBytes int64, durationSec float64) int {
 		return 220
 	}
 	return videoKbps
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func processSpotifyPick(ctx context.Context, sendCtx sendContext, dl SpotifyDownloadPort, req pick.PickRequest) error {
@@ -657,6 +670,16 @@ func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
 
 func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode string) error {
 	mode = strings.TrimSpace(strings.ToLower(mode))
+	coubLoopParts := 0
+	if strings.HasPrefix(mode, "coub_loop:") {
+		spec := strings.TrimSpace(strings.TrimPrefix(mode, "coub_loop:"))
+		if spec == "all" {
+			coubLoopParts = 0
+		} else if v, err := strconv.Atoi(spec); err == nil && v > 0 {
+			coubLoopParts = v
+		}
+		mode = mediadl.ModeAuto
+	}
 	if mode == "" {
 		mode = mediadl.ModeAudio
 	}
@@ -680,6 +703,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			log.Printf("media video downloaded chat=%d path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
 		}
 		videoPath := res.FilePath
+		coubLoopPath := ""
 		defer func() {
 			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
 				log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
@@ -689,7 +713,22 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 					log.Printf("media temp cleanup failed path=%q err=%v", videoPath, rmErr)
 				}
 			}
+			if coubLoopPath != "" && coubLoopPath != videoPath && coubLoopPath != res.FilePath {
+				_ = os.Remove(coubLoopPath)
+			}
 		}()
+		if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+			loopSec := envFloat("COUB_LOOP_SECONDS", 0)
+			if loopSec <= 0 {
+				loopSec = res.Duration
+			}
+			if looped, err := buildCoubLoopedVideo(ctx, res.FilePath, loopSec, coubLoopParts); err == nil && strings.TrimSpace(looped) != "" {
+				coubLoopPath = looped
+				videoPath = looped
+			} else if debugTriggerLogEnabled {
+				log.Printf("coub loop postprocess skipped path=%q err=%v", res.FilePath, err)
+			}
+		}
 		if err := ensureTelegramUploadLimit(videoPath); err != nil {
 			if !errors.Is(err, errTelegramUploadTooLarge) {
 				return err
@@ -720,9 +759,19 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if st, stErr := os.Stat(res.FilePath); stErr == nil {
 			log.Printf("media auto downloaded chat=%d kind=%s path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.MediaKind, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
 		}
+		mediaPath := res.FilePath
+		coubLoopPath := ""
 		defer func() {
 			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
 				log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+			}
+			if mediaPath != res.FilePath {
+				if rmErr := os.Remove(mediaPath); rmErr != nil && debugTriggerLogEnabled {
+					log.Printf("media temp cleanup failed path=%q err=%v", mediaPath, rmErr)
+				}
+			}
+			if coubLoopPath != "" && coubLoopPath != mediaPath && coubLoopPath != res.FilePath {
+				_ = os.Remove(coubLoopPath)
 			}
 		}()
 		title := strings.TrimSpace(res.Title)
@@ -731,14 +780,26 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		}
 		switch res.MediaKind {
 		case mediadl.MediaKindPhoto:
-			return sendPhotoFromFile(sendCtx, res.FilePath, buildMediaPhotoCaption(res.FilePath, title, res.SourceURL, res.Service))
+			return sendPhotoFromFile(sendCtx, mediaPath, buildMediaPhotoCaption(mediaPath, title, res.SourceURL, res.Service))
 		case mediadl.MediaKindAudio:
-			return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 		default:
-			if err := ensureTelegramUploadLimit(res.FilePath); err != nil {
+			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+				loopSec := envFloat("COUB_LOOP_SECONDS", 0)
+				if loopSec <= 0 {
+					loopSec = res.Duration
+				}
+				if looped, err := buildCoubLoopedVideo(ctx, mediaPath, loopSec, coubLoopParts); err == nil && strings.TrimSpace(looped) != "" {
+					coubLoopPath = looped
+					mediaPath = looped
+				} else if debugTriggerLogEnabled {
+					log.Printf("coub loop postprocess skipped path=%q err=%v", mediaPath, err)
+				}
+			}
+			if err := ensureTelegramUploadLimit(mediaPath); err != nil {
 				return err
 			}
-			return sendVideoFromFile(sendCtx, res.FilePath, buildMediaVideoCaption(res.FilePath, title, res.SourceURL, res.Service))
+			return sendVideoFromFile(sendCtx, mediaPath, buildMediaVideoCaption(mediaPath, title, res.SourceURL, res.Service))
 		}
 	}
 	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
@@ -760,6 +821,192 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		title = strings.TrimSpace(rawURL)
 	}
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+}
+
+func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec float64, loopParts int) (string, error) {
+	inputPath = strings.TrimSpace(inputPath)
+	if inputPath == "" {
+		return "", errors.New("empty coub input path")
+	}
+	audioDuration, err := probeAudioDurationSec(inputPath)
+	if err != nil || audioDuration <= 0 {
+		audioDuration, err = probeMediaDurationSec(inputPath)
+		if err != nil || audioDuration <= 0 {
+			return "", fmt.Errorf("coub audio duration probe failed: %w", err)
+		}
+	}
+	fps, err := probeVideoFPS(inputPath)
+	if err != nil || fps <= 0 {
+		fps = 30.0
+	}
+	frameDur := 1.0 / fps
+	targetDuration := math.Floor(audioDuration/frameDur) * frameDur
+	if targetDuration <= 0 {
+		targetDuration = audioDuration
+	}
+	if loopParts > 0 {
+		partsDuration := float64(loopParts) * loopDurationSec
+		if partsDuration > 0 && partsDuration < targetDuration {
+			targetDuration = partsDuration
+		}
+	}
+	videoDuration, err := probeVideoDurationSec(inputPath)
+	if err != nil || videoDuration <= 0 {
+		videoDuration = 0
+	}
+	if loopDurationSec <= 0 {
+		switch {
+		case videoDuration > 0 && audioDuration > 0:
+			loopDurationSec = math.Min(videoDuration, audioDuration)
+		case audioDuration > 0:
+			loopDurationSec = audioDuration
+		default:
+			loopDurationSec = videoDuration
+		}
+	}
+	if loopDurationSec <= 0 || loopDurationSec > targetDuration {
+		loopDurationSec = targetDuration
+	}
+	if loopDurationSec <= 0 {
+		return "", errors.New("invalid coub loop duration")
+	}
+
+	dir := filepath.Dir(inputPath)
+	baseLoopTmp, err := os.CreateTemp(dir, "coub-loop-base-*.mp4")
+	if err != nil {
+		return "", fmt.Errorf("coub base temp create failed: %w", err)
+	}
+	baseLoopPath := baseLoopTmp.Name()
+	_ = baseLoopTmp.Close()
+	outTmp, err := os.CreateTemp(dir, "coub-looped-*.mp4")
+	if err != nil {
+		_ = os.Remove(baseLoopPath)
+		return "", fmt.Errorf("coub output temp create failed: %w", err)
+	}
+	outPath := outTmp.Name()
+	_ = outTmp.Close()
+
+	cutCmd := exec.CommandContext(
+		ctx,
+		"ffmpeg",
+		"-nostdin", "-y",
+		"-i", inputPath,
+		"-t", fmt.Sprintf("%.6f", loopDurationSec),
+		"-an",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-pix_fmt", "yuv420p",
+		baseLoopPath,
+	)
+	var cutErr bytes.Buffer
+	cutCmd.Stderr = &cutErr
+	if err := cutCmd.Run(); err != nil {
+		return "", fmt.Errorf("coub base-loop cut failed: %s", clipText(strings.TrimSpace(cutErr.String()), 400))
+	}
+	defer func() { _ = os.Remove(baseLoopPath) }()
+
+	loopCmd := exec.CommandContext(
+		ctx,
+		"ffmpeg",
+		"-nostdin", "-y",
+		"-stream_loop", "-1",
+		"-i", baseLoopPath,
+		"-i", inputPath,
+		"-map", "0:v:0",
+		"-map", "1:a:0",
+		"-t", fmt.Sprintf("%.6f", targetDuration),
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-pix_fmt", "yuv420p",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-movflags", "+faststart",
+		"-shortest",
+		outPath,
+	)
+	var loopErr bytes.Buffer
+	loopCmd.Stderr = &loopErr
+	if err := loopCmd.Run(); err != nil {
+		return "", fmt.Errorf("coub loop compose failed: %s", clipText(strings.TrimSpace(loopErr.String()), 400))
+	}
+	return outPath, nil
+}
+
+func probeAudioDurationSec(path string) (float64, error) {
+	out, err := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	val := strings.TrimSpace(string(out))
+	if val == "" || val == "N/A" {
+		return 0, errors.New("empty audio duration")
+	}
+	dur, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, err
+	}
+	return dur, nil
+}
+
+func probeVideoDurationSec(path string) (float64, error) {
+	out, err := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	val := strings.TrimSpace(string(out))
+	if val == "" || val == "N/A" {
+		return 0, errors.New("empty video duration")
+	}
+	dur, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, err
+	}
+	return dur, nil
+}
+
+func probeVideoFPS(path string) (float64, error) {
+	out, err := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=avg_frame_rate",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		path,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	raw := strings.TrimSpace(string(out))
+	if raw == "" || raw == "0/0" {
+		return 0, errors.New("empty fps")
+	}
+	parts := strings.Split(raw, "/")
+	if len(parts) == 2 {
+		num, errN := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		den, errD := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if errN == nil && errD == nil && den != 0 {
+			return num / den, nil
+		}
+	}
+	fps, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, err
+	}
+	return fps, nil
 }
 
 func videoFallbackHeights(maxHeight int) []int {

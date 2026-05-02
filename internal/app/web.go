@@ -1418,6 +1418,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-cloud-download"
 	case model.ActionTypeMediaTikTok:
 		return "bi-tiktok"
+	case model.ActionTypeMediaCoub:
+		return "bi-camera-reels"
 	case model.ActionTypeMediaX:
 		return "bi-twitter-x"
 	case model.ActionTypeUserLimitLow:

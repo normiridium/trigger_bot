@@ -164,6 +164,13 @@ func TestNormalizeActionType_X(t *testing.T) {
 	}
 }
 
+func TestNormalizeActionType_Coub(t *testing.T) {
+	got := normalizeActionType("media_coub_download")
+	if got != ActionTypeMediaCoub {
+		t.Fatalf("normalizeActionType returned %q", got)
+	}
+}
+
 func TestNormalizeActionType_SendSticker(t *testing.T) {
 	got := normalizeActionType("send_sticker")
 	if got != ActionTypeSendSticker {

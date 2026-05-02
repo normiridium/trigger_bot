@@ -24,6 +24,8 @@ func NormalizeSupportedURL(raw string) (normalized string, service string, ok bo
 		return raw, "tiktok", true
 	case host == "soundcloud.com" || host == "www.soundcloud.com" || host == "m.soundcloud.com":
 		return raw, "soundcloud", true
+	case host == "coub.com" || host == "www.coub.com":
+		return raw, "coub", true
 	case host == "x.com" || host == "www.x.com" || host == "m.x.com" || host == "twitter.com" || host == "www.twitter.com" || host == "m.twitter.com" || host == "mobile.twitter.com":
 		return raw, "x", true
 	default:

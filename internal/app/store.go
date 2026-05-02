@@ -387,6 +387,8 @@ func parseActionType(v string) (ActionType, bool) {
 		return ActionTypeMediaAudio, true
 	case "media_tiktok_download":
 		return ActionTypeMediaTikTok, true
+	case "media_coub_download":
+		return ActionTypeMediaCoub, true
 	case "media_x_download":
 		return ActionTypeMediaX, true
 	case "user_limit_low_warning":

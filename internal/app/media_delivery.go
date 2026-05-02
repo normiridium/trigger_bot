@@ -581,6 +581,8 @@ func mediaServiceEmoji(service, mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == mediadl.ModeVideo {
 		switch service {
+		case "coub":
+			return `<tg-emoji emoji-id="5197233100463039550">🤘</tg-emoji>`
 		case "instagram":
 			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
 		case "tiktok":
@@ -594,6 +596,8 @@ func mediaServiceEmoji(service, mode string) string {
 		}
 	}
 	switch service {
+	case "coub":
+		return `<tg-emoji emoji-id="5197233100463039550">🤘</tg-emoji>`
 	case "youtube":
 		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 	case "instagram":
