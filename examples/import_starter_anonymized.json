@@ -1,0 +1,588 @@
+{
+  "triggers": [
+    {
+      "uid": "sample-001",
+      "priority": 41,
+      "regex_bench_us": 148966,
+      "title": "Блахай акула",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "(?:\\bblahaj\\b|блахай|[^а-яё]акула[^а-яё]|блаха[йя]|акул[аы]\\s*(?:блахай|блаха[йя])?)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send_sticker",
+      "response_text": [
+        {
+          "text": "CAACAgIAAyEFAASK3Py4AAEDEeJp49-nwbgzpGIpNv1jp-vpercGVwACFUYAAo-a4Uu3ry3MOYQP0jsE:BlahajSpin"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-002",
+      "priority": 40,
+      "title": "Новый участник",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "",
+      "match_type": "new_member",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "\u003cb\u003eДобро пожаловать в наш уютный, чатик, {{ .user_link}}!\u003c/b\u003e"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": true,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-007",
+      "priority": 35,
+      "regex_bench_us": 21440,
+      "title": "Книги",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^[^\\n]{0,120}(?:книг(?:а|у|и)?|книжк(?:а|у|и)?|литератур(?:а|у)?).{0,60}психолог",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "Позвольте мне посоветовать \u003ca href=\"https://cbt-ru.github.io/\"\u003eматериалы по когнитивно-поведенческой терапии\u003c/a\u003e. Быть может эти книги будут полезны для вас..."
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-008",
+      "priority": 34,
+      "regex_bench_us": 333,
+      "title": "Музыка поиск",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^(?:включи|поставь|найди)(?:\\s+трек|\\s+песню|\\s+музыку)\\s+(.+)$",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "music_audio",
+      "response_text": [
+        {
+          "text": "{{ .capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-009",
+      "priority": 33,
+      "regex_bench_us": 219,
+      "title": "ChatGPT Нарисуй",
+      "enabled": false,
+      "trigger_mode": "all",
+      "admin_mode": "admins",
+      "match_text": "^нарисуй\\s+(.+)$",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "gpt_image",
+      "response_text": [
+        {
+          "text": "Ты генератор изображений для чата. Сформируй картинку строго по запросу пользователя. Если в сообщении есть слово нарисуй, воспринимай остальной текст как задание. Сообщение: {{ .message}}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-010",
+      "priority": 32,
+      "regex_bench_us": 1121,
+      "title": "Портрет пользователя",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^(?:покажи|дай|выведи|скажи)?\\s*(?:пожалуйста\\s+)?(?:мой\\s+)?(портрет|профиль)(?:\\s+пользователя)?\\s*[?!.]*$",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "{{ if .user_portrait }}{{ .user_portrait }}{{ else }}Портрет пока пустой. Осталось примерно {{ .user_portrait_remaining }} сообщений в диалогах с Оле-ням, и я смогу показать описание.{{ end }}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-011",
+      "priority": 31,
+      "title": "Удалить портрет пользователя",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^(?:удали|сбрось|очисти)\\s+(?:мой\\s+)?портрет(?:\\s+пользователя)?\\s*[?!.]*$",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "delete_user_portrait",
+      "response_text": [
+        {
+          "text": "Портрет удалён. Если захочешь новый, просто пообщайся с ботом — соберу заново по следующим ~10 сообщениям."
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-012",
+      "priority": 30,
+      "regex_bench_us": 318,
+      "title": "Погода в городе",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*погода\\s*в\\s*([а-яё]+)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "Сейчас в {{ .capturing_text }}: {{ weather .capturing_text }}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-014",
+      "priority": 28,
+      "regex_bench_us": 5274,
+      "title": "Бота спрашивают",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^[^\\n]{0,50}(?:your_name_bot|@your_nick_name_bot)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "gpt_prompt",
+      "response_text": [
+        {
+          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\nЗадача этого режима:\n- Сообщение содержит явное обращение к тебе.\n\n{{template \"bot_base\"}}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-015",
+      "priority": 27,
+      "title": "Бот отвечает",
+      "enabled": true,
+      "trigger_mode": "only_replies_to_combot_no_media",
+      "admin_mode": "anybody",
+      "match_text": "",
+      "match_type": "partial",
+      "case_sensitive": false,
+      "action_type": "gpt_prompt",
+      "response_text": [
+        {
+          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\n{{template \"bot_base\"}}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-016",
+      "priority": 26,
+      "title": "Бот проснулся",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "240",
+      "match_type": "idle",
+      "case_sensitive": false,
+      "action_type": "gpt_prompt",
+      "response_text": [
+        {
+          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\nЗадача этого режима:\n- Это автоответ после тишины в чате.\n\n{{template \"bot_base\"}}"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-018",
+      "priority": 24,
+      "title": "Бот устала",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "",
+      "match_type": "full",
+      "case_sensitive": false,
+      "action_type": "user_limit_low_warning",
+      "response_text": [
+        {
+          "text": "Я уже подустала от этой темы, солнце. Давай продолжим позже."
+        },
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-020",
+      "priority": 22,
+      "regex_bench_us": 135,
+      "title": "Ролеплей",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^~\\s*([^\\n%]+?)\\s*%",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "{{ .user_link}} {{ .capturing_text}} {{ .reply_user_link}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-021",
+      "priority": 21,
+      "regex_bench_us": 3445,
+      "title": "Ролеплей (глаголы)",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*((?:☠? ?уби|🤗? ?обня|😘? ?поцелова|🤜?😵? ?удари|👞? ?пну|👉? ?толкну|😬? ?укуси|🤏? ?ущипну|🤲? ?поглади|💔? ?обиде|🗯? ?оскорби|📛? ?обозва|🎭? ?обману|🙏? ?прости|🎉? ?поздрави|🫶? ?поддержа|🤍? ?утеши|🤲? ?прижа|😱? ?напуга|🎈? ?порадова|🪶? ?унизи|📩? ?пригласи|😈? ?выеба|🎁? ?да|🔧? ?слома|🔫? ?расстреля|🙌? ?потрога|👅? ?лизну|👃? ?понюха|👏? ?шлепну|👏? ?шлёпну))ть\\s*$",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "{{ .capturing_choice | split \" \" | index 0}} | {{ .user_link}} {{ .capturing_choice | split \" \" | index 1}}{{ .sender_tag | gender \"л\" \"ла\" \"ло\" \"ли\" \"л(а)\"}} {{ .reply_user_link}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-022",
+      "priority": 20,
+      "regex_bench_us": 56177,
+      "title": "Вопросы веры",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "(^|[^А-Яа-яЁё])бог([^А-Яа-яЁё]|$)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "\u003ci\u003eБога нет, потому что его съел кот богоед. А вот докажите, что богоеда не существует...\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eМожет ли всемогущий бог создать камень, который сам не сможет поднять?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог хочет предотвратить зло, но не может — он не всемогущ.\nЕсли бог может предотвратить зло, но не хочет — он не всеблаг.\nЕсли бог и хочет, и может предотвратить зло — откуда тогда зло?\nЕсли бог не хочет и не может предотвратить зло — он не бог.\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог хочет, чтобы все в него верили и спаслись, почему он не даёт недвусмысленных, ясных доказательств своего существования?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог всезнающий, он уже знает, кто попадёт в ад. Зачем тогда создавать этих людей?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог вне времени и всё предопределено, как может существовать свободная воля?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог идеален и ни в чём не нуждается, зачем ему поклонение?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eПочему бог скрывается, но одновременно наказывает за неверие?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог создал всё, кто создал самого бога?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог совершенен, зачем ему исправлять собственное творение через потопы и апокалипсисы?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eПочему у разных религий разные боги, но каждый требует верить только в него?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог неизменен, почему его моральные требования менялись в священных текстах?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eПочему бог допускает ложные откровения, если от них зависит вечная судьба людей?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог всемогущ, почему он создаёт мир через сложную эволюцию, а не сразу готовым?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог любит всех, почему спасение ограничено верой, а не поступками?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eПочему бог требует верить без доказательств, но в обычной жизни вера без доказательств считается ошибкой?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eЕсли бог знает будущее, может ли он изменить своё решение?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eМожет ли бог создать мир, где нет страдания, но есть свобода?\u003c/i\u003e"
+        },
+        {
+          "text": "\u003ci\u003eПочему всемогущий бог нуждается в посредниках, пророках и текстах?\u003c/i\u003e"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-023",
+      "priority": 19,
+      "regex_bench_us": 129,
+      "title": "YouTube ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:www\\.|m\\.)?(?:youtube\\.com/(?:watch\\?v=|shorts/|live/)[^\\s]+|youtu\\.be/[^\\s]+)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_link_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-024",
+      "priority": 18,
+      "regex_bench_us": 197,
+      "title": "Instagram ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:www\\.)?instagram\\.com/(?:reel|p|tv)/[^\\s/?#]+(?:[^\\s]*)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_link_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-025",
+      "priority": 17,
+      "regex_bench_us": 111,
+      "title": "SoundCloud ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:www\\.|m\\.)?soundcloud\\.com/[^\\s/]+/[^\\s?#]+(?:[^\\s]*)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_link_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-026",
+      "priority": 16,
+      "regex_bench_us": 171,
+      "title": "Spotify ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*(?:https?://open\\.spotify\\.com/track/[A-Za-z0-9]+(?:\\?[^\\s]*)?|spotify:track:[A-Za-z0-9]+)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "spotify_music_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-027",
+      "priority": 15,
+      "title": "Yandex Music ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:music\\.yandex\\.(?:ru|com))/(?:album/\\d+/track/\\d+|track/\\d+)(?:\\?[^\\s]*)?",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "yandex_music_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-028",
+      "priority": 14,
+      "regex_bench_us": 625,
+      "title": "Спокойной ночи",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*(спокойной\\s+ночи|доброй\\s+ночи|сладких\\s+снов|добрых\\s+снов|приятных\\s+снов|спи\\s+крепко|баиньки|спок\\s*ночи|споки\\s*ноки|споки)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "send",
+      "response_text": [
+        {
+          "text": "Нежных сов \u003ctg-emoji emoji-id=\"5361557024494596187\"\u003e•\u003c/tg-emoji\u003e"
+        }
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 75
+    },
+    {
+      "uid": "sample-029",
+      "priority": 13,
+      "regex_bench_us": 131,
+      "title": "TikTok ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:www\\.|m\\.)?(?:tiktok\\.com/[^\\s]+|vm\\.tiktok\\.com/[^\\s]+|vt\\.tiktok\\.com/[^\\s]+)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_tiktok_download",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-030",
+      "priority": 12,
+      "regex_bench_us": 116,
+      "title": "Twitter ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:www\\.|mobile\\.|m\\.)?(?:x\\.com|twitter\\.com)/(?:i/status|[A-Za-z0-9_]{1,15}/status)/\\d+(?:\\?[^\\s\u003c\u003e\"']*)?",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_x_download",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    }
+  ],
+  "templates": [
+    {
+      "Key": "bot_base",
+      "Title": "Бот: база (объединённая)",
+      "Text": "Не упоминай, что ты ИИ. Отвечай естественно, по делу, на языке текущего сообщения. Основной ориентир — текущее сообщение; если в нём явно просят ответить на реплай, вопрос собеседника или продолжить предыдущую мысль, используй реплай и историю как главный контекст. Реплай, история, портрет и сводка нужны для понимания ситуации.\n\nКонтекст сообщения:\nАвтор: {{ .user_display_name}} (@{{ .user_username}})\nТекущее сообщение: \"{{ .message}}\"\n{{ if .reply_user_id }}\nАдресат реплая: {{ .reply_display_name}} (@{{ .reply_username}})\nСообщение реплая: \"{{ .reply_text}}\"\n{{ end }}\n\nДополнительный контекст:\nПортрет автора: {{ .user_portrait}}\nИстория чата:\n{{ chat_context 12 }}\nСводка чата:\n{{ .summary }}\n\nЛокальный фон:\nПогода в Москве: {{ weather \"Москва\" }}\nВремя суток: {{ time_of_day \"Europe/Moscow\" }}\nТочное время: {{ time_hm \"Europe/Moscow\" }}\nДень недели: {{ weekday \"Europe/Moscow\" }}"
+    }
+  ]
+}

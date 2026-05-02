@@ -1,114 +1,195 @@
-# Trigger Admin Bot (Go)
+# 🤖 Trigger Admin Bot (Go)
 
 Подробная документация (Wiki): https://github.com/normiridium/trigger_bot/wiki
 
-Telegram-бот с web-админкой триггеров, Spotify-аудио и скачиванием медиа по ссылкам (`YouTube`, `Instagram`, `SoundCloud`, `TikTok`, `X`) через `yt-dlp`.
+Telegram-бот с web-админкой триггеров, GPT-интеграцией, музыкальными и медиа-сценариями.
 
-## Что умеет
-- Триггеры по `match_type` (`full`, `partial`, `regex`, `starts`, `ends`, `idle`, `new_member`)
-- Действия: `send`, `send_sticker`, `delete`, `gpt_prompt`, `gpt_image`, `search_image`, `spotify_music_audio`, `music_audio`, `yandex_music_audio`, `media_link_audio`, `media_tiktok_download`, `media_x_download`
-- Флаг триггера `pass_through` (`Сквозная реакция`): триггер не останавливает дальнейшую обработку, после основного срабатывания выполняются все подходящие сквозные триггеры
-- `gpt_prompt` принимает не только текст, но и изображение из сообщения (или из reply) как вход для модели
-- Для `spotify_music_audio`:
-  - поиск треков в Spotify
-  - поддержка прямой Spotify-ссылки на трек (`open.spotify.com/track/...` и `spotify:track:...`)
-  - интерактивный список кнопок выбора
-  - скачивание аудио через `yt-dlp` + `ffmpeg`
-- Для `music_audio`:
-  - текстовый запрос вида `включи/поставь/найди ...`
-  - интерактивный выбор сервиса: `Spotify` или `Yandex Music`
-  - для `Spotify` показывается список выбора из найденных треков
-  - для `Yandex Music` показывается список выбора из найденных треков
-- Для `media_link_audio`:
-  - авто-обработка ссылок `YouTube` / `Instagram` / `SoundCloud`
-  - интерактивные кнопки выбора: скачать `аудио` или `видео` (для `YouTube`)
-  - для `SoundCloud` интерактив отключён: сразу скачивается аудио
-  - для `Instagram` интерактив отключён: бот сам определяет, это фото или видео, и отправляет соответствующий тип
-  - в подписи/тайтле добавляется исходная ссылка
-  - статистика в формате `длительность | размер`
-  - сервисные emoji:
-    - YouTube видео: `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
-    - Instagram видео: `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
-    - SoundCloud: `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
-  - лимит размера скачивания (`MEDIA_DOWNLOAD_MAX_MB`, автоматически ограничивается `TELEGRAM_UPLOAD_MAX_MB`)
-  - лимит отправки в Telegram (`TELEGRAM_UPLOAD_MAX_MB`, по умолчанию 50 MB)
-  - если видео не влезает в Telegram-лимит: локальный `ffmpeg`-транскод по лестнице `720 -> 480 -> 360`
-  - лимит качества источника по высоте (по умолчанию 720)
-- Для `media_tiktok_download`:
-  - обработка ссылок TikTok
-  - автоопределение типа медиа и отправка в Telegram
-- Для `media_x_download`:
-  - обработка ссылок X/Twitter
-  - скачивание и отправка видео
-- Для `yandex_music_audio`:
-  - обработка только ссылок на трек `music.yandex.ru/.../track/...`
-  - скачивание трека через встроенный API-клиент Яндекс.Музыки (без внешнего CLI)
-  - отправка в Telegram как аудио
-- Web-админка: список, создание, редактирование, reorder, import/export
+## 🚀 Быстрый старт
 
-## Зависимости
+### 1) Установить зависимости
 ```bash
+cd /home/faline/trigger_admin_bot
 ./scripts/install_deps.sh
 ```
 
-Нужны: `ffmpeg`, `ffprobe`, `webp` (`img2webp`), `yt-dlp`, MongoDB.
+Базовые зависимости:
+- `ffmpeg`, `ffprobe`
+- `webp` (`img2webp`)
+- `yt-dlp`
+- `nodejs` + `npm` (нужны `yt-dlp` для части YouTube-ссылок)
+- MongoDB
 
-Для анимированных превью кастом-эмодзи (`.tgs`) в web-админке дополнительно нужен:
-- `lottie_to_webp` (или `lottie_to_webp.sh`) в `PATH`
-- источник: `ed-asriyan/lottie-converter` releases
-  - https://github.com/ed-asriyan/lottie-converter/releases
+Дополнительно для превью `.tgs` в админке:
+- `lottie_to_webp` или `lottie_to_webp.sh` в `PATH`
+- https://github.com/ed-asriyan/lottie-converter/releases
 
-## Переменные окружения
-См. пример: `.env.example`.
+### 2) Настроить `.env`
+Скопируйте пример и заполните значения:
+```bash
+cp .env.example .env
+```
 
-Обязательные:
+Минимально обязательные:
 - `TELEGRAM_BOT_TOKEN`
 - `MONGO_URI`
+- `OPENAI_API_KEY` (если используете GPT-функции)
+
+Для Spotify:
 - `SPOTIPY_CLIENT_ID`
 - `SPOTIPY_CLIENT_SECRET`
 
-Ключевые для Spotify-аудио:
-- `SPOTIFY_AUDIO_INTERACTIVE=true` — показывать список выбора
-- `SPOTIFY_AUDIO_WORKERS=1` — число воркеров скачивания
-- `SPOTIFY_AUDIO_QUEUE=8` — размер очереди задач скачивания
-- `YA_MUSIC_TOKEN=` — OAuth токен Яндекс.Музыки (получить: https://ym.marshal.dev/token/)
-- `YANDEX_MUSIC_QUALITY=1`
-- `YANDEX_MUSIC_TIMEOUT_SEC=20`
-- `YANDEX_MUSIC_TRIES=6`
-- `YANDEX_MUSIC_RETRY_DELAY_SEC=2`
-- `YANDEX_MUSIC_WORKERS=1`
-- `YANDEX_MUSIC_QUEUE=4`
-- `AUDIO_FORMAT=mp3`
-- `AUDIO_QUALITY=320K`
-- `MEDIA_DOWNLOAD_MAX_MB=50` (не может быть выше `TELEGRAM_UPLOAD_MAX_MB`)
-- `TELEGRAM_UPLOAD_MAX_MB=50` (жёсткий лимит отправки файла ботом в Telegram)
-- `MEDIA_DOWNLOAD_MAX_HEIGHT=720`
-- `MEDIA_DOWNLOAD_INTERACTIVE=true`
-- `MEDIA_DOWNLOAD_WORKERS=1`
-- `MEDIA_DOWNLOAD_QUEUE=8`
-- `MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC=300` (таймаут локального пережатия видео)
-- `YTDLP_BIN=/usr/local/bin/yt-dlp` (или оставить пустым, если есть в `PATH`)
-- `YTDLP_EXTRACTOR_ARGS=youtube:player_client=android,web`
-- `YTDLP_COOKIES_FILE=` (путь до cookies.txt для `yt-dlp`, если YouTube просит авторизацию)
-- `YTDLP_COOKIES_FROM_BROWSER=` (например `firefox`, `chrome`, `chrome:Default`; имеет приоритет над `YTDLP_COOKIES_FILE`)
-- `FIXIE_SOCKS_HOST=` (опционально, SOCKS5 `host:port`)
-
-Прочие важные:
-- `ALLOWED_CHAT_IDS`
-- `CHAT_ERROR_LOG`
-- `DEBUG_TRIGGER_LOG`
-- `DEBUG_GPT_LOG`
-- `ADMIN_ENABLED`, `ADMIN_BIND`, `ADMIN_TOKEN`
-
-## Запуск
+### 3) Собрать и запустить
 ```bash
-cd /home/faline/trigger_admin_bot
 set -a && source .env && set +a
 /usr/local/go/bin/go build -o trigger_admin_bot .
 ./trigger_admin_bot
 ```
 
-## Команды в чате
+## 🧩 Что умеет бот
+
+### Триггеры
+- Match-типы: `full`, `partial`, `regex`, `starts`, `ends`, `idle`, `new_member`
+- Режимы триггера (`trigger_mode`):
+  - `all`
+  - `only_replies`
+  - `only_replies_to_any_bot`
+  - `only_replies_to_combot`
+  - `only_replies_to_combot_no_media`
+  - `never_on_replies`
+  - `command_reply`
+- Режимы админов (`admin_mode`):
+  - `anybody`
+  - `admins`
+  - `not_admins`
+- `chance` (вероятность срабатывания)
+- `pass_through` (сквозное выполнение нескольких триггеров)
+
+### Action-типы
+- `send`
+- `send_file`
+- `send_gif`
+- `send_sticker`
+- `delete`
+- `delete_user_portrait`
+- `gpt_prompt`
+- `gpt_image`
+- `search_image`
+- `spotify_music_audio`
+- `music_audio`
+- `yandex_music_audio`
+- `media_link_audio`
+- `media_tiktok_download`
+- `media_x_download`
+- `user_limit_low_warning` (системный)
+
+### Web-админка
+- URL: `/trigger_bot`
+- CRUD триггеров
+- CRUD шаблонов
+- Reorder
+- Импорт/экспорт JSON
+- Настройки
+- Перезапуск
+- Авторизация в админке
+
+## 🎵 Музыка и медиа
+
+### Spotify (`spotify_music_audio`)
+- Поиск треков через Spotify API
+- Поддержка прямых ссылок `open.spotify.com/track/...` и `spotify:track:...`
+- Интерактивный выбор
+- Скачивание/отправка аудио
+
+### Универсальный музыкальный сценарий (`music_audio`)
+- Показывает выбор сервиса: `Spotify` / `Yandex Music`
+- Работает и с текстовым запросом, и с ссылками соответствующих сервисов
+
+### Yandex Music (`yandex_music_audio`)
+- Ссылки на треки `music.yandex.ru/.../track/...`
+- Встроенный загрузчик (без внешнего CLI)
+
+### Медиа по ссылкам (`media_link_audio`)
+- YouTube / Instagram / SoundCloud
+- Для YouTube: интерактивный выбор `аудио` / `видео` (если включено)
+- Для Instagram: автоопределение фото/видео
+- Для SoundCloud: прямой аудиосценарий
+- Ограничения по размеру и высоте, авто-транскод видео при превышении Telegram-лимита
+
+### TikTok / X
+- `media_tiktok_download`
+- `media_x_download`
+
+## ⚙️ Важные переменные окружения
+
+Полный список: `.env.example`
+
+### Основные
+- `TELEGRAM_BOT_TOKEN`
+- `MONGO_URI`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+
+### Админка
+- `ADMIN_ENABLED`
+- `ADMIN_BIND`
+- `ADMIN_TOKEN`
+
+### Ограничение чатов
+- `ALLOWED_CHAT_IDS`
+
+### GPT
+- `GPT_PROMPT_DEBOUNCE_SEC`
+- `USER_DAILY_BOT_MESSAGES_LIMIT`
+
+### Музыка
+- `SPOTIPY_CLIENT_ID`
+- `SPOTIPY_CLIENT_SECRET`
+- `SPOTIFY_AUDIO_INTERACTIVE`
+- `SPOTIFY_AUDIO_WORKERS`
+- `SPOTIFY_AUDIO_QUEUE`
+- `YA_MUSIC_TOKEN`
+- `YANDEX_MUSIC_QUALITY`
+- `YANDEX_MUSIC_TIMEOUT_SEC`
+- `YANDEX_MUSIC_TRIES`
+- `YANDEX_MUSIC_RETRY_DELAY_SEC`
+- `YANDEX_MUSIC_WORKERS`
+- `YANDEX_MUSIC_QUEUE`
+
+### Медиа / yt-dlp
+- `MEDIA_DOWNLOAD_INTERACTIVE`
+- `MEDIA_DOWNLOAD_WORKERS`
+- `MEDIA_DOWNLOAD_QUEUE`
+- `MEDIA_DOWNLOAD_MAX_MB`
+- `MEDIA_DOWNLOAD_MAX_HEIGHT`
+- `MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC`
+- `TELEGRAM_UPLOAD_MAX_MB`
+- `YTDLP_BIN`
+- `YTDLP_EXTRACTOR_ARGS`
+- `YTDLP_COOKIES_FILE`
+- `YTDLP_COOKIES_FROM_BROWSER`
+- `FIXIE_SOCKS_HOST`
+
+## 🧪 Пример импорта (обезличенный)
+
+Для быстрого старта используйте пример:
+- `examples/import_starter_anonymized.json`
+
+Импорт через web-админку:
+1. Откройте `/trigger_bot/import`
+2. Загрузите файл
+3. Проверьте и адаптируйте `match_text`, `response_text`, `action_type`
+
+## 🗂️ Правила удаления исходного сообщения
+
+Флаг триггера:
+- `delete_source_message`
+
+Текущее поведение:
+- source-сообщение удаляется **только после успешной отправки результата**
+- при ошибках скачивания/отправки source остаётся
+- при `Отменить` в интерактивных клавиатурах source не удаляется
+
+## 🧰 Команды бота
 - `/start`
 - `/help`
 - `/emojiid`
@@ -116,73 +197,34 @@ set -a && source .env && set +a
 - `/spsearch <запрос>`
 - `/spfind <запрос>`
 
-## Действие `spotify_music_audio`
-В триггере укажи:
-- `action_type = spotify_music_audio`
-- `response_text` = шаблон поискового запроса (можно с переменными, например `{{message}}`)
+## 🔎 Диагностика и логи
 
-Поддерживается вход:
-- текстовый запрос (поиск через Spotify API)
-- прямая ссылка на трек Spotify (берётся конкретный трек без шага поиска)
+Полезные флаги:
+- `DEBUG_TRIGGER_LOG=true`
+- `DEBUG_GPT_LOG=true`
+- `CHAT_ERROR_LOG=true`
 
-Флаги триггера:
-- `reply` — выбранный трек отправляется reply на исходное сообщение
-- `delete_source_message` — исходное сообщение удаляется только после успешной отправки результата
-
-## Действие `music_audio`
-- `action_type = music_audio`
-- `response_text` = шаблон поискового запроса (например `{{capturing_text}}` или `{{message}}`)
-- при срабатывании бот показывает выбор сервиса: `Spotify` / `Yandex Music`
-
-## Действие `yandex_music_audio`
-- `action_type = yandex_music_audio`
-- `match_type = regex`
-- `match_text` = регулярка под ссылку на трек `music.yandex.ru/.../track/...`
-- бот достаёт первую ссылку на трек Яндекс.Музыки из текста/подписи и ставит скачивание в очередь
-
-## Действие `media_link_audio`
-- `action_type = media_link_audio`
-- `match_type = regex`
-- `match_text` = регулярка на URL (YouTube / Instagram / SoundCloud)
-- бот сам достаёт ссылку из текста сообщения
-- при `MEDIA_DOWNLOAD_INTERACTIVE=true` показывает кнопки `Скачать аудио` / `Скачать видео` (YouTube)
-- если выбран `видео`:
-  - файл пытается отправиться как есть
-  - если превышает Telegram-лимит, пережимается локально (`720 -> 480 -> 360`)
-  - если после 360 всё равно больше лимита — отправка отменяется
-
-## Действия `media_tiktok_download` и `media_x_download`
-- `media_tiktok_download`: используй regex-триггер под ссылки TikTok
-- `media_x_download`: используй regex-триггер под ссылки X/Twitter
-- ссылки извлекаются из текста сообщения автоматически
-- триггеры под ссылки настраиваются в админке/БД
-
-## Проверка
+Проверка тестов:
 ```bash
-cd /home/faline/trigger_admin_bot
 /usr/local/go/bin/go test ./...
 ```
 
-## Логи
-Полезно включить подробную диагностику:
-- `DEBUG_TRIGGER_LOG=true`
-
-Смотреть live-логи сервиса:
+Если сервис работает через systemd:
 ```bash
 sudo journalctl -u trigger-admin-bot.service -f -l
 ```
 
-Ключевые строки для `media_link_audio`:
-- `send media pick keyboard ...` — показаны кнопки выбора формата
-- `media choice selected ...` — пользователь нажал кнопку
-- `media worker=... start ...` — задача пошла в воркер
-- `media video downloaded ...` / `media audio downloaded ...` — файл скачан
-- `media transcode ...` — этапы пережатия видео
-- `media worker=... success ...` — файл отправлен успешно
-- `media queue send failed ...` — ошибка (с текстом причины)
-
-## Перезапуск systemd
+## 🔄 Перезапуск systemd
 ```bash
 sudo systemctl restart trigger-admin-bot.service
 sudo systemctl status trigger-admin-bot.service --no-pager
 ```
+
+## 📤 Импорт/экспорт
+
+- Экспорт: `/trigger_bot/export`
+- Импорт: `/trigger_bot/import`
+
+Формат импорта — bundle JSON c секциями:
+- `triggers`
+- `templates`
