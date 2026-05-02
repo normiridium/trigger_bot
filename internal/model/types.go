@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|send_file|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_x_download|user_limit_low_warning
+	ActionType    ActionType         // send|send_file|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -168,6 +168,7 @@ const (
 	ActionTypeYandexMusic    ActionType = "yandex_music_audio"
 	ActionTypeMediaAudio     ActionType = "media_link_audio"
 	ActionTypeMediaTikTok    ActionType = "media_tiktok_download"
+	ActionTypeMediaCoub      ActionType = "media_coub_download"
 	ActionTypeMediaX         ActionType = "media_x_download"
 	ActionTypeUserLimitLow   ActionType = "user_limit_low_warning"
 )
@@ -187,6 +188,7 @@ var ActionTypeValues = []ActionType{
 	ActionTypeYandexMusic,
 	ActionTypeMediaAudio,
 	ActionTypeMediaTikTok,
+	ActionTypeMediaCoub,
 	ActionTypeMediaX,
 	ActionTypeUserLimitLow,
 }
@@ -221,6 +223,8 @@ func (m ActionType) String() string {
 		return "Скачать медиа по ссылке (аудио/видео)"
 	case ActionTypeMediaTikTok:
 		return "Скачать с TikTok"
+	case ActionTypeMediaCoub:
+		return "Скачать с Coub"
 	case ActionTypeMediaX:
 		return "Скачать с X (Twitter)"
 	case ActionTypeUserLimitLow:

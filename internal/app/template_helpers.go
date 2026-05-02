@@ -1857,6 +1857,8 @@ func mediaModeAndInteractivity(service string, interactive bool) (mode string, u
 	switch service {
 	case "soundcloud":
 		return mediadl.ModeAudio, false
+	case "coub":
+		return mediadl.ModeAuto, interactive
 	case "instagram", "tiktok":
 		return mediadl.ModeAuto, false
 	case "x":

@@ -56,6 +56,7 @@ const (
 	ActionTypeYandexMusic    = model.ActionTypeYandexMusic
 	ActionTypeMediaAudio     = model.ActionTypeMediaAudio
 	ActionTypeMediaTikTok    = model.ActionTypeMediaTikTok
+	ActionTypeMediaCoub      = model.ActionTypeMediaCoub
 	ActionTypeMediaX         = model.ActionTypeMediaX
 	ActionTypeUserLimitLow   = model.ActionTypeUserLimitLow
 )
