@@ -180,8 +180,12 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		return DownloadResult{}, err
 	}
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
-	args := d.buildGenericDownloadArgs(probe.SourceURL, outTpl)
+	args := d.buildGenericDownloadArgsForService(probe.Service, probe.SourceURL, outTpl)
 	path, err := d.runDownload(ctx, args)
+	if err != nil && strings.EqualFold(strings.TrimSpace(probe.Service), "tiktok") && isYTDLPFormatUnavailable(err) {
+		// Fallback to generic auto-selection only when explicit AV merge is unavailable.
+		path, err = d.runDownload(ctx, d.buildGenericDownloadArgs(probe.SourceURL, outTpl))
+	}
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -204,6 +208,34 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		SourceURL:  probe.SourceURL,
 		Restricted: probe.Restricted,
 	}, nil
+}
+
+func (d Downloader) buildGenericDownloadArgsForService(service, url, outTpl string) []string {
+	service = strings.ToLower(strings.TrimSpace(service))
+	switch service {
+	case "tiktok":
+		args := []string{
+			"-f", "bestvideo+bestaudio/best",
+			"--merge-output-format", "mp4",
+			"--no-playlist",
+			"--quiet",
+			"--no-warnings",
+			"--extractor-args", d.extractorArgs(),
+			"--print", "after_move:__FILE__%(filepath)s",
+			"-o", outTpl,
+		}
+		args = append(d.ytDLPAuthArgs(), args...)
+		if maxMB := d.maxSizeMB(); maxMB > 0 {
+			args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
+		}
+		args = append(args, url)
+		if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
+			args = append([]string{"--proxy", "socks5://" + proxy}, args...)
+		}
+		return args
+	default:
+		return d.buildGenericDownloadArgs(url, outTpl)
+	}
 }
 
 func (d Downloader) Probe(ctx context.Context, rawURL string) (ProbeResult, error) {
