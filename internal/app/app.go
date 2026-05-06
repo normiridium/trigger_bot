@@ -1297,6 +1297,11 @@ var markdownEngine = goldmark.New(
 )
 
 const defaultMarkdownDividerTGEmoji = `<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`
+const voiceTranscriptionPrefix = `<tg-emoji emoji-id="5260652149469094137">🎙</tg-emoji> `
+
+var ignoredAutoReplyPrefixes = []string{
+	voiceTranscriptionPrefix,
+}
 
 func containsMarkdownLiteMarkup(s string) bool {
 	if strings.TrimSpace(s) == "" {
@@ -1360,6 +1365,20 @@ func markdownDividerTGEmoji() string {
 		return defaultMarkdownDividerTGEmoji
 	}
 	return v
+}
+
+func hasIgnoredAutoReplyPrefix(s string) bool {
+	v := strings.TrimSpace(s)
+	if v == "" {
+		return false
+	}
+	for _, prefix := range ignoredAutoReplyPrefixes {
+		p := strings.TrimSpace(prefix)
+		if p != "" && strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildTemplateLookup(store TriggerStorePort) func(string) string {
@@ -3278,6 +3297,31 @@ func Run() {
 		}
 
 		text := strings.TrimSpace(firstNonEmptyUserText(msg))
+		if msg.Voice != nil && envBool("VOICE_TRANSCRIPTION_ENABLED", false) {
+			durSec := msg.Voice.Duration
+			if durSec >= 3 && durSec <= 180 {
+				transcribed, err := transcribeTelegramVoiceMessage(bot, msg)
+				if err != nil {
+					log.Printf("voice transcription failed chat=%d msg=%d err=%v", msg.Chat.ID, msg.MessageID, err)
+				} else if strings.TrimSpace(transcribed) != "" {
+					transcribedText := voiceTranscriptionPrefix + strings.TrimSpace(transcribed)
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), transcribedText, false)
+					if text == "" {
+						text = transcribedText
+					} else {
+						text = text + "\n" + transcribedText
+					}
+				}
+			} else {
+				log.Printf("voice transcription skipped by duration chat=%d msg=%d duration=%ds", msg.Chat.ID, msg.MessageID, durSec)
+			}
+		}
+		if hasIgnoredAutoReplyPrefix(text) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip auto-reply for ignored prefix chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+			}
+			continue
+		}
 		if text == "" {
 			continue
 		}

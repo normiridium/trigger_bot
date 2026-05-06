@@ -1230,6 +1230,8 @@ func settingsSchema() []settingField {
 		{Key: "GPT_MARKDOWN_DIVIDER_EMOJI", Label: "GPT: emoji для разделителя '---'", Type: "string", Description: `<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`},
 		{Key: "SERPAPI_ENGINE", Label: "SerpAPI engine", Type: "string", Description: "google_images"},
 		{Key: "OPENAI_MODEL", Label: "OpenAI model (chat)", Type: "string", Description: "gpt-5-mini"},
+		{Key: "AUDIO_TRANSCRIPTION_MODEL", Label: "OpenAI model (audio transcription)", Type: "string", Description: "whisper-1", Options: []string{"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}},
+		{Key: "VOICE_TRANSCRIPTION_ENABLED", Label: "Включить транскрибацию голосовых сообщений", Type: "bool", Description: "false"},
 		{Key: "SPOTIFY_AUDIO_INTERACTIVE", Label: "Spotify: интерактивный выбор", Type: "bool", Description: "true"},
 		{Key: "SPOTIFY_AUDIO_WORKERS", Label: "Spotify: воркеры скачивания", Type: "int", Description: "1"},
 		{Key: "SPOTIFY_AUDIO_QUEUE", Label: "Spotify: размер очереди", Type: "int", Description: "8"},

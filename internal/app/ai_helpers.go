@@ -10,16 +10,131 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+func transcribeTelegramVoiceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string, error) {
+	if bot == nil || msg == nil || msg.Voice == nil {
+		return "", errors.New("voice message is required")
+	}
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return "", errors.New("OPENAI_API_KEY is empty")
+	}
+	model := strings.TrimSpace(os.Getenv("AUDIO_TRANSCRIPTION_MODEL"))
+	if model == "" {
+		model = "whisper-1"
+	}
+	fileID := strings.TrimSpace(msg.Voice.FileID)
+	if fileID == "" {
+		return "", errors.New("voice file id is empty")
+	}
+	fileURL, err := bot.GetFileDirectURL(fileID)
+	if err != nil {
+		return "", fmt.Errorf("telegram file url: %w", err)
+	}
+	audioBytes, fileName, err := downloadTelegramAudioForTranscription(fileURL)
+	if err != nil {
+		return "", err
+	}
+	text, err := transcribeAudioBytes(apiKey, model, fileName, audioBytes)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text), nil
+}
+
+func downloadTelegramAudioForTranscription(fileURL string) ([]byte, string, error) {
+	fileURL = strings.TrimSpace(fileURL)
+	if fileURL == "" {
+		return nil, "", errors.New("telegram file url is empty")
+	}
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("telegram file status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 300))
+	}
+	if len(bodyBytes) == 0 {
+		return nil, "", errors.New("telegram file is empty")
+	}
+	ext := ".ogg"
+	if parsed, err := url.Parse(fileURL); err == nil {
+		if p := strings.TrimSpace(parsed.Path); p != "" {
+			if got := strings.TrimSpace(filepath.Ext(p)); got != "" {
+				ext = got
+			}
+		}
+	}
+	return bodyBytes, "voice"+ext, nil
+}
+
+func transcribeAudioBytes(apiKey, model, fileName string, audioBytes []byte) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", strings.TrimSpace(model)); err != nil {
+		return "", err
+	}
+	part, err := writer.CreateFormFile("file", strings.TrimSpace(fileName))
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(audioBytes); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/audio/transcriptions", &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("openai transcription status=%d body=%s", resp.StatusCode, clipText(string(raw), 600))
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.Text), nil
+}
 
 func searchImageInSerpAPI(query string) (generatedImage, error) {
 	query = strings.TrimSpace(query)
