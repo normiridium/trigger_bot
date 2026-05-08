@@ -24,9 +24,20 @@ var anonAdjectivesDefault = []string{
 
 var anonAdjectives = loadAnonAdjectives()
 
-var anonNounsDefault = []string{
-	"панда", "коала", "лиса", "выдра", "сова", "рысь", "енот", "лама",
-	"белка", "дельфин", "волчица", "черепаха", "ирбис", "куница", "пума", "цапля",
+type nounForms struct {
+	Female  string
+	Male    string
+	Plural  string
+	Neutral string
+}
+
+var anonNounsDefault = []nounForms{
+	{Female: "панда", Male: "панда", Plural: "панды", Neutral: "пандо"},
+	{Female: "коала", Male: "коала", Plural: "коалы", Neutral: "коало"},
+	{Female: "лиса", Male: "лис", Plural: "лисы", Neutral: "лисо"},
+	{Female: "выдра", Male: "выдр", Plural: "выдры", Neutral: "выдро"},
+	{Female: "сова", Male: "сов", Plural: "совы", Neutral: "сово"},
+	{Female: "рысь", Male: "рыс", Plural: "рыси", Neutral: "рысо"},
 }
 
 var anonNouns = loadAnonNouns()
@@ -56,20 +67,48 @@ func loadAnonAdjectives() []string {
 	return out
 }
 
-func loadAnonNouns() []string {
+func parseNounForms(line string) (nounForms, bool) {
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" {
+		return nounForms{}, false
+	}
+	parts := strings.Split(line, "|")
+	switch len(parts) {
+	case 1:
+		v := strings.TrimSpace(parts[0])
+		if v == "" {
+			return nounForms{}, false
+		}
+		return nounForms{Female: v, Male: v, Plural: v, Neutral: v}, true
+	case 4:
+		f := strings.TrimSpace(parts[0])
+		m := strings.TrimSpace(parts[1])
+		p := strings.TrimSpace(parts[2])
+		n := strings.TrimSpace(parts[3])
+		if f == "" || m == "" || p == "" || n == "" {
+			return nounForms{}, false
+		}
+		return nounForms{Female: f, Male: m, Plural: p, Neutral: n}, true
+	default:
+		return nounForms{}, false
+	}
+}
+
+func loadAnonNouns() []nounForms {
 	lines := strings.Split(anonNounsRaw, "\n")
-	out := make([]string, 0, len(lines))
+	out := make([]nounForms, 0, len(lines))
 	seen := make(map[string]struct{}, len(lines))
 	for _, line := range lines {
-		w := strings.TrimSpace(strings.ToLower(line))
-		if w == "" {
+		forms, ok := parseNounForms(line)
+		if !ok {
 			continue
 		}
-		if _, ok := seen[w]; ok {
+		key := forms.Female + "|" + forms.Male + "|" + forms.Plural + "|" + forms.Neutral
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[w] = struct{}{}
-		out = append(out, w)
+		seen[key] = struct{}{}
+		out = append(out, forms)
 	}
 	if len(out) == 0 {
 		return anonNounsDefault
@@ -79,8 +118,8 @@ func loadAnonNouns() []string {
 
 func buildAnonAlias() string {
 	adj := anonAdjectives[rand.Intn(len(anonAdjectives))]
-	noun := anonNouns[rand.Intn(len(anonNouns))]
-	return adj + " " + noun
+	n := anonNouns[rand.Intn(len(anonNouns))]
+	return adj + " " + n.Female
 }
 
 func inflectAdjectiveByTag(adj, tag string) string {
@@ -128,8 +167,24 @@ func buildAnonAliasForAuthor(authorID int64, senderTag string) string {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(fmt.Sprintf("%d", authorID)))
 	sum := h.Sum64()
+	form := resolveGenderVariant(senderTag, genderVariants{
+		Male:    "male",
+		Female:  "female",
+		Neuter:  "neutral",
+		Plural:  "plural",
+		Unknown: "female",
+	})
 	adj := inflectAdjectiveByTag(anonAdjectives[int(sum%uint64(len(anonAdjectives)))], senderTag)
-	noun := anonNouns[int((sum/uint64(len(anonAdjectives)))%uint64(len(anonNouns)))]
+	nf := anonNouns[int((sum/uint64(len(anonAdjectives)))%uint64(len(anonNouns)))]
+	noun := nf.Female
+	switch form {
+	case "male":
+		noun = nf.Male
+	case "plural":
+		noun = nf.Plural
+	case "neutral":
+		noun = nf.Neutral
+	}
 	return adj + " " + noun
 }
 
