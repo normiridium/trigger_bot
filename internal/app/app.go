@@ -1299,9 +1299,11 @@ var markdownEngine = goldmark.New(
 
 const defaultMarkdownDividerTGEmoji = `<tg-emoji emoji-id="5213083123218147891">〰️</tg-emoji>`
 const voiceTranscriptionPrefix = `<tg-emoji emoji-id="5260652149469094137">🎙</tg-emoji> `
+const anonMessagePrefix = `<tg-emoji emoji-id="5974347006779329639">🎭</tg-emoji> `
 
 var ignoredAutoReplyPrefixes = []string{
 	voiceTranscriptionPrefix,
+	anonMessagePrefix,
 }
 
 func containsMarkdownLiteMarkup(s string) bool {
@@ -1373,12 +1375,17 @@ func hasIgnoredAutoReplyPrefix(s string) bool {
 	if v == "" {
 		return false
 	}
+	vFallback := strings.TrimSpace(replaceTGEmojiTagsWithFallback(v))
 	for _, prefix := range ignoredAutoReplyPrefixes {
 		p := strings.TrimSpace(prefix)
 		if p == "" {
 			continue
 		}
-		if strings.HasPrefix(v, p) {
+		pFallback := strings.TrimSpace(replaceTGEmojiTagsWithFallback(p))
+		if strings.HasPrefix(v, p) || (pFallback != "" && strings.HasPrefix(v, pFallback)) {
+			return true
+		}
+		if vFallback != "" && (strings.HasPrefix(vFallback, p) || (pFallback != "" && strings.HasPrefix(vFallback, pFallback))) {
 			return true
 		}
 	}
