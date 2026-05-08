@@ -5,13 +5,20 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+var mtprotoSetupVisible atomic.Bool
+
+func setMTProtoSetupVisible(v bool) {
+	mtprotoSetupVisible.Store(v)
+}
+
 func defaultBotCommands() []tgbotapi.BotCommand {
-	return []tgbotapi.BotCommand{
+	out := []tgbotapi.BotCommand{
 		{Command: cmdStart, Description: "О боте и возможностях"},
 		{Command: cmdHelp, Description: "Справка по командам"},
 		{Command: cmdEmojiID, Description: "ID кастомного эмодзи"},
@@ -24,6 +31,10 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
 	}
+	if mtprotoSetupVisible.Load() {
+		out = append(out, tgbotapi.BotCommand{Command: cmdSetMTProto, Description: "Привязать чат к MTProto"})
+	}
+	return out
 }
 
 func adminBotCommands() []tgbotapi.BotCommand {
@@ -35,6 +46,7 @@ func adminBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdKick, Description: "Кик пользователя"},
 		{Command: cmdReadonly, Description: "Режим readonly в чате"},
 		{Command: cmdReloadAdmins, Description: "Обновить кеш админов"},
+		{Command: cmdClearChat, Description: "Очистить историю чата (через tg-ops-service)"},
 	}
 }
 

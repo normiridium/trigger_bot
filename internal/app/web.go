@@ -17,10 +17,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"trigger-admin-bot/internal/chatclear"
 	"trigger-admin-bot/internal/match"
 	"trigger-admin-bot/internal/model"
 
@@ -30,6 +32,7 @@ import (
 type WebAdmin struct {
 	store      *Store
 	emojiProxy emojiProxyService
+	clearOps   chatclear.Service
 }
 
 const adminSessionCookieName = "trigger_admin_session"
@@ -56,6 +59,7 @@ func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
 		emojiProxy: emojiProxyService{
 			Token: strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", "")),
 		},
+		clearOps: chatclear.NewServiceFromEnv(),
 	}
 }
 
@@ -311,6 +315,9 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_delete", w.withAuth(w.templateDeletePost))
 	mux.HandleFunc("/trigger_bot/settings_get", w.withAuth(w.settingsGet))
 	mux.HandleFunc("/trigger_bot/settings_save", w.withAuth(w.settingsSave))
+	mux.HandleFunc("/trigger_bot/mtproto_challenge_start", w.withAuth(w.mtprotoChallengeStart))
+	mux.HandleFunc("/trigger_bot/mtproto_challenge_complete", w.withAuth(w.mtprotoChallengeComplete))
+	mux.HandleFunc("/trigger_bot/mtproto_chat_options", w.withAuth(w.mtprotoChatOptions))
 	mux.HandleFunc("/trigger_bot/restart", w.withAuth(w.restartPost))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
@@ -1192,6 +1199,134 @@ func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
 		RestartRequired: true,
 		Message:         "Настройки сохранены. Требуется перезапуск сервиса.",
 	})
+}
+
+func (w *WebAdmin) mtprotoChallengeStart(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ChatID int64  `json:"chat_id"`
+		Phone  string `json:"phone"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if w == nil || w.clearOps == nil {
+		http.Error(rw, "chat clear service is not configured", http.StatusNotImplemented)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	res, err := w.clearOps.StartAuth(ctx, chatclear.AuthStartRequest{
+		ChatID: payload.ChatID,
+		Phone:  strings.TrimSpace(payload.Phone),
+	})
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":           true,
+		"challenge_id": res.ChallengeID,
+	})
+}
+
+func (w *WebAdmin) mtprotoChallengeComplete(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ChallengeID string `json:"challenge_id"`
+		Code        string `json:"code"`
+		Password    string `json:"password"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if w == nil || w.clearOps == nil {
+		http.Error(rw, "chat clear service is not configured", http.StatusNotImplemented)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	res, err := w.clearOps.CompleteAuth(ctx, chatclear.AuthCompleteRequest{
+		ChallengeID: strings.TrimSpace(payload.ChallengeID),
+		Code:        strings.TrimSpace(payload.Code),
+		Password:    strings.TrimSpace(payload.Password),
+	})
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]interface{}{
+		"ok":          true,
+		"chat_id":     res.ChatID,
+		"access_hash": res.AccessHash,
+	})
+}
+
+func (w *WebAdmin) mtprotoChatOptions(rw http.ResponseWriter, r *http.Request) {
+	type item struct {
+		ChatID int64  `json:"chat_id"`
+		Title  string `json:"title"`
+	}
+	raw := strings.TrimSpace(os.Getenv("ALLOWED_CHAT_IDS"))
+	allowed, err := parseAllowedChatIDs(raw)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	items := make([]item, 0, len(allowed.ids))
+	token := strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", ""))
+	for chatID := range allowed.ids {
+		title := resolveChatTitleForAdmin(token, chatID)
+		items = append(items, item{ChatID: chatID, Title: title})
+	}
+	// Stable order for UI.
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Title) < strings.ToLower(items[j].Title)
+	})
+	writeJSON(rw, http.StatusOK, map[string]interface{}{"ok": true, "items": items})
+}
+
+func resolveChatTitleForAdmin(botToken string, chatID int64) string {
+	if strings.TrimSpace(botToken) == "" || chatID == 0 {
+		return "Чат"
+	}
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/getChat?chat_id=%d", botToken, chatID)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "Чат"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "Чат"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "Чат"
+	}
+	var out struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Title    string `json:"title"`
+			UserName string `json:"username"`
+			First    string `json:"first_name"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.OK {
+		return "Чат"
+	}
+	if t := strings.TrimSpace(out.Result.Title); t != "" {
+		return t
+	}
+	if u := strings.TrimSpace(out.Result.UserName); u != "" {
+		return "@" + u
+	}
+	if f := strings.TrimSpace(out.Result.First); f != "" {
+		return f
+	}
+	return "Чат"
 }
 
 func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {

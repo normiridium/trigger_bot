@@ -119,6 +119,26 @@
           </div>
         </form>
       </div>
+      <div class="p-3 rounded border border-secondary-subtle settings-panel mt-3">
+        <h6 class="mb-2">MTProto Challenge</h6>
+        <div class="text-secondary small mb-3">Безопасная привязка чата через админку: отправка кода и подтверждение в этом окне.</div>
+        <form id="mtproto_challenge_form" class="d-flex flex-column gap-2">
+          <select class="form-select bg-black text-light border-secondary" id="mtproto_chat_id" required>
+            <option value="">Выберите чат…</option>
+          </select>
+          <input class="form-control bg-black text-light border-secondary" id="mtproto_phone" type="text" placeholder="Телефон (например, +79991234567)" required>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <button class="btn btn-info btn-sm" type="button" id="mtproto_start_btn"><i class="bi bi-send"></i> Отправить код</button>
+            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_challenge_id" type="text" placeholder="challenge_id" readonly>
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_code" type="text" placeholder="Код из Telegram">
+            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_password" type="password" placeholder="2FA пароль (если включен)">
+            <button class="btn btn-success btn-sm" type="button" id="mtproto_complete_btn"><i class="bi bi-check2-circle"></i> Подтвердить код</button>
+          </div>
+          <span class="text-secondary small" id="mtproto_hint"></span>
+        </form>
+      </div>
     </div>
   </div>
   </div>

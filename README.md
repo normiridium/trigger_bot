@@ -45,6 +45,12 @@ set -a && source .env && set +a
 ./trigger_admin_bot
 ```
 
+Для слабых VPS (мало RAM/CPU) используйте безопасную сборку:
+```bash
+make build-safe
+```
+По умолчанию это запускает сборку с `GOMAXPROCS=1` и `go build -p 1`.
+
 ## 🧩 Что умеет бот
 
 ### Триггеры
@@ -150,6 +156,13 @@ set -a && source .env && set +a
 - `GPT_PROMPT_DEBOUNCE_SEC` — антиспам-задержка перед повторной GPT-обработкой.
 - `USER_DAILY_BOT_MESSAGES_LIMIT` — суточный лимит ответов бота на одного пользователя.
 
+### Очистка чата через tg-ops-service
+- `CLEAR_CHAT_OPS_URL` — базовый URL сервиса (например, `http://127.0.0.1:8089`).
+- `CLEAR_CHAT_OPS_TOKEN` — токен для заголовка `X-TG-Ops-Token` (если включен в tg-ops-service).
+- `CLEAR_CHAT_OPS_TIMEOUT_SEC` — таймаут HTTP-запроса к tg-ops-service.
+- `CLEAR_CHAT_CONFIRM_TTL_SEC` — TTL подтверждения кнопок `/clear_chat`.
+- `CLEAR_CHAT_TIMEOUT_SEC` — общий таймаут операции `/clear_chat` в trigger-боте.
+
 ### Музыка
 - `SPOTIPY_CLIENT_ID` / `SPOTIPY_CLIENT_SECRET` — авторизация в Spotify API.
 - `SPOTIFY_AUDIO_INTERACTIVE` — включает интерактивный выбор трека в Spotify-сценарии.
@@ -200,6 +213,7 @@ set -a && source .env && set +a
 ## 🧰 Команды бота
 - `/start` — коротко о боте и доступных возможностях.
 - `/help` — справка по командам и подсказки по использованию.
+- `/clear_chat` — отправляет команду очистки в `tg_ops_service` (с подтверждением; для админов).
 - `/emojiid` — показывает ID кастомного emoji.
   Использование: отправьте команду или кастомный emoji (лучше в личку боту).
 - `/stickerid` — показывает file ID стикера из сообщения.
@@ -244,6 +258,16 @@ set -a && source .env && set +a
 Проверка тестов:
 ```bash
 /usr/local/go/bin/go test ./...
+```
+
+Безопасный режим тестов (ограниченный parallelism):
+```bash
+make test-safe
+```
+
+Проверка ресурсов перед сборкой/тестами:
+```bash
+make preflight
 ```
 
 Если сервис работает через systemd:

@@ -26,6 +26,7 @@ import (
 	"github.com/yuin/goldmark/parser"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 
+	"trigger-admin-bot/internal/chatclear"
 	"trigger-admin-bot/internal/engine"
 	"trigger-admin-bot/internal/gpt"
 	"trigger-admin-bot/internal/mediadl"
@@ -2665,6 +2666,11 @@ func Run() {
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
 	readonly := newReadonlyManager()
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
+	clearChatConfirms := newClearChatConfirmManager(time.Duration(envInt("CLEAR_CHAT_CONFIRM_TTL_SEC", 600)) * time.Second)
+	clearChatService := chatclear.NewServiceFromEnv()
+	mtprotoSetup := newMTProtoSetupManager(time.Duration(envInt("MTPROTO_SETUP_TTL_SEC", 1200)) * time.Second)
+	setMTProtoSetupVisible(clearChatService != nil && clearChatService.Available(context.Background()))
+	syncBotCommands(bot)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	summaryTracker := newChatSummaryTracker(store, envInt("CHAT_SUMMARY_EVERY_MESSAGES", 200), envInt("CHAT_SUMMARY_POOL_MESSAGES", 1000))
 	if summaryTracker != nil {
@@ -2768,6 +2774,18 @@ func Run() {
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
 		}
 		if update.Update.CallbackQuery != nil {
+			if handleSetMTProtoCallback(bot, mtprotoSetup, update.Update.CallbackQuery) {
+				continue
+			}
+			if handleClearChatCallback(
+				bot,
+				adminCache,
+				clearChatConfirms,
+				clearChatService,
+				update.Update.CallbackQuery,
+			) {
+				continue
+			}
 			if handleModerationConfirmCallback(
 				bot,
 				adminCache,
@@ -3221,6 +3239,14 @@ func Run() {
 				}
 				sendHTML(cmdSendCtx.WithReply(msg.MessageID), rec.Summary, false)
 				continue
+			case cmdClearChat:
+				if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {
+					continue
+				}
+			case cmdSetMTProto:
+				if handleSetMTProtoCommand(bot, clearChatService, mtprotoSetup, msg) {
+					continue
+				}
 			case cmdMyPortrait, cmdMyPortraitAlias:
 				if msg.From == nil || msg.From.ID == 0 {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
@@ -3259,6 +3285,9 @@ func Run() {
 				reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
 				continue
 			}
+		}
+		if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
+			continue
 		}
 		if isPrivateChat {
 			hits, entityCount := extractCustomEmojiFromRaw(rawMsg)

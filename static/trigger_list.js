@@ -14,6 +14,8 @@ function triggerApp(){
     showTelegramHtmlHelp,
     insertTemplateTagFromPicker,
     cloneCurrentTrigger,
+    startMTProtoChallenge,
+    completeMTProtoChallenge,
   };
 }
 
@@ -187,6 +189,7 @@ async function initAuthenticatedApp(){
   await loadTemplateTags();
   await loadTemplates();
   await loadSettings();
+  await loadMTProtoChatOptions();
   await loadRecentSetsHistory();
   applyMatchTypeUI();
   bindMatchTextToggle();
@@ -218,9 +221,115 @@ async function initAuthenticatedApp(){
     cloneBtn.addEventListener('click', () => cloneCurrentTrigger());
     cloneBtn.dataset.boundClick = '1';
   }
+  const mtprotoStartBtn = document.getElementById('mtproto_start_btn');
+  if(mtprotoStartBtn && !mtprotoStartBtn.dataset.boundClick){
+    mtprotoStartBtn.addEventListener('click', startMTProtoChallenge);
+    mtprotoStartBtn.dataset.boundClick = '1';
+  }
+  const mtprotoCompleteBtn = document.getElementById('mtproto_complete_btn');
+  if(mtprotoCompleteBtn && !mtprotoCompleteBtn.dataset.boundClick){
+    mtprotoCompleteBtn.addEventListener('click', completeMTProtoChallenge);
+    mtprotoCompleteBtn.dataset.boundClick = '1';
+  }
   renderVariantControls();
   await loadTriggerList();
   initTriggerDragAndDrop();
+}
+
+async function startMTProtoChallenge(){
+  const chatIDRaw = String(document.getElementById('mtproto_chat_id')?.value || '').trim();
+  const phone = String(document.getElementById('mtproto_phone')?.value || '').trim();
+  const btn = document.getElementById('mtproto_start_btn');
+  const hint = document.getElementById('mtproto_hint');
+  if(!chatIDRaw || !phone){
+    if(hint){ hint.textContent = 'Введите chat_id и телефон.'; }
+    return;
+  }
+  const chatID = Number(chatIDRaw);
+  if(!Number.isFinite(chatID) || chatID === 0){
+    if(hint){ hint.textContent = 'Некорректный chat_id.'; }
+    return;
+  }
+  lockButton(btn);
+  try{
+    const r = await fetch(withToken('/trigger_bot/mtproto_challenge_start'), {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({chat_id: chatID, phone}),
+      credentials: 'same-origin'
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      if(hint){ hint.textContent = 'Ошибка: ' + (txt || r.status); }
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    const challengeID = String(data?.challenge_id || '').trim();
+    const idInput = document.getElementById('mtproto_challenge_id');
+    if(idInput){ idInput.value = challengeID; }
+    if(hint){ hint.textContent = challengeID ? 'Код отправлен. Введите код и нажмите «Подтвердить код».' : 'Код отправлен.'; }
+  } finally {
+    unlockButton(btn);
+  }
+}
+
+async function loadMTProtoChatOptions(){
+  const sel = document.getElementById('mtproto_chat_id');
+  if(!sel){ return; }
+  try{
+    const r = await fetch(withToken('/trigger_bot/mtproto_chat_options'));
+    if(!r.ok){ return; }
+    const data = await r.json();
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const prev = String(sel.value || '');
+    sel.innerHTML = '<option value="">Выберите чат…</option>';
+    items.forEach((it) => {
+      const id = Number(it?.chat_id);
+      const title = String(it?.title || '').trim();
+      if(!Number.isFinite(id) || id === 0 || !title){ return; }
+      const opt = document.createElement('option');
+      opt.value = String(id);
+      opt.textContent = title;
+      sel.appendChild(opt);
+    });
+    if(prev){
+      sel.value = prev;
+    }
+  } catch(_){
+    // noop
+  }
+}
+
+async function completeMTProtoChallenge(){
+  const challengeID = String(document.getElementById('mtproto_challenge_id')?.value || '').trim();
+  const code = String(document.getElementById('mtproto_code')?.value || '').trim();
+  const password = String(document.getElementById('mtproto_password')?.value || '').trim();
+  const btn = document.getElementById('mtproto_complete_btn');
+  const hint = document.getElementById('mtproto_hint');
+  if(!challengeID || !code){
+    if(hint){ hint.textContent = 'Нужны challenge_id и код.'; }
+    return;
+  }
+  lockButton(btn);
+  try{
+    const r = await fetch(withToken('/trigger_bot/mtproto_challenge_complete'), {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({challenge_id: challengeID, code, password}),
+      credentials: 'same-origin'
+    });
+    if(!r.ok){
+      const txt = await r.text();
+      if(hint){ hint.textContent = 'Ошибка: ' + (txt || r.status); }
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    if(hint){ hint.textContent = `Готово: chat_id=${String(data?.chat_id || '')}, access_hash сохранен.`; }
+    const codeInput = document.getElementById('mtproto_code');
+    if(codeInput){ codeInput.value = ''; }
+  } finally {
+    unlockButton(btn);
+  }
 }
 
 async function handleAuthSetup(ev){

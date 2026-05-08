@@ -20,6 +20,8 @@ const (
 	cmdMyPortraitAlias   = "portrait"
 	cmdDeleteMyPortrait  = "delete_my_portrait"
 	cmdDeleteMyPortrait2 = "clear_my_portrait"
+	cmdClearChat         = "clear_chat"
+	cmdSetMTProto        = "set_mtproto"
 
 	cmdBan          = "ban"
 	cmdUnban        = "unban"
