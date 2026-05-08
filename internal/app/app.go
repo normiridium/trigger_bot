@@ -1375,7 +1375,10 @@ func hasIgnoredAutoReplyPrefix(s string) bool {
 	}
 	for _, prefix := range ignoredAutoReplyPrefixes {
 		p := strings.TrimSpace(prefix)
-		if p != "" && strings.HasPrefix(v, p) {
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(v, p) {
 			return true
 		}
 	}
@@ -3349,12 +3352,6 @@ func Run() {
 				log.Printf("voice transcription skipped by duration chat=%d msg=%d duration=%ds", msg.Chat.ID, msg.MessageID, durSec)
 			}
 		}
-		if hasIgnoredAutoReplyPrefix(text) {
-			if debugTriggerLogEnabled {
-				log.Printf("skip auto-reply for ignored prefix chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
-			}
-			continue
-		}
 		if text == "" {
 			continue
 		}
@@ -3425,7 +3422,7 @@ func Run() {
 		}
 		isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
 		quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
-		runtimeItems := filterRuntimeTriggers(items)
+		runtimeItems := filterRuntimeTriggersForMessage(bot, msg, filterRuntimeTriggers(items))
 		matchedAny := false
 		used := make(map[int64]struct{}, 4)
 
@@ -3700,6 +3697,27 @@ func filterRuntimeTriggers(all []Trigger) []Trigger {
 	out := make([]Trigger, 0, len(all))
 	for i := range all {
 		if all[i].ActionType == ActionTypeUserLimitLow {
+			continue
+		}
+		out = append(out, all[i])
+	}
+	return out
+}
+
+func filterRuntimeTriggersForMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, all []Trigger) []Trigger {
+	if len(all) == 0 || bot == nil || msg == nil || msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+		return all
+	}
+	if !msg.ReplyToMessage.From.IsBot || msg.ReplyToMessage.From.ID != bot.Self.ID {
+		return all
+	}
+	replyText := strings.TrimSpace(firstNonEmptyUserText(msg.ReplyToMessage))
+	if !hasIgnoredAutoReplyPrefix(replyText) {
+		return all
+	}
+	out := make([]Trigger, 0, len(all))
+	for i := range all {
+		if all[i].TriggerMode == TriggerModeOnlyRepliesToSelfNoMedia {
 			continue
 		}
 		out = append(out, all[i])
