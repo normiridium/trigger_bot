@@ -22,6 +22,7 @@ const (
 	cmdDeleteMyPortrait2 = "clear_my_portrait"
 	cmdClearChat         = "clear_chat"
 	cmdSetMTProto        = "set_mtproto"
+	cmdAnon              = "anon"
 
 	cmdBan          = "ban"
 	cmdUnban        = "unban"
