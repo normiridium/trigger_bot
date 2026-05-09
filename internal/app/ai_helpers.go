@@ -87,7 +87,7 @@ func downloadTelegramAudioForTranscription(fileURL string) ([]byte, string, erro
 			}
 		}
 	}
-	return bodyBytes, "voice"+ext, nil
+	return bodyBytes, "voice" + ext, nil
 }
 
 func transcribeAudioBytes(apiKey, model, fileName string, audioBytes []byte) (string, error) {
@@ -356,6 +356,9 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 	prompt := buildPromptFromMessage(ctx, promptTemplate)
 	if strings.TrimSpace(recentContext) != "" {
 		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
+	}
+	if linkCtx := strings.TrimSpace(buildLinkContextForMessage(ctx.Msg)); linkCtx != "" {
+		prompt += "\n\nКонтекст по ссылкам (режим чтения):\n" + linkCtx
 	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt request model=%s prompt=%q", model, clipLogText(prompt, 200))

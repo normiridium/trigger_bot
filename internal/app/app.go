@@ -3723,11 +3723,17 @@ func filterRuntimeTriggersForMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 		return all
 	}
 	out := make([]Trigger, 0, len(all))
+	removed := 0
 	for i := range all {
 		if all[i].TriggerMode == TriggerModeOnlyRepliesToSelfNoMedia {
+			removed++
 			continue
 		}
 		out = append(out, all[i])
+	}
+	if removed > 0 && debugTriggerLogEnabled {
+		log.Printf("filtered ignored-prefix reply triggers chat=%d msg=%d reply_msg=%d removed=%d",
+			msg.Chat.ID, msg.MessageID, msg.ReplyToMessage.MessageID, removed)
 	}
 	return out
 }
