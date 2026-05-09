@@ -768,11 +768,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if progress != nil {
 			progress.SetFrame(0) // 20%
 		}
-		stopPulse := startMediaProgressPulse(progress)
-		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
 		cancelDl()
-		stopPulse()
 		if err != nil {
 			return err
 		}
@@ -797,11 +795,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if progress != nil {
 			progress.SetFrame(0) // 20%
 		}
-		stopPulse := startMediaProgressPulse(progress)
-		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadVideoFromURL(dlCtx, rawURL)
 		cancelDl()
-		stopPulse()
 		if err != nil {
 			return err
 		}
@@ -865,11 +861,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if progress != nil {
 			progress.SetFrame(0) // 20%
 		}
-		stopPulse := startMediaProgressPulse(progress)
-		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
 		cancelDl()
-		stopPulse()
 		if err != nil {
 			return err
 		}
@@ -928,11 +922,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	if progress != nil {
 		progress.SetFrame(0) // 20%
 	}
-	stopPulse := startMediaProgressPulse(progress)
-	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+	dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 	res, err := dl.DownloadAudioFromURL(dlCtx, rawURL)
 	cancelDl()
-	stopPulse()
 	if err != nil {
 		return err
 	}
@@ -949,6 +941,23 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		title = strings.TrimSpace(rawURL)
 	}
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+}
+
+func withMediaDownloadProgress(ctx context.Context, progress *mediaProgressHandle) context.Context {
+	if progress == nil {
+		return ctx
+	}
+	return mediadl.WithProgressCallback(ctx, func(percent float64) {
+		// Map real yt-dlp 0..100% to 30..80% frames (1..6).
+		frame := 1 + int(math.Floor((percent/100.0)*6.0))
+		if frame < 1 {
+			frame = 1
+		}
+		if frame > 6 {
+			frame = 6
+		}
+		progress.SetFrame(frame)
+	})
 }
 
 func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec float64, loopParts int, progress *mediaProgressHandle) (string, error) {

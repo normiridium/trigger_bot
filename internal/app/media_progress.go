@@ -3,7 +3,6 @@ package app
 import (
 	"log"
 	"sync"
-	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -67,33 +66,6 @@ func (h *mediaProgressHandle) SetFrame(frame int) {
 	edit.ParseMode = "HTML"
 	if _, e := h.bot.Request(edit); e != nil && debugTriggerLogEnabled {
 		log.Printf("media progress edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
-	}
-}
-
-// startMediaProgressPulse animates intermediate frames (30..80%) until stopped.
-func startMediaProgressPulse(h *mediaProgressHandle) func() {
-	if h == nil {
-		return func() {}
-	}
-	frames := []int{1, 2, 3, 4, 5, 6}
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(900 * time.Millisecond)
-		defer ticker.Stop()
-		i := 0
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				h.SetFrame(frames[i%len(frames)])
-				i++
-			}
-		}
-	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() { close(done) })
 	}
 }
 

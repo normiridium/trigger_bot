@@ -15,6 +15,29 @@ import (
 	"sync"
 )
 
+type progressCallbackKey struct{}
+
+// WithProgressCallback injects download progress callback into context.
+// Callback receives percent in [0..100].
+func WithProgressCallback(ctx context.Context, cb func(percent float64)) context.Context {
+	if cb == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressCallbackKey{}, cb)
+}
+
+func progressCallbackFromContext(ctx context.Context) func(float64) {
+	if ctx == nil {
+		return nil
+	}
+	v := ctx.Value(progressCallbackKey{})
+	if v == nil {
+		return nil
+	}
+	cb, _ := v.(func(float64))
+	return cb
+}
+
 var ErrUnsupportedURL = errors.New("unsupported media url")
 var ErrTooLarge = errors.New("media file is too large")
 
@@ -319,6 +342,7 @@ func (d Downloader) runJSON(ctx context.Context, args []string) (probeJSON, erro
 }
 
 func (d Downloader) runDownload(ctx context.Context, args []string) (string, error) {
+	args = d.withProgressArgs(args)
 	cmd := exec.CommandContext(ctx, d.binary(), args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 	stdout, err := cmd.StdoutPipe()
@@ -334,26 +358,48 @@ func (d Downloader) runDownload(ctx context.Context, args []string) (string, err
 	}
 
 	errBuf := new(strings.Builder)
+	progressCB := progressCallbackFromContext(ctx)
+	var outPath string
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		raw, _ := io.ReadAll(stderr)
-		errBuf.Write(raw)
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			if progressCB != nil {
+				if p, ok := parseYTDLPProgressPercent(line); ok {
+					progressCB(p)
+				}
+			}
+			errBuf.WriteString(line)
+			errBuf.WriteByte('\n')
+		}
 	}()
-	var outPath string
-	scan := bufio.NewScanner(stdout)
-	for scan.Scan() {
-		line := strings.TrimSpace(scan.Text())
-		if line == "" {
-			continue
+	go func() {
+		defer wg.Done()
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			if progressCB != nil {
+				if p, ok := parseYTDLPProgressPercent(line); ok {
+					progressCB(p)
+					continue
+				}
+			}
+			if strings.HasPrefix(line, "__FILE__") {
+				outPath = strings.TrimSpace(strings.TrimPrefix(line, "__FILE__"))
+				continue
+			}
+			outPath = line
 		}
-		if strings.HasPrefix(line, "__FILE__") {
-			outPath = strings.TrimSpace(strings.TrimPrefix(line, "__FILE__"))
-			continue
-		}
-		outPath = line
-	}
+	}()
 	wg.Wait()
 	if err := cmd.Wait(); err != nil {
 		return "", fmt.Errorf("yt-dlp failed: %w: %s", err, strings.TrimSpace(errBuf.String()))
@@ -362,6 +408,44 @@ func (d Downloader) runDownload(ctx context.Context, args []string) (string, err
 		return "", errors.New("yt-dlp returned empty output path")
 	}
 	return outPath, nil
+}
+
+func (d Downloader) withProgressArgs(args []string) []string {
+	// Keep quiet/no-warnings behavior, but force structured progress lines.
+	// Marker is parsed in runDownload and not forwarded as output path.
+	out := make([]string, 0, len(args)+6)
+	out = append(out, args...)
+	out = append(out,
+		"--newline",
+		"--progress",
+		"--progress-template", "download:__YTDLP_PROGRESS__%(progress._percent_str)s",
+	)
+	return out
+}
+
+func parseYTDLPProgressPercent(line string) (float64, bool) {
+	const marker = "__YTDLP_PROGRESS__"
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		return 0, false
+	}
+	v := strings.TrimSpace(line[idx+len(marker):])
+	v = strings.TrimSuffix(v, "%")
+	v = strings.TrimSpace(v)
+	if v == "" || strings.EqualFold(v, "N/A") {
+		return 0, false
+	}
+	p, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, false
+	}
+	if p < 0 {
+		p = 0
+	}
+	if p > 100 {
+		p = 100
+	}
+	return p, true
 }
 
 func (d Downloader) buildProbeArgs(url, formatSelector string) []string {
