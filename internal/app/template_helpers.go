@@ -1859,7 +1859,9 @@ func mediaModeAndInteractivity(service string, interactive bool) (mode string, u
 		return mediadl.ModeAudio, false
 	case "coub":
 		return mediadl.ModeAuto, interactive
-	case "instagram", "tiktok":
+	case "instagram":
+		return mediadl.ModeAuto, interactive
+	case "tiktok":
 		return mediadl.ModeAuto, false
 	case "x":
 		return mediadl.ModeVideo, false

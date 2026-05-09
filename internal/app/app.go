@@ -2727,6 +2727,7 @@ func Run() {
 		}()
 	}
 	idleTracker := trigger.NewIdleTracker()
+	actionQueue := newTriggerActionQueue(defaultTriggerActionWorkers(), defaultTriggerActionQueueSize())
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
@@ -2748,6 +2749,7 @@ func Run() {
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)
 	handlerDeps := triggerHandlerDeps{
+		ActionQueue: actionQueue,
 		triggerActionDeps: triggerActionDeps{
 			Bot:               bot,
 			IdleTracker:       idleTracker,
@@ -3449,7 +3451,7 @@ func Run() {
 					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
 				}
 			}
-			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, primary, recentBefore)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, recentBefore)
 		}
 
 		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
@@ -3479,7 +3481,7 @@ func Run() {
 					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 				}
 			}
-			handleTriggerActionForMessage(handlerDeps.triggerActionDeps, msg, tr, recentBefore)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, recentBefore)
 		}
 		if matchedAny {
 			continue
@@ -3495,29 +3497,7 @@ func Run() {
 				if autoTr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
 					continue
 				}
-				ctx := ""
-				if isOlenyamTrigger(autoTr) {
-					ctx = recentBefore
-				}
-				rawTemplate := pickResponseVariantText(autoTr.ResponseText)
-				resolvedTemplate := expandTemplateCalls(rawTemplate, templateLookup)
-				trCopy := *autoTr
-				trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
-				task := gpt.PromptTask{
-					Bot:            bot,
-					Trigger:        trCopy,
-					Msg:            msg,
-					TriggeredAt:    time.Now(),
-					RecentContext:  ctx,
-					TemplateLookup: templateLookup,
-					IdleMarkActivity: func(chatID int64, now time.Time) {
-						if idleTracker != nil {
-							idleTracker.MarkActivity(chatID, now)
-						}
-					},
-					ChatID: msg.Chat.ID,
-				}
-				executeGPTPromptTask(task)
+				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, recentBefore)
 				if debugTriggerLogEnabled {
 					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
 				}
@@ -3545,6 +3525,7 @@ type triggerActionDeps struct {
 
 type triggerHandlerDeps struct {
 	triggerActionDeps
+	ActionQueue *triggerActionQueue
 	Allowed    chatAllowList
 	Engine     *engine.TriggerEngine
 	Store      TriggerStorePort
@@ -3810,7 +3791,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 		return
 	}
 	tr.CapturingText = ""
-	handleTriggerActionForMessage(deps.triggerActionDeps, msg, tr, "")
+	enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, tr, "")
 	if deps.ChatRecent != nil {
 		deps.ChatRecent.Add(chatID, recentChatMessage{
 			MessageID: 0,

@@ -16,6 +16,7 @@ import (
 const (
 	ModeAudio = "audio"
 	ModeVideo = "video"
+	ModePhoto = "photo"
 	ModeAuto  = "auto"
 )
 
@@ -52,6 +53,23 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.Inli
 				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
 			),
 		}
+	if service == "instagram" {
+		photoToken := putChoice(req)
+		videoToken := putChoice(req)
+		cancelToken := putChoice(req)
+		rows := [][]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
+				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		}
+		_ = msg
+		return tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+
 		_ = msg
 		return tgbotapi.NewInlineKeyboardMarkup(rows...)
 	}
@@ -82,6 +100,9 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 	case strings.HasPrefix(cb.Data, "mdpick_a:"):
 		mode = ModeAudio
 		token = strings.TrimPrefix(cb.Data, "mdpick_a:")
+	case strings.HasPrefix(cb.Data, "mdpick_p:"):
+		mode = ModePhoto
+		token = strings.TrimPrefix(cb.Data, "mdpick_p:")
 	case strings.HasPrefix(cb.Data, "mdpick_v:"):
 		mode = ModeVideo
 		token = strings.TrimPrefix(cb.Data, "mdpick_v:")
@@ -181,6 +202,8 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		status := "🎞 Выбрано: видео"
 		if mode == ModeAudio {
 			status = "🎵 Выбрано: аудио"
+		} else if mode == ModePhoto {
+			status = "🖼 Выбрано: картинка"
 		} else if strings.HasPrefix(mode, "coub_loop:") {
 			label := strings.TrimPrefix(mode, "coub_loop:")
 			if label == "all" {

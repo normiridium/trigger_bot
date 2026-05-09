@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -24,7 +26,7 @@ import (
 	"trigger-admin-bot/internal/trigger"
 )
 
-func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heights []int) (string, error) {
+func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heights []int, progress *mediaProgressHandle) (string, error) {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath == "" {
 		return "", errors.New("empty source video path")
@@ -49,7 +51,7 @@ func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heigh
 		videoBitrateK := targetVideoBitrateKbps(maxBytes, durationSec)
 		outPath := filepath.Join(dir, fmt.Sprintf("fit-%dp.mp4", h))
 		log.Printf("media transcode try height=%dp bitrate=%dk out=%q", h, videoBitrateK, outPath)
-		if err := transcodeVideoForLimit(ctx, sourcePath, outPath, h, videoBitrateK); err != nil {
+		if err := transcodeVideoForLimit(ctx, sourcePath, outPath, h, videoBitrateK, progress, durationSec); err != nil {
 			log.Printf("media transcode failed height=%dp err=%v", h, err)
 			continue
 		}
@@ -66,7 +68,7 @@ func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heigh
 	return "", fmt.Errorf("%w: cannot fit video into %d MB", errTelegramUploadTooLarge, maxMB)
 }
 
-func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, maxHeight int, videoBitrateKbps int) error {
+func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, maxHeight int, videoBitrateKbps int, progress *mediaProgressHandle, totalDurationSec float64) error {
 	timeoutSec := envInt("MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC", 300)
 	if timeoutSec < 60 {
 		timeoutSec = 60
@@ -79,9 +81,10 @@ func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, max
 	}
 	maxRateKbps := int(float64(videoBitrateKbps) * 1.15)
 	bufSizeKbps := videoBitrateKbps * 2
-	cmd := exec.CommandContext(tctx,
-		"ffmpeg",
+	args := []string{
 		"-nostdin",
+		"-progress", "pipe:1",
+		"-nostats",
 		"-y",
 		"-i", sourcePath,
 		"-vf", scaleArg,
@@ -97,15 +100,79 @@ func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, max
 		"-ar", "44100",
 		"-movflags", "+faststart",
 		outPath,
-	)
+	}
+	return runFFmpegWithProgress(tctx, args, totalDurationSec, progress, 1, 6, "ffmpeg transcode")
+}
+
+func runFFmpegWithProgress(
+	ctx context.Context,
+	args []string,
+	totalDurationSec float64,
+	progress *mediaProgressHandle,
+	frameFrom int,
+	frameTo int,
+	errPrefix string,
+) error {
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("%s stdout pipe failed: %w", errPrefix, err)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if errors.Is(tctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("ffmpeg transcode timeout")
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%s start failed: %w", errPrefix, err)
+	}
+
+	doneParse := make(chan struct{})
+	go func() {
+		defer close(doneParse)
+		if progress == nil || totalDurationSec <= 0 || frameTo < frameFrom {
+			_, _ = io.Copy(io.Discard, stdout)
+			return
 		}
-		return fmt.Errorf("ffmpeg transcode failed: %s", clipText(msg, 400))
+		totalMs := totalDurationSec * 1000.0
+		sc := bufio.NewScanner(stdout)
+		lastFrame := -1
+		frameSpan := frameTo - frameFrom + 1
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if !strings.HasPrefix(line, "out_time_ms=") {
+				continue
+			}
+			v := strings.TrimPrefix(line, "out_time_ms=")
+			outUs, perr := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if perr != nil || outUs <= 0 || totalMs <= 0 {
+				continue
+			}
+			outMs := outUs / 1000.0
+			ratio := outMs / totalMs
+			if ratio < 0 {
+				ratio = 0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			f := frameFrom + int(math.Floor(ratio*float64(frameSpan)))
+			if f > frameTo {
+				f = frameTo
+			}
+			if f != lastFrame {
+				progress.SetFrame(f)
+				lastFrame = f
+			}
+		}
+	}()
+
+	waitErr := cmd.Wait()
+	<-doneParse
+	if waitErr != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s timeout", errPrefix)
+		}
+		return fmt.Errorf("%s failed: %s", errPrefix, clipText(msg, 400))
 	}
 	return nil
 }
@@ -577,56 +644,61 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 		workerID := i + 1
 		go func(id int) {
 			for task := range q.ch {
-				log.Printf("media worker=%d start mode=%s chat=%d replyTo=%d url=%q", id, task.Mode, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.URL, 220))
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode)
-				cancel()
-				if err != nil {
-					if errors.Is(err, mediadl.ErrTooLarge) {
-						if debugTriggerLogEnabled {
-							log.Printf("media download skipped by size limit url=%q err=%v", clipText(task.URL, 180), err)
+				func() {
+					progress, stopProgress := startMediaDownloadProgress(task)
+					defer stopProgress()
+
+					log.Printf("media worker=%d start mode=%s chat=%d replyTo=%d url=%q", id, task.Mode, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.URL, 220))
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode, progress)
+					cancel()
+					if err != nil {
+						if errors.Is(err, mediadl.ErrTooLarge) {
+							if debugTriggerLogEnabled {
+								log.Printf("media download skipped by size limit url=%q err=%v", clipText(task.URL, 180), err)
+							}
+							return
 						}
-						continue
-					}
-					if errors.Is(err, errTelegramUploadTooLarge) {
-						if debugTriggerLogEnabled {
-							log.Printf("media download skipped by telegram upload limit url=%q err=%v", clipText(task.URL, 180), err)
+						if errors.Is(err, errTelegramUploadTooLarge) {
+							if debugTriggerLogEnabled {
+								log.Printf("media download skipped by telegram upload limit url=%q err=%v", clipText(task.URL, 180), err)
+							}
+							return
 						}
-						continue
-					}
-					if errors.Is(err, mediadl.ErrUnsupportedURL) {
-						if debugTriggerLogEnabled {
-							log.Printf("media download skipped unsupported url=%q", clipText(task.URL, 180))
+						if errors.Is(err, mediadl.ErrUnsupportedURL) {
+							if debugTriggerLogEnabled {
+								log.Printf("media download skipped unsupported url=%q", clipText(task.URL, 180))
+							}
+							return
 						}
-						continue
+						chatID := task.ReportTo
+						if chatID == 0 {
+							chatID = task.SendCtx.ChatID
+						}
+						log.Printf("media queue send failed chat=%d err=%v", chatID, err)
+						title := "ошибка скачивания файла"
+						switch strings.TrimSpace(strings.ToLower(task.Mode)) {
+						case mediadl.ModeVideo:
+							title = "ошибка скачивания видео"
+						case mediadl.ModeAudio:
+							title = "ошибка скачивания аудио"
+						}
+						reportChatFailure(task.SendCtx.Bot, chatID, title, errors.New(userFacingMediaDownloadError(err)))
+						return
 					}
-					chatID := task.ReportTo
-					if chatID == 0 {
-						chatID = task.SendCtx.ChatID
+					log.Printf("media worker=%d success mode=%s chat=%d url=%q", id, task.Mode, task.SendCtx.ChatID, clipText(task.URL, 220))
+					if task.Idle != nil {
+						task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
 					}
-					log.Printf("media queue send failed chat=%d err=%v", chatID, err)
-					title := "ошибка скачивания файла"
-					switch strings.TrimSpace(strings.ToLower(task.Mode)) {
-					case mediadl.ModeVideo:
-						title = "ошибка скачивания видео"
-					case mediadl.ModeAudio:
-						title = "ошибка скачивания аудио"
+					if task.Msg != nil && task.Trigger != nil {
+						deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+					} else if task.DeleteSource && task.SourceMsgID > 0 {
+						_, _ = task.SendCtx.Bot.Request(tgbotapi.DeleteMessageConfig{
+							ChatID:    task.SendCtx.ChatID,
+							MessageID: task.SourceMsgID,
+						})
 					}
-					reportChatFailure(task.SendCtx.Bot, chatID, title, errors.New(userFacingMediaDownloadError(err)))
-					continue
-				}
-				log.Printf("media worker=%d success mode=%s chat=%d url=%q", id, task.Mode, task.SendCtx.ChatID, clipText(task.URL, 220))
-				if task.Idle != nil {
-					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
-				}
-				if task.Msg != nil && task.Trigger != nil {
-					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
-				} else if task.DeleteSource && task.SourceMsgID > 0 {
-					_, _ = task.SendCtx.Bot.Request(tgbotapi.DeleteMessageConfig{
-						ChatID:    task.SendCtx.ChatID,
-						MessageID: task.SourceMsgID,
-					})
-				}
+				}()
 			}
 		}(workerID)
 	}
@@ -668,7 +740,7 @@ func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
 	}
 }
 
-func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode string) error {
+func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode string, progress *mediaProgressHandle) error {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	coubLoopParts := 0
 	if strings.HasPrefix(mode, "coub_loop:") {
@@ -692,10 +764,44 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		envInt("TELEGRAM_UPLOAD_MAX_MB", 50),
 		dl.ConfiguredMaxHeight(),
 	)
+	if mode == mediadl.ModePhoto {
+		if progress != nil {
+			progress.SetFrame(0) // 20%
+		}
+		stopPulse := startMediaProgressPulse(progress)
+		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
+		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
+		cancelDl()
+		stopPulse()
+		if err != nil {
+			return err
+		}
+		if st, stErr := os.Stat(res.FilePath); stErr == nil {
+			log.Printf("media photo downloaded chat=%d kind=%s path=%q size=%.2fMB title=%q", sendCtx.ChatID, res.MediaKind, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120))
+		}
+		defer func() {
+			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
+				log.Printf("media temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+			}
+		}()
+		if res.MediaKind != mediadl.MediaKindPhoto {
+			return errors.New("картинка недоступна по этой ссылке")
+		}
+		title := strings.TrimSpace(res.Title)
+		if title == "" {
+			title = strings.TrimSpace(rawURL)
+		}
+		return sendPhotoFromFile(sendCtx, res.FilePath, buildMediaPhotoCaption(res.FilePath, title, res.SourceURL, res.Service))
+	}
 	if mode == mediadl.ModeVideo {
+		if progress != nil {
+			progress.SetFrame(0) // 20%
+		}
+		stopPulse := startMediaProgressPulse(progress)
 		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
 		res, err := dl.DownloadVideoFromURL(dlCtx, rawURL)
 		cancelDl()
+		stopPulse()
 		if err != nil {
 			return err
 		}
@@ -718,11 +824,14 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			}
 		}()
 		if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+			if progress != nil {
+				progress.SetFrame(7) // 90%
+			}
 			loopSec := envFloat("COUB_LOOP_SECONDS", 0)
 			if loopSec <= 0 {
 				loopSec = res.Duration
 			}
-			if looped, err := buildCoubLoopedVideo(ctx, res.FilePath, loopSec, coubLoopParts); err == nil && strings.TrimSpace(looped) != "" {
+			if looped, err := buildCoubLoopedVideo(ctx, res.FilePath, loopSec, coubLoopParts, progress); err == nil && strings.TrimSpace(looped) != "" {
 				coubLoopPath = looped
 				videoPath = looped
 			} else if debugTriggerLogEnabled {
@@ -734,7 +843,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				return err
 			}
 			log.Printf("media video over telegram limit chat=%d path=%q, starting transcode ladder", sendCtx.ChatID, videoPath)
-			fitted, fitErr := fitVideoToTelegram(ctx, videoPath, envInt("TELEGRAM_UPLOAD_MAX_MB", 50), videoFallbackHeights(dl.ConfiguredMaxHeight()))
+			fitted, fitErr := fitVideoToTelegram(ctx, videoPath, envInt("TELEGRAM_UPLOAD_MAX_MB", 50), videoFallbackHeights(dl.ConfiguredMaxHeight()), progress)
 			if fitErr != nil {
 				return fitErr
 			}
@@ -747,12 +856,20 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if title == "" {
 			title = strings.TrimSpace(rawURL)
 		}
+		if progress != nil {
+			progress.SetFrame(7) // 90%
+		}
 		return sendVideoFromFile(sendCtx, videoPath, buildMediaVideoCaption(videoPath, title, res.SourceURL, res.Service))
 	}
 	if mode == mediadl.ModeAuto {
+		if progress != nil {
+			progress.SetFrame(0) // 20%
+		}
+		stopPulse := startMediaProgressPulse(progress)
 		dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
 		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
 		cancelDl()
+		stopPulse()
 		if err != nil {
 			return err
 		}
@@ -785,11 +902,14 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 		default:
 			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+				if progress != nil {
+					progress.SetFrame(7) // 90%
+				}
 				loopSec := envFloat("COUB_LOOP_SECONDS", 0)
 				if loopSec <= 0 {
 					loopSec = res.Duration
 				}
-				if looped, err := buildCoubLoopedVideo(ctx, mediaPath, loopSec, coubLoopParts); err == nil && strings.TrimSpace(looped) != "" {
+				if looped, err := buildCoubLoopedVideo(ctx, mediaPath, loopSec, coubLoopParts, progress); err == nil && strings.TrimSpace(looped) != "" {
 					coubLoopPath = looped
 					mediaPath = looped
 				} else if debugTriggerLogEnabled {
@@ -799,12 +919,20 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			if err := ensureTelegramUploadLimit(mediaPath); err != nil {
 				return err
 			}
+			if progress != nil {
+				progress.SetFrame(7) // 90%
+			}
 			return sendVideoFromFile(sendCtx, mediaPath, buildMediaVideoCaption(mediaPath, title, res.SourceURL, res.Service))
 		}
 	}
+	if progress != nil {
+		progress.SetFrame(0) // 20%
+	}
+	stopPulse := startMediaProgressPulse(progress)
 	dlCtx, cancelDl := context.WithTimeout(ctx, 3*time.Minute)
 	res, err := dl.DownloadAudioFromURL(dlCtx, rawURL)
 	cancelDl()
+	stopPulse()
 	if err != nil {
 		return err
 	}
@@ -823,7 +951,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 }
 
-func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec float64, loopParts int) (string, error) {
+func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec float64, loopParts int, progress *mediaProgressHandle) (string, error) {
 	inputPath = strings.TrimSpace(inputPath)
 	if inputPath == "" {
 		return "", errors.New("empty coub input path")
@@ -886,10 +1014,10 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 	outPath := outTmp.Name()
 	_ = outTmp.Close()
 
-	cutCmd := exec.CommandContext(
-		ctx,
-		"ffmpeg",
+	cutArgs := []string{
 		"-nostdin", "-y",
+		"-progress", "pipe:1",
+		"-nostats",
 		"-i", inputPath,
 		"-t", fmt.Sprintf("%.6f", loopDurationSec),
 		"-an",
@@ -897,18 +1025,16 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 		"-preset", "veryfast",
 		"-pix_fmt", "yuv420p",
 		baseLoopPath,
-	)
-	var cutErr bytes.Buffer
-	cutCmd.Stderr = &cutErr
-	if err := cutCmd.Run(); err != nil {
-		return "", fmt.Errorf("coub base-loop cut failed: %s", clipText(strings.TrimSpace(cutErr.String()), 400))
+	}
+	if err := runFFmpegWithProgress(ctx, cutArgs, loopDurationSec, progress, 1, 3, "coub base-loop cut"); err != nil {
+		return "", err
 	}
 	defer func() { _ = os.Remove(baseLoopPath) }()
 
-	loopCmd := exec.CommandContext(
-		ctx,
-		"ffmpeg",
+	loopArgs := []string{
 		"-nostdin", "-y",
+		"-progress", "pipe:1",
+		"-nostats",
 		"-stream_loop", "-1",
 		"-i", baseLoopPath,
 		"-i", inputPath,
@@ -923,11 +1049,9 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 		"-movflags", "+faststart",
 		"-shortest",
 		outPath,
-	)
-	var loopErr bytes.Buffer
-	loopCmd.Stderr = &loopErr
-	if err := loopCmd.Run(); err != nil {
-		return "", fmt.Errorf("coub loop compose failed: %s", clipText(strings.TrimSpace(loopErr.String()), 400))
+	}
+	if err := runFFmpegWithProgress(ctx, loopArgs, targetDuration, progress, 4, 6, "coub loop compose"); err != nil {
+		return "", err
 	}
 	return outPath, nil
 }
