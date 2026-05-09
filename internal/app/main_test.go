@@ -3,13 +3,11 @@ package app
 import (
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"trigger-admin-bot/internal/gpt"
 	"trigger-admin-bot/internal/trigger"
 )
 
@@ -1005,74 +1003,6 @@ func TestExtractLeadingReactionCandidateNoEmoji(t *testing.T) {
 	}
 }
 
-func TestGPTDebouncerLeadingImmediate(t *testing.T) {
-	var mu sync.Mutex
-	calls := []int{}
-	ch := make(chan struct{}, 4)
-	d := gpt.NewDebouncer(120*time.Millisecond, func(task gpt.PromptTask) {
-		mu.Lock()
-		calls = append(calls, task.Msg.MessageID)
-		mu.Unlock()
-		ch <- struct{}{}
-	})
-	if d == nil {
-		t.Fatalf("debouncer is nil")
-	}
-
-	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 101}})
-	select {
-	case <-ch:
-	case <-time.After(40 * time.Millisecond):
-		t.Fatalf("expected immediate leading call")
-	}
-	select {
-	case <-ch:
-		t.Fatalf("unexpected extra call")
-	case <-time.After(150 * time.Millisecond):
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(calls) != 1 || calls[0] != 101 {
-		t.Fatalf("unexpected calls: %#v", calls)
-	}
-}
-
-func TestGPTDebouncerTrailingLatest(t *testing.T) {
-	var mu sync.Mutex
-	calls := []int{}
-	ch := make(chan struct{}, 8)
-	d := gpt.NewDebouncer(140*time.Millisecond, func(task gpt.PromptTask) {
-		mu.Lock()
-		calls = append(calls, task.Msg.MessageID)
-		mu.Unlock()
-		ch <- struct{}{}
-	})
-	if d == nil {
-		t.Fatalf("debouncer is nil")
-	}
-
-	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 201}}) // immediate
-	<-ch
-	time.Sleep(30 * time.Millisecond)
-	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 202}})
-	time.Sleep(30 * time.Millisecond)
-	d.Schedule(1, gpt.PromptTask{Msg: &tgbotapi.Message{MessageID: 203}}) // latest in window
-
-	select {
-	case <-ch:
-	case <-time.After(220 * time.Millisecond):
-		t.Fatalf("expected trailing call")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %#v", calls)
-	}
-	if calls[0] != 201 || calls[1] != 203 {
-		t.Fatalf("expected [201 203], got %#v", calls)
-	}
-}
 
 func TestParseModerationCommandBan(t *testing.T) {
 	raw := "!ban @user 2h\nспам ссылками"

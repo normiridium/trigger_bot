@@ -2727,11 +2727,6 @@ func Run() {
 		}()
 	}
 	idleTracker := trigger.NewIdleTracker()
-	gptDebounceSec := envInt("GPT_PROMPT_DEBOUNCE_SEC", 0)
-	gptDebouncer := gpt.NewDebouncer(time.Duration(gptDebounceSec)*time.Second, executeGPTPromptTask)
-	if gptDebounceSec > 0 {
-		log.Printf("gpt prompt debounce enabled: %ds (leading+trailing per chat)", gptDebounceSec)
-	}
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
@@ -2756,7 +2751,6 @@ func Run() {
 		triggerActionDeps: triggerActionDeps{
 			Bot:               bot,
 			IdleTracker:       idleTracker,
-			GPTDebouncer:      gptDebouncer,
 			Portraits:         portraitManager,
 			SpotifyMusic:      spotifyMusicClient,
 			SpotifyDownloader: spotifyDownloader,
@@ -3523,11 +3517,7 @@ func Run() {
 					},
 					ChatID: msg.Chat.ID,
 				}
-				if gptDebouncer != nil {
-					gptDebouncer.Schedule(msg.Chat.ID, task)
-				} else {
-					executeGPTPromptTask(task)
-				}
+				executeGPTPromptTask(task)
 				if debugTriggerLogEnabled {
 					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
 				}
@@ -3541,7 +3531,6 @@ func Run() {
 type triggerActionDeps struct {
 	Bot               *tgbotapi.BotAPI
 	IdleTracker       *trigger.IdleTracker
-	GPTDebouncer      *gpt.Debouncer
 	Portraits         *participantPortraitManager
 	SpotifyMusic      SpotifyMusicPort
 	SpotifyDownloader SpotifyDownloadPort
@@ -3962,29 +3951,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if isOlenyamTrigger(tr) {
 			ctx = recentBefore
 		}
-		if deps.GPTDebouncer != nil {
-			trCopy := *tr
-			trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
-			triggeredAt := time.Now()
-			deps.GPTDebouncer.Schedule(msg.Chat.ID, gpt.PromptTask{
-				Bot:            deps.Bot,
-				Trigger:        trCopy,
-				Msg:            msg,
-				TriggeredAt:    triggeredAt,
-				RecentContext:  ctx,
-				TemplateLookup: deps.TemplateLookup,
-				IdleMarkActivity: func(chatID int64, now time.Time) {
-					if deps.IdleTracker != nil {
-						deps.IdleTracker.MarkActivity(chatID, now)
-					}
-				},
-				ChatID: msg.Chat.ID,
-			})
-			if debugTriggerLogEnabled {
-				log.Printf("gpt prompt queued (debounce) trigger=%d chat=%d msg=%d", tr.ID, msg.Chat.ID, msg.MessageID)
-			}
-			return
-		}
+
 		trCopy := *tr
 		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 		triggeredAt := time.Now()

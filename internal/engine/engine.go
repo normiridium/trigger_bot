@@ -151,16 +151,15 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 		}
 		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
 	case "only_replies_to_combot_no_media":
-		// Same as reply-to-self mode but ignores media on both sides:
-		// the incoming message and the message being replied to.
-		// Needed for text-only conversations with the bot.
+		// Same as reply-to-self mode, but ignores only replies to bot media messages.
+		// Incoming user media (voice/audio/etc.) is allowed.
 		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
 			return false
 		}
 		if bot == nil {
 			return false
 		}
-		if hasMessageMedia(msg) || hasMessageMedia(msg.ReplyToMessage) {
+		if hasMessageMedia(msg.ReplyToMessage) {
 			return false
 		}
 		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID

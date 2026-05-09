@@ -120,7 +120,7 @@ func TestTriggerModeReplyToSelfNoMedia_TextReplyMatches(t *testing.T) {
 	}
 }
 
-func TestTriggerModeReplyToSelfNoMedia_MediaReplySkipped(t *testing.T) {
+func TestTriggerModeReplyToSelfNoMedia_MediaReplyAllowed(t *testing.T) {
 	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
 	msg := &tgbotapi.Message{
 		MessageID: 201,
@@ -132,8 +132,8 @@ func TestTriggerModeReplyToSelfNoMedia_MediaReplySkipped(t *testing.T) {
 		},
 	}
 	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
-	if TriggerModeMatches(bot, tr, msg) {
-		t.Fatalf("expected media reply to be skipped")
+	if !TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected media reply to self-bot to match")
 	}
 }
 
@@ -155,7 +155,7 @@ func TestTriggerModeReplyToSelfNoMedia_ReplyToMediaMessageSkipped(t *testing.T) 
 	}
 }
 
-func TestTriggerModeReplyToSelfNoMedia_DocumentReplySkipped(t *testing.T) {
+func TestTriggerModeReplyToSelfNoMedia_DocumentReplyAllowed(t *testing.T) {
 	bot := &tgbotapi.BotAPI{Self: tgbotapi.User{ID: 999, UserName: "olenyam_bot"}}
 	msg := &tgbotapi.Message{
 		MessageID: 203,
@@ -167,8 +167,8 @@ func TestTriggerModeReplyToSelfNoMedia_DocumentReplySkipped(t *testing.T) {
 		},
 	}
 	tr := &model.Trigger{TriggerMode: model.TriggerModeOnlyRepliesToSelfNoMedia}
-	if TriggerModeMatches(bot, tr, msg) {
-		t.Fatalf("expected document reply to be skipped")
+	if !TriggerModeMatches(bot, tr, msg) {
+		t.Fatalf("expected document reply to self-bot to match")
 	}
 }
 
