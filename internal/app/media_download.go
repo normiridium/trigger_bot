@@ -455,28 +455,40 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 	for i := 0; i < workers; i++ {
 		go func() {
 			for task := range q.ch {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				err := processSpotifyPick(ctx, task.SendCtx, task.DL, task.Req)
-				cancel()
-				if err != nil {
-					chatID := task.ReportTo
-					if chatID == 0 {
-						chatID = task.SendCtx.ChatID
+				func() {
+					progressTask := mediaDownloadTask{SendCtx: task.SendCtx, Mode: mediadl.ModeAudio}
+					progress, stopProgress := startMediaDownloadProgress(progressTask)
+					defer stopProgress()
+					if progress != nil {
+						progress.SetFrame(0)
 					}
-					if errors.Is(err, errTelegramUploadTooLarge) {
-						reportChatFailure(task.SendCtx.Bot, chatID, "аудио слишком большое для отправки в Telegram", err)
-						continue
+
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					err := processSpotifyPick(ctx, task.SendCtx, task.DL, task.Req)
+					cancel()
+					if err != nil {
+						chatID := task.ReportTo
+						if chatID == 0 {
+							chatID = task.SendCtx.ChatID
+						}
+						if errors.Is(err, errTelegramUploadTooLarge) {
+							reportChatFailure(task.SendCtx.Bot, chatID, "аудио слишком большое для отправки в Telegram", err)
+							return
+						}
+						log.Printf("spotify queue send failed chat=%d err=%v", chatID, err)
+						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка отправки аудио Spotify", err)
+						return
 					}
-					log.Printf("spotify queue send failed chat=%d err=%v", chatID, err)
-					reportChatFailure(task.SendCtx.Bot, chatID, "ошибка отправки аудио Spotify", err)
-					continue
-				}
-				if task.Idle != nil {
-					task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
-				}
-				if task.Msg != nil && task.Trigger != nil {
-					deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
-				}
+					if progress != nil {
+						progress.SetFrame(7)
+					}
+					if task.Idle != nil {
+						task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
+					}
+					if task.Msg != nil && task.Trigger != nil {
+						deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+					}
+				}()
 			}
 		}()
 	}
@@ -522,6 +534,12 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 		go func(id int) {
 			for task := range q.ch {
 				func() {
+					progressTask := mediaDownloadTask{SendCtx: task.SendCtx, Mode: mediadl.ModeAudio}
+					progress, stopProgress := startMediaDownloadProgress(progressTask)
+					defer stopProgress()
+					if progress != nil {
+						progress.SetFrame(0)
+					}
 					defer func() {
 						if r := recover(); r != nil {
 							chatID := task.ReportTo
@@ -546,6 +564,9 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 						log.Printf("yandex queue send failed chat=%d err=%v", chatID, err)
 						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", err)
 						return
+					}
+					if progress != nil {
+						progress.SetFrame(7)
 					}
 					if debugTriggerLogEnabled {
 						log.Printf("yandex worker=%d done chat=%d", id, task.SendCtx.ChatID)
