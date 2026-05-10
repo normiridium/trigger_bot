@@ -674,7 +674,7 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 					defer stopProgress()
 
 					log.Printf("media worker=%d start mode=%s chat=%d replyTo=%d url=%q", id, task.Mode, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.URL, 220))
-					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					ctx, cancel := context.WithTimeout(context.Background(), mediaTaskTimeout(task.Mode, task.URL))
 					err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode, progress)
 					cancel()
 					if err != nil {
@@ -728,6 +728,23 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 		}(workerID)
 	}
 	return q
+}
+
+func mediaTaskTimeout(mode string, rawURL string) time.Duration {
+	baseSec := envInt("MEDIA_DOWNLOAD_TIMEOUT_SEC", 180)
+	if baseSec < 60 {
+		baseSec = 60
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	urlLower := strings.ToLower(strings.TrimSpace(rawURL))
+	if strings.HasPrefix(mode, "coub_loop:") || strings.Contains(urlLower, "coub.com/") {
+		sec := envInt("COUB_MEDIA_DOWNLOAD_TIMEOUT_SEC", 600)
+		if sec < baseSec {
+			sec = baseSec
+		}
+		return time.Duration(sec) * time.Second
+	}
+	return time.Duration(baseSec) * time.Second
 }
 
 func userFacingMediaDownloadError(err error) string {
