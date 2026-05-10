@@ -20,22 +20,24 @@ const (
 )
 
 var mediaProgressFrames = []string{
-	// 20% ◀️⏩⏩⏩#️⃣
-	barLeft + barIdle + barIdle + barIdle + barEnd0,
-	// 30% ◀️⏯⏩⏩#️⃣
-	barLeft + barRun + barIdle + barIdle + barEnd0,
-	// 40% ◀️⏹⏩⏩#️⃣
-	barLeft + barFill + barIdle + barIdle + barEnd0,
-	// 50% ◀️⏹⏯⏩#️⃣
-	barLeft + barFill + barRun + barIdle + barEnd0,
-	// 60% ◀️⏹⏹⏩#️⃣
-	barLeft + barFill + barFill + barIdle + barEnd0,
-	// 70% ◀️⏹⏹⏯#️⃣
-	barLeft + barFill + barFill + barRun + barEnd0,
-	// 80% ◀️⏹⏹⏹#️⃣
-	barLeft + barFill + barFill + barFill + barEnd0,
-	// 90% ◀️⏹⏹⏹⏭
-	barLeft + barFill + barFill + barFill + barEnd1,
+	// 10% ◀️⏩⏩⏩⏩#️⃣
+	barLeft + barIdle + barIdle + barIdle + barIdle + barEnd0,
+	// 20% ◀️⏯⏩⏩⏩#️⃣
+	barLeft + barRun + barIdle + barIdle + barIdle + barEnd0,
+	// 30% ◀️⏹⏩⏩⏩#️⃣
+	barLeft + barFill + barIdle + barIdle + barIdle + barEnd0,
+	// 40% ◀️⏹⏯⏩⏩#️⃣
+	barLeft + barFill + barRun + barIdle + barIdle + barEnd0,
+	// 50% ◀️⏹⏹⏩⏩#️⃣
+	barLeft + barFill + barFill + barIdle + barIdle + barEnd0,
+	// 60% ◀️⏹⏹⏯⏩#️⃣
+	barLeft + barFill + barFill + barRun + barIdle + barEnd0,
+	// 70% ◀️⏹⏹⏹⏩#️⃣
+	barLeft + barFill + barFill + barFill + barIdle + barEnd0,
+	// 80% ◀️⏹⏹⏹⏯#️⃣
+	barLeft + barFill + barFill + barFill + barRun + barEnd0,
+	// 90% ◀️⏹⏹⏹⏹⏭
+	barLeft + barFill + barFill + barFill + barFill + barEnd1,
 }
 
 type mediaProgressHandle struct {

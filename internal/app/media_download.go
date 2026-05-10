@@ -101,7 +101,7 @@ func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, max
 		"-movflags", "+faststart",
 		outPath,
 	}
-	return runFFmpegWithProgress(tctx, args, totalDurationSec, progress, 1, 6, "ffmpeg transcode")
+	return runFFmpegWithProgress(tctx, args, totalDurationSec, progress, 1, 7, "ffmpeg transcode")
 }
 
 func runFFmpegWithProgress(
@@ -481,7 +481,7 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 						return
 					}
 					if progress != nil {
-						progress.SetFrame(7)
+						progress.SetFrame(8)
 						progress.SetStage("Отправка аудио")
 					}
 					if task.Idle != nil {
@@ -569,7 +569,7 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 						return
 					}
 					if progress != nil {
-						progress.SetFrame(7)
+						progress.SetFrame(8)
 						progress.SetStage("Отправка аудио")
 					}
 					if debugTriggerLogEnabled {
@@ -868,7 +868,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		}()
 		if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
 			if progress != nil {
-				progress.SetFrame(7) // 90%
+				progress.SetFrame(8) // 90%
 				progress.SetStage("Сборка видео")
 			}
 			loopSec := envFloat("COUB_LOOP_SECONDS", 0)
@@ -904,7 +904,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			title = strings.TrimSpace(rawURL)
 		}
 		if progress != nil {
-			progress.SetFrame(7) // 90%
+			progress.SetFrame(8) // 90%
 			progress.SetStage("Отправка видео")
 		}
 		return sendVideoFromFile(sendCtx, videoPath, buildMediaVideoCaption(videoPath, title, res.SourceURL, res.Service))
@@ -956,7 +956,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		default:
 			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
 				if progress != nil {
-					progress.SetFrame(7) // 90%
+					progress.SetFrame(8) // 90%
 					progress.SetStage("Сборка видео")
 				}
 				loopSec := envFloat("COUB_LOOP_SECONDS", 0)
@@ -974,7 +974,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				return err
 			}
 			if progress != nil {
-				progress.SetFrame(7) // 90%
+				progress.SetFrame(8) // 90%
 				progress.SetStage("Отправка видео")
 			}
 			return sendVideoFromFile(sendCtx, mediaPath, buildMediaVideoCaption(mediaPath, title, res.SourceURL, res.Service))
@@ -1003,7 +1003,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		title = strings.TrimSpace(rawURL)
 	}
 	if progress != nil {
-		progress.SetFrame(7)
+		progress.SetFrame(8)
 		progress.SetStage("Отправка аудио")
 	}
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
@@ -1014,13 +1014,13 @@ func withMediaDownloadProgress(ctx context.Context, progress *mediaProgressHandl
 		return ctx
 	}
 	return mediadl.WithProgressCallback(ctx, func(percent float64) {
-		// Map real yt-dlp 0..100% to 30..80% frames (1..6).
-		frame := 1 + int(math.Floor((percent/100.0)*6.0))
+		// Map real yt-dlp 0..100% to 20..80% frames (1..7).
+		frame := 1 + int(math.Floor((percent/100.0)*7.0))
 		if frame < 1 {
 			frame = 1
 		}
-		if frame > 6 {
-			frame = 6
+		if frame > 7 {
+			frame = 7
 		}
 		progress.SetFrame(frame)
 	})
@@ -1101,7 +1101,7 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 		"-pix_fmt", "yuv420p",
 		baseLoopPath,
 	}
-	if err := runFFmpegWithProgress(ctx, cutArgs, loopDurationSec, progress, 1, 3, "coub base-loop cut"); err != nil {
+	if err := runFFmpegWithProgress(ctx, cutArgs, loopDurationSec, progress, 1, 4, "coub base-loop cut"); err != nil {
 		return "", err
 	}
 	defer func() { _ = os.Remove(baseLoopPath) }()
@@ -1125,7 +1125,7 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 		"-shortest",
 		outPath,
 	}
-	if err := runFFmpegWithProgress(ctx, loopArgs, targetDuration, progress, 4, 6, "coub loop compose"); err != nil {
+	if err := runFFmpegWithProgress(ctx, loopArgs, targetDuration, progress, 5, 7, "coub loop compose"); err != nil {
 		return "", err
 	}
 	return outPath, nil
