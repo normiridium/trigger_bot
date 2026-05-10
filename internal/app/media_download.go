@@ -461,6 +461,7 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 					defer stopProgress()
 					if progress != nil {
 						progress.SetFrame(0)
+						progress.SetStage("Скачивание музыки")
 					}
 
 					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -481,6 +482,7 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 					}
 					if progress != nil {
 						progress.SetFrame(7)
+						progress.SetStage("Отправка аудио")
 					}
 					if task.Idle != nil {
 						task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
@@ -539,6 +541,7 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 					defer stopProgress()
 					if progress != nil {
 						progress.SetFrame(0)
+						progress.SetStage("Скачивание музыки")
 					}
 					defer func() {
 						if r := recover(); r != nil {
@@ -567,6 +570,7 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 					}
 					if progress != nil {
 						progress.SetFrame(7)
+						progress.SetStage("Отправка аудио")
 					}
 					if debugTriggerLogEnabled {
 						log.Printf("yandex worker=%d done chat=%d", id, task.SendCtx.ChatID)
@@ -788,6 +792,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	if mode == mediadl.ModePhoto {
 		if progress != nil {
 			progress.SetFrame(0) // 20%
+			progress.SetStage("Скачивание")
 		}
 		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
@@ -810,11 +815,15 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if title == "" {
 			title = strings.TrimSpace(rawURL)
 		}
+		if progress != nil {
+			progress.SetStage("Отправка фото")
+		}
 		return sendPhotoFromFile(sendCtx, res.FilePath, buildMediaPhotoCaption(res.FilePath, title, res.SourceURL, res.Service))
 	}
 	if mode == mediadl.ModeVideo {
 		if progress != nil {
 			progress.SetFrame(0) // 20%
+			progress.SetStage("Скачивание")
 		}
 		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadVideoFromURL(dlCtx, rawURL)
@@ -843,6 +852,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
 			if progress != nil {
 				progress.SetFrame(7) // 90%
+				progress.SetStage("Сборка видео")
 			}
 			loopSec := envFloat("COUB_LOOP_SECONDS", 0)
 			if loopSec <= 0 {
@@ -860,6 +870,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				return err
 			}
 			log.Printf("media video over telegram limit chat=%d path=%q, starting transcode ladder", sendCtx.ChatID, videoPath)
+			if progress != nil {
+				progress.SetStage("Конвертация видео")
+			}
 			fitted, fitErr := fitVideoToTelegram(ctx, videoPath, envInt("TELEGRAM_UPLOAD_MAX_MB", 50), videoFallbackHeights(dl.ConfiguredMaxHeight()), progress)
 			if fitErr != nil {
 				return fitErr
@@ -875,12 +888,14 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		}
 		if progress != nil {
 			progress.SetFrame(7) // 90%
+			progress.SetStage("Отправка видео")
 		}
 		return sendVideoFromFile(sendCtx, videoPath, buildMediaVideoCaption(videoPath, title, res.SourceURL, res.Service))
 	}
 	if mode == mediadl.ModeAuto {
 		if progress != nil {
 			progress.SetFrame(0) // 20%
+			progress.SetStage("Скачивание")
 		}
 		dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 		res, err := dl.DownloadMediaAutoFromURL(dlCtx, rawURL)
@@ -912,13 +927,20 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		}
 		switch res.MediaKind {
 		case mediadl.MediaKindPhoto:
+			if progress != nil {
+				progress.SetStage("Отправка фото")
+			}
 			return sendPhotoFromFile(sendCtx, mediaPath, buildMediaPhotoCaption(mediaPath, title, res.SourceURL, res.Service))
 		case mediadl.MediaKindAudio:
+			if progress != nil {
+				progress.SetStage("Отправка аудио")
+			}
 			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 		default:
 			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
 				if progress != nil {
 					progress.SetFrame(7) // 90%
+					progress.SetStage("Сборка видео")
 				}
 				loopSec := envFloat("COUB_LOOP_SECONDS", 0)
 				if loopSec <= 0 {
@@ -936,12 +958,14 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			}
 			if progress != nil {
 				progress.SetFrame(7) // 90%
+				progress.SetStage("Отправка видео")
 			}
 			return sendVideoFromFile(sendCtx, mediaPath, buildMediaVideoCaption(mediaPath, title, res.SourceURL, res.Service))
 		}
 	}
 	if progress != nil {
 		progress.SetFrame(0) // 20%
+		progress.SetStage("Скачивание")
 	}
 	dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 3*time.Minute)
 	res, err := dl.DownloadAudioFromURL(dlCtx, rawURL)
@@ -960,6 +984,10 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	title := strings.TrimSpace(res.Title)
 	if title == "" {
 		title = strings.TrimSpace(rawURL)
+	}
+	if progress != nil {
+		progress.SetFrame(7)
+		progress.SetStage("Отправка аудио")
 	}
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 }

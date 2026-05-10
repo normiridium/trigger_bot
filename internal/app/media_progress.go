@@ -1,7 +1,9 @@
 package app
 
 import (
+	"html"
 	"log"
+	"strings"
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -42,6 +44,7 @@ type mediaProgressHandle struct {
 	messageID int
 	mu        sync.Mutex
 	lastFrame int
+	stage     string
 }
 
 func (h *mediaProgressHandle) SetFrame(frame int) {
@@ -60,13 +63,50 @@ func (h *mediaProgressHandle) SetFrame(frame int) {
 		return
 	}
 	h.lastFrame = frame
+	stage := h.stage
 	h.mu.Unlock()
 
-	edit := tgbotapi.NewEditMessageText(h.chatID, h.messageID, mediaProgressFrames[frame])
+	edit := tgbotapi.NewEditMessageText(h.chatID, h.messageID, renderMediaProgressText(frame, stage))
 	edit.ParseMode = "HTML"
 	if _, e := h.bot.Request(edit); e != nil && debugTriggerLogEnabled {
 		log.Printf("media progress edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
 	}
+}
+
+func (h *mediaProgressHandle) SetStage(stage string) {
+	if h == nil || h.bot == nil || h.chatID == 0 || h.messageID == 0 {
+		return
+	}
+	stage = strings.TrimSpace(stage)
+	h.mu.Lock()
+	if h.stage == stage {
+		h.mu.Unlock()
+		return
+	}
+	h.stage = stage
+	frame := h.lastFrame
+	h.mu.Unlock()
+
+	edit := tgbotapi.NewEditMessageText(h.chatID, h.messageID, renderMediaProgressText(frame, stage))
+	edit.ParseMode = "HTML"
+	if _, e := h.bot.Request(edit); e != nil && debugTriggerLogEnabled {
+		log.Printf("media progress stage edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
+	}
+}
+
+func renderMediaProgressText(frame int, stage string) string {
+	if frame < 0 {
+		frame = 0
+	}
+	if frame >= len(mediaProgressFrames) {
+		frame = len(mediaProgressFrames) - 1
+	}
+	bar := mediaProgressFrames[frame]
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return bar
+	}
+	return bar + "\n<i>" + html.EscapeString(stage) + "</i>"
 }
 
 func startMediaDownloadProgress(task mediaDownloadTask) (*mediaProgressHandle, func()) {
@@ -92,6 +132,7 @@ func startMediaDownloadProgress(task mediaDownloadTask) (*mediaProgressHandle, f
 		chatID:    chatID,
 		messageID: sent.MessageID,
 		lastFrame: 0,
+		stage:     "Подготовка",
 	}
 
 	var once sync.Once
