@@ -468,8 +468,8 @@ func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sour
 		m.ReplyToMessageID = ctx.ReplyTo
 		m.AllowSendingWithoutReply = true
 	}
-	m.Performer = strings.TrimSpace(performer)
-	m.Title = strings.TrimSpace(title)
+	m.Performer = strings.TrimSpace(sanitizeTelegramText(performer))
+	m.Title = strings.TrimSpace(sanitizeTelegramText(title))
 	if caption := buildAudioCaption(filePath, service, sourceURL); caption != "" {
 		m.Caption = caption
 		m.ParseMode = "HTML"
