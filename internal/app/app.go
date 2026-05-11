@@ -1277,14 +1277,13 @@ var mdUnderlineRe = regexp.MustCompile(`__([^\n]+?)__`)
 var htmlHeadingRe = regexp.MustCompile(`(?is)<h[1-6][^>]*>(.*?)</h[1-6]>`)
 var htmlHRRe = regexp.MustCompile(`(?i)<hr\s*/?>`)
 var htmlBRRe = regexp.MustCompile(`(?i)<br\s*/?>`)
-var htmlParagraphBreakRe = regexp.MustCompile(`(?is)</p>\s*<p[^>]*>`)
-var htmlParagraphOpenRe = regexp.MustCompile(`(?i)<p[^>]*>`)
+var htmlParagraphBreakRe = regexp.MustCompile(`(?is)</p>\s*<p(?:\s[^>]*)?>`)
+var htmlParagraphOpenRe = regexp.MustCompile(`(?i)<p(?:\s[^>]*)?>`)
 var htmlParagraphCloseRe = regexp.MustCompile(`(?i)</p>`)
 var htmlListItemParagraphRe = regexp.MustCompile(`(?is)<li>\s*<p[^>]*>(.*?)</p>\s*</li>`)
 var htmlListItemOpenRe = regexp.MustCompile(`(?i)<li[^>]*>`)
 var htmlListItemCloseRe = regexp.MustCompile(`(?i)</li>`)
 var htmlULOLRe = regexp.MustCompile(`(?i)</?(ul|ol)[^>]*>`)
-var htmlCodeClassRe = regexp.MustCompile(`(?i)<code[^>]*>`)
 var htmlStrongOpenRe = regexp.MustCompile(`(?i)<strong>`)
 var htmlStrongCloseRe = regexp.MustCompile(`(?i)</strong>`)
 var htmlEmOpenRe = regexp.MustCompile(`(?i)<em>`)
@@ -1349,7 +1348,6 @@ func markdownToTelegramHTMLLite(s string) string {
 	s = htmlParagraphOpenRe.ReplaceAllString(s, "")
 	s = htmlParagraphCloseRe.ReplaceAllString(s, "")
 	s = htmlBRRe.ReplaceAllString(s, "\n")
-	s = htmlCodeClassRe.ReplaceAllString(s, "<code>")
 	s = htmlStrongOpenRe.ReplaceAllString(s, "<b>")
 	s = htmlStrongCloseRe.ReplaceAllString(s, "</b>")
 	s = htmlEmOpenRe.ReplaceAllString(s, "<i>")
@@ -2713,6 +2711,7 @@ func Run() {
 	}()
 	disallowedNotifier := newDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
 	portraitManager := newParticipantPortraitManager(store)
+	botPortraits := newBotPortraitManager(store, bot.Self.ID)
 	if portraitManager != nil {
 		setParticipantPortraitResolver(func(chatID, userID int64) string {
 			return portraitManager.Portrait(chatID, userID)
@@ -2724,6 +2723,19 @@ func Run() {
 			setParticipantPortraitResolver(nil)
 			setParticipantPortraitRemainingResolver(nil)
 			portraitManager.Close()
+		}()
+	}
+	if botPortraits != nil {
+		setBotPortraitResolver(func(chatID int64) string {
+			return botPortraits.Portrait(chatID)
+		})
+		setOutgoingBotPortraitObserver(func(chatID int64, text string) {
+			botPortraits.ObserveOutgoing(chatID, text)
+		})
+		defer func() {
+			setBotPortraitResolver(nil)
+			setOutgoingBotPortraitObserver(nil)
+			botPortraits.Close()
 		}()
 	}
 	idleTracker := trigger.NewIdleTracker()
@@ -3004,6 +3016,7 @@ func Run() {
 						"{{user_display_name}}, {{user_label}}\n" +
 						"{{user_portrait}}\n" +
 						"{{user_portrait_remaining}}\n" +
+						"{{bot_portrait}}\n" +
 						"{{chat_context 12}}\n" +
 						"{{sender_tag}}\n" +
 						"{{chat_id}}, {{chat_title}}\n" +

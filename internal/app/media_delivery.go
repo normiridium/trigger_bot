@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -43,6 +44,28 @@ type htmlOpenTag struct {
 }
 
 var telegramHTMLTokenRe = regexp.MustCompile(`(?s)<[^>]+>|[^<]+`)
+
+var outgoingBotPortraitObserverMu sync.RWMutex
+var outgoingBotPortraitObserver func(chatID int64, text string)
+
+func setOutgoingBotPortraitObserver(fn func(chatID int64, text string)) {
+	outgoingBotPortraitObserverMu.Lock()
+	outgoingBotPortraitObserver = fn
+	outgoingBotPortraitObserverMu.Unlock()
+}
+
+func observeOutgoingBotPortrait(chatID int64, text string) {
+	val := strings.TrimSpace(text)
+	if chatID == 0 || val == "" {
+		return
+	}
+	outgoingBotPortraitObserverMu.RLock()
+	fn := outgoingBotPortraitObserver
+	outgoingBotPortraitObserverMu.RUnlock()
+	if fn != nil {
+		fn(chatID, val)
+	}
+}
 
 func splitTelegramHTMLMessage(input string, maxRunes int) []string {
 	input = strings.TrimSpace(input)
@@ -268,6 +291,7 @@ func reply(ctx sendContext, text string, preview bool) {
 		log.Printf("send ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(text, 120))
 	}
 	addOutgoingChatRecentMessage(ctx.ChatID, rawText)
+	observeOutgoingBotPortrait(ctx.ChatID, rawText)
 }
 
 func sendHTML(ctx sendContext, html string, preview bool) bool {
@@ -322,6 +346,7 @@ func sendHTML(ctx sendContext, html string, preview bool) bool {
 		}
 		plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(part, " "))
 		addOutgoingChatRecentMessage(ctx.ChatID, plain)
+		observeOutgoingBotPortrait(ctx.ChatID, plain)
 	}
 	return true
 }
@@ -349,6 +374,7 @@ func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 		log.Printf("send markdown ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Text, 120))
 	}
 	addOutgoingChatRecentMessage(ctx.ChatID, rawText)
+	observeOutgoingBotPortrait(ctx.ChatID, rawText)
 	return true
 }
 

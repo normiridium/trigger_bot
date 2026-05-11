@@ -223,6 +223,8 @@ var participantPortraitResolverMu sync.RWMutex
 var participantPortraitResolver func(chatID, userID int64) string
 var participantPortraitRemainingResolverMu sync.RWMutex
 var participantPortraitRemainingResolver func(chatID, userID int64) int
+var botPortraitResolverMu sync.RWMutex
+var botPortraitResolver func(chatID int64) string
 var chatContextResolverMu sync.RWMutex
 var chatContextResolver func(chatID int64, limit int) string
 var chatSummaryResolverMu sync.RWMutex
@@ -281,6 +283,25 @@ func setParticipantPortraitRemainingResolver(fn func(chatID, userID int64) int) 
 	participantPortraitRemainingResolverMu.Lock()
 	participantPortraitRemainingResolver = fn
 	participantPortraitRemainingResolverMu.Unlock()
+}
+
+func setBotPortraitResolver(fn func(chatID int64) string) {
+	botPortraitResolverMu.Lock()
+	botPortraitResolver = fn
+	botPortraitResolverMu.Unlock()
+}
+
+func resolveBotPortrait(chatID int64) string {
+	if chatID == 0 {
+		return ""
+	}
+	botPortraitResolverMu.RLock()
+	fn := botPortraitResolver
+	botPortraitResolverMu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn(chatID))
 }
 
 func resolveParticipantPortrait(chatID, userID int64) string {
@@ -1860,7 +1881,7 @@ func mediaModeAndInteractivity(service string, interactive bool) (mode string, u
 	case "coub":
 		return mediadl.ModeAuto, interactive
 	case "instagram":
-		return mediadl.ModeAuto, interactive
+		return mediadl.ModeAuto, false
 	case "tiktok":
 		return mediadl.ModeAuto, false
 	case "x":
@@ -2319,6 +2340,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 	chatTitle := strings.TrimSpace(msg.Chat.Title)
 	userPortrait := resolveParticipantPortrait(msg.Chat.ID, msg.From.ID)
 	userPortraitRemaining := strconv.Itoa(resolveParticipantPortraitRemaining(msg.Chat.ID, msg.From.ID))
+	botPortrait := resolveBotPortrait(msg.Chat.ID)
 
 	return map[string]string{
 		"{{message}}":                 userText,
@@ -2331,6 +2353,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{sender_tag}}":              senderTagDisplay,
 		"{{user_portrait}}":           userPortrait,
 		"{{user_portrait_remaining}}": userPortraitRemaining,
+		"{{bot_portrait}}":            botPortrait,
 		"{{user_link}}":               buildUserLink(msg.From),
 		"{{chat_id}}":                 strconv.FormatInt(msg.Chat.ID, 10),
 		"{{chat_title}}":              chatTitle,

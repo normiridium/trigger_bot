@@ -646,6 +646,7 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 		{Value: "{{ .admins | get \"full_name\" | join \", \" }}", Label: "{{ .admins | get \"full_name\" | join \", \" }} — имена админов чата (без ботов)"},
 		{Value: "{{ .user_portrait }}", Label: "{{ .user_portrait }} — портрет участника"},
 		{Value: "{{ .user_portrait_remaining }}", Label: "{{ .user_portrait_remaining }} — сколько сообщений осталось до обновления портрета"},
+		{Value: "{{ .bot_portrait }}", Label: "{{ .bot_portrait }} — портрет бота в этом чате"},
 		{Value: "{{ chat_context 12 }}", Label: "{{ chat_context 12 }} — последние сообщения чата в бюджете ~150×N символов (без обрезки строк)"},
 		{Value: "{{ .summary }}", Label: "{{ .summary }} — авто-сводка переписки чата"},
 		{Value: "{{ weather \"Рязань\" }}", Label: "{{ weather \"Рязань\" }} — погода сейчас по городу (кэшируется)"},
