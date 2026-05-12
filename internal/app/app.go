@@ -627,6 +627,19 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	}
 	stopTyping := startTypingLoop(task.Bot, task.Msg.Chat.ID, 4*time.Second)
 	defer stopTyping()
+	editQuietSec := envInt("GPT_EDIT_WAIT_SEC", 3)
+	editMaxSec := envInt("GPT_EDIT_WAIT_MAX_SEC", 15)
+	if editQuietSec < 0 {
+		editQuietSec = 0
+	}
+	if editMaxSec < editQuietSec {
+		editMaxSec = editQuietSec
+	}
+	editWaited, editChanged := waitForMessageEditsSettled(task.Msg, time.Duration(editQuietSec)*time.Second, time.Duration(editMaxSec)*time.Second)
+	if (debugTriggerLogEnabled || debugGPTLogEnabled) && editWaited > 0 {
+		log.Printf("gpt edit wait chat=%d msg=%d waited_ms=%d changed=%v text=%q",
+			task.Msg.Chat.ID, task.Msg.MessageID, editWaited.Milliseconds(), editChanged, clipLogText(firstNonEmptyUserText(task.Msg), 200))
+	}
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
@@ -661,6 +674,13 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 			task.Trigger.ID, len(out), countTGEmojiTags(out), clipText(out, 1400))
 	}
 	pause := estimateGPTReplyHumanPause(out)
+	if editWaited > 0 {
+		if pause > editWaited {
+			pause -= editWaited
+		} else {
+			pause = 0
+		}
+	}
 	if debugTriggerLogEnabled || debugGPTLogEnabled || envBool("GPT_HUMAN_PAUSE_LOG", false) {
 		log.Printf("gpt human pause trigger=%d chat=%d msg=%d delay_ms=%d out_len=%d out_words=%d",
 			task.Trigger.ID,
@@ -2756,7 +2776,7 @@ func Run() {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "callback_query", "chat_member", "my_chat_member"}
+	u.AllowedUpdates = []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)
@@ -2903,10 +2923,20 @@ func Run() {
 				continue
 			}
 		}
+		if update.Update.EditedMessage != nil {
+			trackMessageRevision(update.Update.EditedMessage)
+			if debugTriggerLogEnabled {
+				em := update.Update.EditedMessage
+				log.Printf("edited message tracked chat=%d msg=%d text=%q", em.Chat.ID, em.MessageID, clipLogText(firstNonEmptyUserText(em), 200))
+			}
+			continue
+		}
+
 		if update.Update.Message == nil {
 			continue
 		}
 		msg := update.Update.Message
+		trackMessageRevision(msg)
 		rawMsg := update.RawMessage
 		senderChatPresent := msg != nil && msg.SenderChat != nil
 		if senderChatPresent {
