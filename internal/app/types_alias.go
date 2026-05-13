@@ -59,4 +59,5 @@ const (
 	ActionTypeMediaCoub      = model.ActionTypeMediaCoub
 	ActionTypeMediaX         = model.ActionTypeMediaX
 	ActionTypeUserLimitLow   = model.ActionTypeUserLimitLow
+	ActionTypeOpenAIQuotaLow = model.ActionTypeOpenAIQuotaLow
 )

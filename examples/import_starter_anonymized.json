@@ -196,7 +196,7 @@
       "action_type": "gpt_prompt",
       "response_text": [
         {
-          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\nЗадача этого режима:\n- Сообщение содержит явное обращение к тебе.\n\n{{template \"bot_base\"}}"
+          "text": "Ты — участник чата, тёплый и деликатный участник чата.\n\nЗадача этого режима:\n- Сообщение содержит явное обращение к тебе.\n\n{{template \"bot_base\"}}"
         }
       ],
       "send_as_reply": true,
@@ -218,7 +218,7 @@
       "action_type": "gpt_prompt",
       "response_text": [
         {
-          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\n{{template \"bot_base\"}}"
+          "text": "Ты — участник чата, тёплый и деликатный участник чата.\n\n{{template \"bot_base\"}}"
         }
       ],
       "send_as_reply": true,
@@ -240,7 +240,7 @@
       "action_type": "gpt_prompt",
       "response_text": [
         {
-          "text": "Ты — участница чата, тёплая и деликатная участница чата.\n\nЗадача этого режима:\n- Это автоответ после тишины в чате.\n\n{{template \"bot_base\"}}"
+          "text": "Ты — участник чата, тёплый и деликатный участник чата.\n\nЗадача этого режима:\n- Это автоответ после тишины в чате.\n\n{{template \"bot_base\"}}"
         }
       ],
       "send_as_reply": true,
@@ -252,7 +252,7 @@
     {
       "uid": "sample-018",
       "priority": 24,
-      "title": "Бот устала",
+      "title": "Бот устал",
       "enabled": true,
       "trigger_mode": "all",
       "admin_mode": "anybody",
@@ -262,8 +262,36 @@
       "action_type": "user_limit_low_warning",
       "response_text": [
         {
-          "text": "Я уже подустала от этой темы, солнце. Давай продолжим позже."
+          "text": "Я уже подустал от этой темы, солнце. Давай продолжим позже."
         },
+      ],
+      "send_as_reply": true,
+      "preview_first_link": false,
+      "delete_source_message": false,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-019",
+      "priority": 23,
+      "title": "Бот голоден",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "",
+      "match_type": "full",
+      "case_sensitive": false,
+      "action_type": "openai_insufficient_quota_warning",
+      "response_text": [
+        {
+          "text": "Я проголодался. Покормите меня, пожалуйста."
+        },
+        {
+          "text": "Упс, у меня закончились печеньки. Помогите мне с ними, пожалуйста."
+        },
+        {
+          "text": "Я голоден. Покорми меня."
+        }
       ],
       "send_as_reply": true,
       "preview_first_link": false,

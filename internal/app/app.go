@@ -41,6 +41,12 @@ var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
 var errTelegramUploadTooLarge = errors.New("telegram upload too large")
+var openAIQuotaErrorState = struct {
+	mu   sync.Mutex
+	last map[int64]time.Time
+}{
+	last: make(map[int64]time.Time),
+}
 
 type chatAllowList struct {
 	enabled bool
@@ -95,6 +101,51 @@ func newDisallowedChatNotifier(ttl time.Duration) *disallowedChatNotifier {
 		last: make(map[int64]time.Time),
 		ttl:  ttl,
 	}
+}
+
+func isOpenAIInsufficientQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "openai status=429") && strings.Contains(msg, "insufficient_quota")
+}
+
+func allowOpenAIQuotaWarning(chatID int64, now time.Time, cooldown time.Duration) bool {
+	if chatID == 0 {
+		return false
+	}
+	if cooldown <= 0 {
+		cooldown = 30 * time.Minute
+	}
+	openAIQuotaErrorState.mu.Lock()
+	defer openAIQuotaErrorState.mu.Unlock()
+	last, ok := openAIQuotaErrorState.last[chatID]
+	if ok && now.Sub(last) < cooldown {
+		return false
+	}
+	openAIQuotaErrorState.last[chatID] = now
+	return true
+}
+
+func pickOlenyamHungryTrigger(items []Trigger, isAdmin bool) *Trigger {
+	for i := range items {
+		it := items[i]
+		if !it.Enabled || it.ActionType != ActionTypeOpenAIQuotaLow {
+			continue
+		}
+		if !adminModeAllowsTrigger(&it, isAdmin) {
+			continue
+		}
+		title := strings.ToLower(strings.TrimSpace(it.Title))
+		if strings.Contains(title, "голод") {
+			return &it
+		}
+	}
+	return nil
 }
 
 func (n *disallowedChatNotifier) shouldNotify(chatID int64, now time.Time) bool {
@@ -644,6 +695,14 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
 		log.Printf("gpt prompt failed: %v", err)
+		if isOpenAIInsufficientQuotaError(err) {
+			if allowOpenAIQuotaWarning(task.Msg.Chat.ID, time.Now(), 30*time.Minute) {
+				if !sendUserLimitLowWarning(task.Bot, task.Msg, task.QuotaLowTrigger, task.TemplateLookup) {
+					reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
+				}
+			}
+			return
+		}
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
 		return
 	}
@@ -2784,6 +2843,7 @@ func Run() {
 		ActionQueue: actionQueue,
 		triggerActionDeps: triggerActionDeps{
 			Bot:               bot,
+			Store:             store,
 			IdleTracker:       idleTracker,
 			Portraits:         portraitManager,
 			SpotifyMusic:      spotifyMusicClient,
@@ -3553,6 +3613,7 @@ func Run() {
 
 type triggerActionDeps struct {
 	Bot               *tgbotapi.BotAPI
+	Store             TriggerStorePort
 	IdleTracker       *trigger.IdleTracker
 	Portraits         *participantPortraitManager
 	SpotifyMusic      SpotifyMusicPort
@@ -3716,7 +3777,7 @@ func filterRuntimeTriggers(all []Trigger) []Trigger {
 	}
 	out := make([]Trigger, 0, len(all))
 	for i := range all {
-		if all[i].ActionType == ActionTypeUserLimitLow {
+		if all[i].ActionType == ActionTypeUserLimitLow || all[i].ActionType == ActionTypeOpenAIQuotaLow {
 			continue
 		}
 		out = append(out, all[i])
@@ -3855,6 +3916,9 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 	case ActionTypeUserLimitLow:
 		// System-only action: sent from quota flow, never via regular trigger matching.
 		return
+	case ActionTypeOpenAIQuotaLow:
+		// System-only action: sent from OpenAI quota error flow, never via regular trigger matching.
+		return
 	case ActionTypeSendSticker:
 		replyTo := 0
 		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
@@ -3979,13 +4043,20 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		trCopy := *tr
 		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 		triggeredAt := time.Now()
+		var hungryWarningTrigger *Trigger
+		if deps.Store != nil {
+			if all, err := deps.Store.ListTriggers(); err == nil {
+				hungryWarningTrigger = pickOlenyamHungryTrigger(all, false)
+			}
+		}
 		executeGPTPromptTask(gpt.PromptTask{
-			Bot:            deps.Bot,
-			Trigger:        trCopy,
-			Msg:            msg,
-			TriggeredAt:    triggeredAt,
-			RecentContext:  ctx,
-			TemplateLookup: deps.TemplateLookup,
+			Bot:             deps.Bot,
+			Trigger:         trCopy,
+			QuotaLowTrigger: hungryWarningTrigger,
+			Msg:             msg,
+			TriggeredAt:     triggeredAt,
+			RecentContext:   ctx,
+			TemplateLookup:  deps.TemplateLookup,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
 				if deps.IdleTracker != nil {
 					deps.IdleTracker.MarkActivity(chatID, now)

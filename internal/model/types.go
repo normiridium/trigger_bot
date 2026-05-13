@@ -12,7 +12,7 @@ type Trigger struct {
 	MatchText     string
 	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
 	CaseSensitive bool
-	ActionType    ActionType         // send|send_file|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning
+	ActionType    ActionType         // send|send_file|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning|openai_insufficient_quota_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -171,6 +171,7 @@ const (
 	ActionTypeMediaCoub      ActionType = "media_coub_download"
 	ActionTypeMediaX         ActionType = "media_x_download"
 	ActionTypeUserLimitLow   ActionType = "user_limit_low_warning"
+	ActionTypeOpenAIQuotaLow ActionType = "openai_insufficient_quota_warning"
 )
 
 var ActionTypeValues = []ActionType{
@@ -191,6 +192,7 @@ var ActionTypeValues = []ActionType{
 	ActionTypeMediaCoub,
 	ActionTypeMediaX,
 	ActionTypeUserLimitLow,
+	ActionTypeOpenAIQuotaLow,
 }
 
 func (m ActionType) String() string {
@@ -229,6 +231,8 @@ func (m ActionType) String() string {
 		return "Скачать с X (Twitter)"
 	case ActionTypeUserLimitLow:
 		return "Лимит GPT почти исчерпан (остаток 1)"
+	case ActionTypeOpenAIQuotaLow:
+		return "Недостаточно баланса OpenAI"
 	default:
 		return string(m)
 	}

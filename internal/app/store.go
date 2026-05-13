@@ -393,6 +393,8 @@ func parseActionType(v string) (ActionType, bool) {
 		return ActionTypeMediaX, true
 	case "user_limit_low_warning":
 		return ActionTypeUserLimitLow, true
+	case "openai_insufficient_quota_warning":
+		return ActionTypeOpenAIQuotaLow, true
 	default:
 		return "", false
 	}

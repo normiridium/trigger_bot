@@ -11,6 +11,7 @@ import (
 type PromptTask struct {
 	Bot              *tgbotapi.BotAPI
 	Trigger          model.Trigger
+	QuotaLowTrigger  *model.Trigger
 	Msg              *tgbotapi.Message
 	TriggeredAt      time.Time
 	RecentContext    string

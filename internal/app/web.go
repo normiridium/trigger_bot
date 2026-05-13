@@ -1562,6 +1562,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-twitter-x"
 	case model.ActionTypeUserLimitLow:
 		return "bi-battery-half"
+	case model.ActionTypeOpenAIQuotaLow:
+		return "bi-wallet2"
 	default:
 		return ""
 	}
