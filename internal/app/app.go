@@ -2697,10 +2697,6 @@ func Run() {
 	if mediaMaxMB <= 0 {
 		mediaMaxMB = telegramUploadMaxMB
 	}
-	if mediaMaxMB > telegramUploadMaxMB {
-		log.Printf("MEDIA_DOWNLOAD_MAX_MB=%d capped to TELEGRAM_UPLOAD_MAX_MB=%d", mediaMaxMB, telegramUploadMaxMB)
-		mediaMaxMB = telegramUploadMaxMB
-	}
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		ProxySocks:         strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
@@ -2716,6 +2712,7 @@ func Run() {
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
 	yandexMusicQueue := newYandexMusicQueue(envInt("YANDEX_MUSIC_WORKERS", 1), envInt("YANDEX_MUSIC_QUEUE", 4))
 	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
+	voiceTranslateQueue := newVoiceTranslateQueue(envInt("VOICE_TRANSLATE_WORKERS", 1), envInt("VOICE_TRANSLATE_QUEUE", 4))
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
 	debugGPTLogEnabled = envBool("DEBUG_GPT_LOG", false)
@@ -3340,6 +3337,32 @@ func Run() {
 				if handleAnonCommand(bot, msg) {
 					continue
 				}
+			case cmdTranslateVoice:
+				if msg.ReplyToMessage == nil {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice.", false)
+					continue
+				}
+				_, mediaSize, mediaOK := detectReplyMedia(msg)
+				if !mediaOK {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Нужен реплай на аудио/видео/voice.", false)
+					continue
+				}
+				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
+				if maxMB > 0 && mediaSize > 0 && mediaSize > int64(maxMB)<<20 {
+					reply(cmdSendCtx.WithReply(msg.ReplyToMessage.MessageID), fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB), false)
+					continue
+				}
+				task := voiceTranslateTask{
+					Bot:     bot,
+					ChatID:  msg.Chat.ID,
+					ReplyTo: msg.ReplyToMessage.MessageID,
+					Msg:     msg,
+				}
+				if voiceTranslateQueue == nil || !voiceTranslateQueue.enqueue(task) {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Очередь голосового перевода переполнена, попробуйте чуть позже.", false)
+					continue
+				}
+				continue
 			case cmdSummary, cmdSummaryAlias:
 				rec, err := store.GetChatSummary(msg.Chat.ID)
 				if err != nil {

@@ -23,6 +23,7 @@ const (
 	cmdClearChat         = "clear_chat"
 	cmdSetMTProto        = "set_mtproto"
 	cmdAnon              = "anon"
+	cmdTranslateVoice    = "translate_voice"
 
 	cmdBan          = "ban"
 	cmdUnban        = "unban"

@@ -290,6 +290,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux := http.NewServeMux()
 	staticDir := envOr("WEB_STATIC_DIR", "./static")
 	mux.Handle("/trigger_bot/static/", http.StripPrefix("/trigger_bot/static/", cacheControlMiddleware(http.FileServer(http.Dir(staticDir)), webStaticCacheTTL)))
+	mux.HandleFunc("/trigger_bot/tmp/", w.voiceTranslateTempFile)
 	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 	})

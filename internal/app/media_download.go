@@ -731,7 +731,7 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 }
 
 func mediaTaskTimeout(mode string, rawURL string) time.Duration {
-	baseSec := envInt("MEDIA_DOWNLOAD_TIMEOUT_SEC", 180)
+	baseSec := envInt("MEDIA_DOWNLOAD_TIMEOUT_SEC", 500)
 	if baseSec < 60 {
 		baseSec = 60
 	}
@@ -753,6 +753,8 @@ func userFacingMediaDownloadError(err error) string {
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
+	case strings.Contains(msg, "request entity too large"):
+		return "файл слишком большой для отправки в Telegram"
 	case strings.Contains(msg, "sign in to confirm your age"):
 		return "не прошло по возрастному ограничению YouTube"
 	case strings.Contains(msg, "sign in to confirm you're not a bot") || strings.Contains(msg, "sign in to confirm you’re not a bot"):
