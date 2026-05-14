@@ -185,10 +185,6 @@ func getVoiceTranslateCache(key string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	// Do not reuse vot-cli cache entries: those may contain non-translated tracks.
-	if strings.EqualFold(strings.TrimSpace(v.provider), "vot-cli") {
-		return "", false
-	}
 	if strings.TrimSpace(v.mp3Path) == "" {
 		return "", false
 	}
@@ -805,23 +801,12 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	}
 
 	sourceForVOT := sourcePath
-	if !mediaInfo.HasVideo {
-		if progress != nil {
-			progress.SetFrame(2)
+	if progress != nil {
+		progress.SetFrame(2)
+		if mediaInfo.HasVideo {
+			progress.SetStage("Подготовка видео для перевода")
+		} else {
 			progress.SetStage("Подготовка аудио для перевода")
-		}
-		mp4Tmp, e := os.CreateTemp("", "vot_source_for_vot_*.mp4")
-		if e != nil {
-			reply(sendCtx, "Не удалось подготовить аудио для перевода.", false)
-			return
-		}
-		mp4ForVOT := mp4Tmp.Name()
-		_ = mp4Tmp.Close()
-		defer os.Remove(mp4ForVOT)
-		if err := convertAudioToMP4ForVOT(sourcePath, mp4ForVOT); err == nil {
-			sourceForVOT = mp4ForVOT
-		} else if debugTriggerLogEnabled {
-			log.Printf("voice translate audio->mp4 conversion failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, err)
 		}
 	}
 
@@ -843,6 +828,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			return
 		}
 		publicURL := buildVoiceSharePublicURL(token)
+		defer releaseVoiceShareFile(token)
 		if strings.TrimSpace(publicURL) == "" {
 			reply(sendCtx, "Не удалось подготовить публичную ссылку для перевода.", false)
 			return

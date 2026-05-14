@@ -108,6 +108,23 @@ func resolveVoiceShareFile(token string) (string, bool) {
 	return v.path, true
 }
 
+func releaseVoiceShareFile(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	voiceShareMu.Lock()
+	defer voiceShareMu.Unlock()
+	v, ok := voiceShareData[token]
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(v.path) != "" {
+		_ = os.Remove(v.path)
+	}
+	delete(voiceShareData, token)
+}
+
 func buildVoiceSharePublicURL(token string) string {
 	base := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PUBLIC_BASE_URL"))
 	if base == "" {
