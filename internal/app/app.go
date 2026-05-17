@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +47,25 @@ var openAIQuotaErrorState = struct {
 	last map[int64]time.Time
 }{
 	last: make(map[int64]time.Time),
+}
+
+type yandexTop10Request struct {
+	Token        string
+	ChatID       int64
+	UserID       int64
+	ReplyTo      int
+	SourceMsgID  int
+	DeleteSource bool
+	Query        string
+	Tracks       []yandexmusic.SearchTrack
+	ExpiresAt    time.Time
+}
+
+var yandexTop10State = struct {
+	mu   sync.Mutex
+	data map[string]yandexTop10Request
+}{
+	data: make(map[string]yandexTop10Request),
 }
 
 type chatAllowList struct {
@@ -2911,6 +2931,14 @@ func Run() {
 			) {
 				continue
 			}
+			if handleYandexTop10Callback(
+				bot,
+				update.Update.CallbackQuery,
+				yandexDownloader,
+				idleTracker,
+			) {
+				continue
+			}
 			if pick.HandlePickCallback(
 				bot,
 				update.Update.CallbackQuery,
@@ -3670,6 +3698,148 @@ type musicProviderDeps struct {
 	IdleTracker       *trigger.IdleTracker
 }
 
+func newYandexTop10Token() string {
+	var b [6]byte
+	_, _ = crand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func putYandexTop10Request(req yandexTop10Request) string {
+	yandexTop10State.mu.Lock()
+	defer yandexTop10State.mu.Unlock()
+	now := time.Now()
+	for k, v := range yandexTop10State.data {
+		if v.ExpiresAt.Before(now) {
+			delete(yandexTop10State.data, k)
+		}
+	}
+	token := newYandexTop10Token()
+	req.Token = token
+	if req.ExpiresAt.IsZero() {
+		req.ExpiresAt = now.Add(2 * time.Hour)
+	}
+	yandexTop10State.data[token] = req
+	return token
+}
+
+func takeYandexTop10Request(token string, userID int64) (yandexTop10Request, bool, string) {
+	yandexTop10State.mu.Lock()
+	defer yandexTop10State.mu.Unlock()
+	req, ok := yandexTop10State.data[token]
+	if !ok {
+		return yandexTop10Request{}, false, "выбор устарел"
+	}
+	if time.Now().After(req.ExpiresAt) {
+		delete(yandexTop10State.data, token)
+		return yandexTop10Request{}, false, "выбор устарел"
+	}
+	if req.UserID != 0 && userID != 0 && req.UserID != userID {
+		return yandexTop10Request{}, false, "эта кнопка доступна только автору запроса"
+	}
+	delete(yandexTop10State.data, token)
+	return req, true, ""
+}
+
+func handleYandexTop10Callback(
+	bot *tgbotapi.BotAPI,
+	cb *tgbotapi.CallbackQuery,
+	dl YandexMusicDownloadPort,
+	idle *trigger.IdleTracker,
+) bool {
+	if bot == nil || cb == nil || !strings.HasPrefix(cb.Data, "ymtop10:") {
+		return false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(cb.Data, "ymtop10:"))
+	req, ok, msg := takeYandexTop10Request(token, cb.From.ID)
+	if !ok {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+		return true
+	}
+	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Скачиваю топ-10..."))
+
+	if cb.Message != nil {
+		edit := tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "🎵 Скачиваю и отправляю топ-10...")
+		_, _ = bot.Request(edit)
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		type dlItem struct {
+			path      string
+			cleanup   string
+			artist    string
+			title     string
+			sourceURL string
+		}
+		items := make([]dlItem, 0, len(req.Tracks))
+		for _, tr := range req.Tracks {
+			url := strings.TrimSpace(tr.URL)
+			if url == "" {
+				continue
+			}
+			p, err := dl.DownloadByURL(ctx, url)
+			if err != nil {
+				reportChatFailure(bot, req.ChatID, "ошибка скачивания Yandex Music", err)
+				return
+			}
+			items = append(items, dlItem{
+				path:      p,
+				cleanup:   filepath.Dir(p),
+				artist:    strings.TrimSpace(tr.Artist),
+				title:     strings.TrimSpace(tr.Title),
+				sourceURL: url,
+			})
+		}
+		for i := range items {
+			defer os.RemoveAll(items[i].cleanup)
+		}
+		if len(items) == 0 {
+			reportChatFailure(bot, req.ChatID, "ошибка отправки аудио", errors.New("ничего не скачано"))
+			return
+		}
+
+		media := make([]interface{}, 0, len(items))
+		for _, it := range items {
+			im := tgbotapi.NewInputMediaAudio(tgbotapi.FilePath(it.path))
+			if it.artist != "" {
+				im.Performer = it.artist
+			}
+			if it.title != "" {
+				im.Title = it.title
+			}
+			media = append(media, im)
+		}
+		cfg := tgbotapi.NewMediaGroup(req.ChatID, media)
+		if req.ReplyTo > 0 {
+			cfg.ReplyToMessageID = req.ReplyTo
+		}
+		if _, err := bot.SendMediaGroup(cfg); err != nil {
+			reportChatFailure(bot, req.ChatID, "ошибка отправки аудио", err)
+			return
+		}
+
+		if cb.Message != nil {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    cb.Message.Chat.ID,
+				MessageID: cb.Message.MessageID,
+			})
+		}
+		if req.DeleteSource && req.SourceMsgID > 0 {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    req.ChatID,
+				MessageID: req.SourceMsgID,
+			})
+		}
+		if idle != nil {
+			idle.MarkActivity(req.ChatID, time.Now())
+		}
+	}()
+
+	return true
+}
+
 func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req musicpick.ChoiceRequest, provider string) error {
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
@@ -3762,7 +3932,20 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 			From: &tgbotapi.User{ID: req.UserID},
 		}
 		m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (Yandex Music):")
-		m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
+		kb := pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
+		topToken := putYandexTop10Request(yandexTop10Request{
+			ChatID:       req.ChatID,
+			UserID:       req.UserID,
+			ReplyTo:      replyTo,
+			SourceMsgID:  req.SourceMsgID,
+			DeleteSource: req.DeleteSource,
+			Query:        query,
+			Tracks:       tracks,
+		})
+		kb.InlineKeyboard = append(kb.InlineKeyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Скачать топ-10", "ymtop10:"+topToken),
+		))
+		m.ReplyMarkup = kb
 		if replyTo > 0 {
 			m.ReplyToMessageID = replyTo
 			m.AllowSendingWithoutReply = true
