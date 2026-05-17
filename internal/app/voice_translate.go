@@ -302,6 +302,69 @@ func setVoiceSourceCache(fileID, srcPath string) (string, error) {
 	return dst, nil
 }
 
+func voiceSubtitlesCachePath(cacheKey string) string {
+	k := strings.TrimSpace(cacheKey)
+	if k == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(k))
+	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_subs_cache_"+fmt.Sprintf("%x", sum)+".srt")
+}
+
+func voiceTextCachePath(cacheKey string) string {
+	k := strings.TrimSpace(cacheKey)
+	if k == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(k))
+	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_text_cache_"+fmt.Sprintf("%x", sum)+".txt")
+}
+
+func getFreshFile(path string) (string, bool) {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return "", false
+	}
+	st, err := os.Stat(p)
+	if err != nil || st == nil || st.Size() <= 0 {
+		return "", false
+	}
+	if time.Since(st.ModTime()) > voiceTranslateCacheTTL() {
+		_ = os.Remove(p)
+		return "", false
+	}
+	return p, true
+}
+
+func saveCacheFile(dstPath, srcPath string) {
+	if strings.TrimSpace(dstPath) == "" || strings.TrimSpace(srcPath) == "" {
+		return
+	}
+	in, err := os.Open(srcPath)
+	if err != nil {
+		return
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return
+	}
+	tmp := dstPath + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	_ = os.Rename(tmp, dstPath)
+}
+
 func isHexTokenName(name string) bool {
 	if len(name) != 32 {
 		return false
@@ -1571,28 +1634,50 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	}
 
 	if task.Action == "text" || task.Action == "subs" {
-		// Warm up VOT translation for this URL first: for some sources
-		// subtitles list stays empty until translation job is created.
-		if _, ok := getVoiceTranslateCache(cacheKey); !ok {
-			if progress != nil {
-				progress.SetFrame(3)
-				progress.SetStage("Голосовой перевод")
+		if task.Action == "subs" {
+			if cached, ok := getFreshFile(voiceSubtitlesCachePath(cacheKey)); ok {
+				if progress != nil {
+					progress.SetFrame(8)
+					progress.SetStage("Отправка результата (кеш)")
+				}
+				if err := sendDocumentFromFile(sendCtx, cached, ""); err != nil {
+					reply(sendCtx, "Не удалось отправить subtitle файл.", false)
+				}
+				return
 			}
-			seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed", srcLang, resLang)
-			if seedErr != nil {
-				if debugTriggerLogEnabled {
-					log.Printf("voice translate subtitles warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
+		} else {
+			if cached, ok := getFreshFile(voiceTextCachePath(cacheKey)); ok {
+				if progress != nil {
+					progress.SetFrame(8)
+					progress.SetStage("Отправка результата (кеш)")
 				}
-			} else if strings.TrimSpace(seedOut) != "" {
-				cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
-				if in, err := os.Open(seedOut); err == nil {
-					if out, err2 := os.Create(cacheDst); err2 == nil {
-						_, _ = io.Copy(out, in)
-						_ = out.Close()
-						setVoiceTranslateCache(cacheKey, cacheDst, "vot-cli")
-					}
-					_ = in.Close()
+				if err := sendDocumentFromFile(sendCtx, cached, ""); err != nil {
+					reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
 				}
+				return
+			}
+		}
+
+		// Warm up VOT translation for this URL every time before subtitles/text:
+		// after service restarts local cache state may differ from VOT subtitle readiness.
+		if progress != nil {
+			progress.SetFrame(3)
+			progress.SetStage("Голосовой перевод")
+		}
+		seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed", srcLang, resLang)
+		if seedErr != nil {
+			if debugTriggerLogEnabled {
+				log.Printf("voice translate subtitles warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
+			}
+		} else if strings.TrimSpace(seedOut) != "" {
+			cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+			if in, err := os.Open(seedOut); err == nil {
+				if out, err2 := os.Create(cacheDst); err2 == nil {
+					_, _ = io.Copy(out, in)
+					_ = out.Close()
+					setVoiceTranslateCache(cacheKey, cacheDst, "vot-cli")
+				}
+				_ = in.Close()
 			}
 		}
 
@@ -1606,17 +1691,54 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		subsPath, err := runVOTCLISubtitlesLocal(publicURL, workDir, "translated_subs", srcLang, resLang, subsFormat)
 		if err != nil {
+			errText := strings.ToLower(err.Error())
+			emptySubs := strings.Contains(errText, "subtitles output missing")
+			// If subtitles list is empty, force warmup+retry once in the same request.
+			if emptySubs {
+				if debugTriggerLogEnabled {
+					log.Printf("voice translate subtitles empty; forcing warmup retry chat=%d replyTo=%d", task.ChatID, task.ReplyTo)
+				}
+				if progress != nil {
+					progress.SetFrame(3)
+					progress.SetStage("Голосовой перевод")
+				}
+				seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed_retry", srcLang, resLang)
+				if seedErr == nil && strings.TrimSpace(seedOut) != "" {
+					cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+					if in, openErr := os.Open(seedOut); openErr == nil {
+						if out, createErr := os.Create(cacheDst); createErr == nil {
+							_, _ = io.Copy(out, in)
+							_ = out.Close()
+							setVoiceTranslateCache(cacheKey, cacheDst, "vot-cli")
+						}
+						_ = in.Close()
+					}
+				} else if debugTriggerLogEnabled && seedErr != nil {
+					log.Printf("voice translate subtitles retry warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
+				}
+				if progress != nil {
+					progress.SetFrame(4)
+					progress.SetStage("Субтитры через VOT")
+				}
+				subsPath, err = runVOTCLISubtitlesLocal(publicURL, workDir, "translated_subs_retry", srcLang, resLang, subsFormat)
+				if err == nil {
+					goto HAVE_SUBS
+				}
+				errText = strings.ToLower(err.Error())
+				emptySubs = strings.Contains(errText, "subtitles output missing")
+			}
+
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate subtitles failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, err)
 			}
-			errText := strings.ToLower(err.Error())
-			if strings.Contains(errText, "subtitles output missing") {
+			if emptySubs {
 				reply(sendCtx, "VOT не вернул субтитры для этого файла (пустой список). Перевод аудио/микс может работать, а subtitles/text для этого источника недоступны.", false)
 			} else {
 				reply(sendCtx, "Не удалось получить субтитры через VOT.", false)
 			}
 			return
 		}
+	HAVE_SUBS:
 		if task.Action == "subs" {
 			if progress != nil {
 				progress.SetFrame(8)
@@ -1636,6 +1758,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if err := sendDocumentFromFile(sendCtx, subsPath, ""); err != nil {
 				reply(sendCtx, "Не удалось отправить subtitle файл.", false)
 			}
+			saveCacheFile(voiceSubtitlesCachePath(cacheKey), subsPath)
 			return
 		}
 		txt := strings.TrimSpace(subtitlesToPlainText(subsPath))
@@ -1643,6 +1766,22 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			reply(sendCtx, "Не удалось извлечь текст из субтитров VOT.", false)
 			return
 		}
+		// Also persist subtitles cache when text is requested first,
+		// so subsequent "subs" can be served from disk cache.
+		subsForCachePath := subsPath
+		if strings.HasSuffix(strings.ToLower(strings.TrimSpace(subsForCachePath)), ".json") {
+			if srt, convErr := subtitlesJSONToSRT(subsForCachePath); convErr == nil && strings.TrimSpace(srt) != "" {
+				tmpSubs, e := os.CreateTemp("", "translate_subs_cache_*.srt")
+				if e == nil {
+					_ = os.WriteFile(tmpSubs.Name(), []byte(srt), 0o644)
+					_ = tmpSubs.Close()
+					defer os.Remove(tmpSubs.Name())
+					subsForCachePath = tmpSubs.Name()
+				}
+			}
+		}
+		saveCacheFile(voiceSubtitlesCachePath(cacheKey), subsForCachePath)
+
 		tmp, e := os.CreateTemp("", "translate_text_*.txt")
 		if e != nil {
 			reply(sendCtx, "Не удалось подготовить текстовый файл перевода.", false)
@@ -1654,6 +1793,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			reply(sendCtx, "Не удалось сохранить текстовый файл перевода.", false)
 			return
 		}
+		saveCacheFile(voiceTextCachePath(cacheKey), tmp.Name())
 		if err := sendDocumentFromFile(sendCtx, tmp.Name(), ""); err != nil {
 			reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
 		}
