@@ -26,3 +26,6 @@ docs/
 
 # local backups
 backups/
+
+# runtime temp/cache artifacts
+static/tmp/
