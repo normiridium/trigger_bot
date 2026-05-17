@@ -3004,7 +3004,7 @@ func Run() {
 			) {
 				continue
 			}
-			if handleVoiceTranslateOptionCallback(bot, update.Update.CallbackQuery) {
+			if handleVoiceTranslateOptionCallback(bot, update.Update.CallbackQuery, voiceTranslateQueue) {
 				continue
 			}
 			if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
@@ -3373,26 +3373,37 @@ func Run() {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice.", false)
 					continue
 				}
-				_, mediaSize, mediaOK := detectReplyMedia(msg)
+				srcMediaMsg, mediaInfo, mediaSize, mediaOK := detectReplyMediaSource(msg)
 				if !mediaOK {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Нужен реплай на аудио/видео/voice.", false)
 					continue
 				}
 				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
 				if maxMB > 0 && mediaSize > 0 && mediaSize > int64(maxMB)<<20 {
-					reply(cmdSendCtx.WithReply(msg.ReplyToMessage.MessageID), fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB), false)
+					replyToID := msg.ReplyToMessage.MessageID
+					if srcMediaMsg != nil {
+						replyToID = srcMediaMsg.MessageID
+					}
+					reply(cmdSendCtx.WithReply(replyToID), fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB), false)
 					continue
 				}
-				task := voiceTranslateTask{
-					Bot:     bot,
-					ChatID:  msg.Chat.ID,
-					ReplyTo: msg.ReplyToMessage.MessageID,
-					Msg:     msg,
+				replyToID := msg.ReplyToMessage.MessageID
+				if srcMediaMsg != nil {
+					replyToID = srcMediaMsg.MessageID
 				}
-				if voiceTranslateQueue == nil || !voiceTranslateQueue.enqueue(task) {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Очередь голосового перевода переполнена, попробуйте чуть позже.", false)
-					continue
+				token := putVoiceTranslateOption(voiceTranslateOptionEntry{
+					chatID:  msg.Chat.ID,
+					userID:  msg.From.ID,
+					replyTo: replyToID,
+					media:   mediaInfo,
+				})
+				menu := tgbotapi.NewMessage(msg.Chat.ID, "Действия с переводом:")
+				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token)
+				if replyToID > 0 {
+					menu.ReplyToMessageID = replyToID
+					menu.AllowSendingWithoutReply = true
 				}
+				_, _ = bot.Send(menu)
 				continue
 			case cmdSummary, cmdSummaryAlias:
 				rec, err := store.GetChatSummary(msg.Chat.ID)
@@ -3684,11 +3695,11 @@ type triggerActionDeps struct {
 type triggerHandlerDeps struct {
 	triggerActionDeps
 	ActionQueue *triggerActionQueue
-	Allowed    chatAllowList
-	Engine     *engine.TriggerEngine
-	Store      TriggerStorePort
-	AdminCache *adminStatusCache
-	ChatRecent *chatRecentStore
+	Allowed     chatAllowList
+	Engine      *engine.TriggerEngine
+	Store       TriggerStorePort
+	AdminCache  *adminStatusCache
+	ChatRecent  *chatRecentStore
 }
 
 type musicProviderDeps struct {

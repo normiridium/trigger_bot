@@ -33,6 +33,10 @@ type voiceTranslateTask struct {
 	ChatID  int64
 	ReplyTo int
 	Msg     *tgbotapi.Message
+	Action  string
+	Media   replyMediaInfo
+	SrcLang string
+	ResLang string
 }
 
 type replyMediaInfo struct {
@@ -46,14 +50,12 @@ type voiceTranslateQueue struct {
 }
 
 type voiceTranslateOptionEntry struct {
-	token          string
-	chatID         int64
-	userID         int64
-	replyTo        int
-	hasVideo       bool
-	translatedPath string
-	mixedPath      string
-	expiresAt      time.Time
+	token     string
+	chatID    int64
+	userID    int64
+	replyTo   int
+	media     replyMediaInfo
+	expiresAt time.Time
 }
 
 type votTranslateRequest struct {
@@ -98,8 +100,9 @@ var (
 	voiceTranslateCache   = map[string]voiceTranslateCacheEntry{}
 	voiceCacheLoaded      bool
 
-	voiceTranslateOptionMu   sync.Mutex
-	voiceTranslateOptionData = map[string]voiceTranslateOptionEntry{}
+	voiceTranslateOptionMu    sync.Mutex
+	voiceTranslateOptionData  = map[string]voiceTranslateOptionEntry{}
+	voiceTranslateStartupOnce sync.Once
 )
 
 const voiceTranslateCacheIndexPath = "/home/appuser/trigger_admin_bot/static/tmp/voice_cache_index.json"
@@ -113,8 +116,20 @@ func voiceTranslateCacheTTL() time.Duration {
 }
 
 func buildVoiceTranslateCacheKey(fileID string) string {
-	srcLang := votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en")
-	resLang := votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
+	return buildVoiceTranslateCacheKeyWithLang(fileID, votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en"), votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
+}
+
+func buildVoiceTranslateCacheKeyWithLang(fileID, srcLang, resLang string) string {
+	if v := normalizeVOTLang(srcLang); v != "" {
+		srcLang = v
+	} else {
+		srcLang = "en"
+	}
+	if v := normalizeVOTLang(resLang); v != "" {
+		resLang = v
+	} else {
+		resLang = "ru"
+	}
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PROVIDER")))
 	if provider == "" {
 		provider = "yandex"
@@ -229,7 +244,174 @@ func setVoiceTranslateCache(key, mp3Path, provider string) {
 	saveVoiceTranslateCacheLocked()
 }
 
-func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile string) (string, error) {
+func voiceSourceCachePath(fileID string) string {
+	id := strings.TrimSpace(fileID)
+	if id == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(id))
+	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_vot_src_cache_"+fmt.Sprintf("%x", sum)+".mp4")
+}
+
+func getVoiceSourceCache(fileID string) (string, bool) {
+	path := voiceSourceCachePath(fileID)
+	if strings.TrimSpace(path) == "" {
+		return "", false
+	}
+	st, err := os.Stat(path)
+	if err != nil || st == nil || st.Size() <= 0 {
+		return "", false
+	}
+	if time.Since(st.ModTime()) > voiceTranslateCacheTTL() {
+		_ = os.Remove(path)
+		return "", false
+	}
+	return path, true
+}
+
+func setVoiceSourceCache(fileID, srcPath string) (string, error) {
+	dst := voiceSourceCachePath(fileID)
+	if strings.TrimSpace(dst) == "" || strings.TrimSpace(srcPath) == "" {
+		return "", fmt.Errorf("invalid source cache args")
+	}
+	in, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return dst, nil
+}
+
+func isHexTokenName(name string) bool {
+	if len(name) != 32 {
+		return false
+	}
+	for _, r := range name {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanupVoiceTranslateStartup() {
+	voiceTranslateStartupOnce.Do(func() {
+		now := time.Now()
+		maxAgeSec := envInt("VOICE_TRANSLATE_TMP_MAX_AGE_SEC", int(voiceTranslateCacheTTL().Seconds()))
+		if maxAgeSec < 300 {
+			maxAgeSec = 300
+		}
+		maxAge := time.Duration(maxAgeSec) * time.Second
+		tmpDir := filepath.Dir(voiceTranslateCacheIndexPath)
+
+		keepCacheFiles := map[string]struct{}{}
+		voiceTranslateCacheMu.Lock()
+		loadVoiceTranslateCacheLocked()
+		dirty := false
+		for k, v := range voiceTranslateCache {
+			path := strings.TrimSpace(v.mp3Path)
+			if !v.expiresAt.After(now) {
+				delete(voiceTranslateCache, k)
+				dirty = true
+				if path != "" {
+					_ = os.Remove(path)
+				}
+				continue
+			}
+			if path == "" {
+				delete(voiceTranslateCache, k)
+				dirty = true
+				continue
+			}
+			if _, err := os.Stat(path); err != nil {
+				delete(voiceTranslateCache, k)
+				dirty = true
+				continue
+			}
+			keepCacheFiles[path] = struct{}{}
+		}
+		if dirty {
+			saveVoiceTranslateCacheLocked()
+		}
+		voiceTranslateCacheMu.Unlock()
+
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			return
+		}
+		removed := 0
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := strings.TrimSpace(e.Name())
+			if name == "" || name == "voice_cache_index.json" || name == "bot.log" {
+				continue
+			}
+			path := filepath.Join(tmpDir, name)
+			info, infoErr := e.Info()
+			if infoErr != nil {
+				continue
+			}
+			if now.Sub(info.ModTime()) < maxAge {
+				continue
+			}
+			shouldRemove := false
+			switch {
+			case strings.HasPrefix(name, "voice_src_"),
+				strings.HasPrefix(name, "voice_tr_"),
+				strings.HasPrefix(name, "voice_mix_"),
+				strings.HasPrefix(name, "voice_vot_src_cache_"),
+				strings.HasPrefix(name, "vot_test_"),
+				strings.HasPrefix(name, "vot_probe_"),
+				strings.HasPrefix(name, "vot_cli_"),
+				strings.HasPrefix(name, "vot_source_"):
+				shouldRemove = true
+			case strings.HasPrefix(name, "voice_cache_") && strings.HasSuffix(strings.ToLower(name), ".mp3"):
+				if _, ok := keepCacheFiles[path]; !ok {
+					shouldRemove = true
+				}
+			default:
+				ext := strings.ToLower(filepath.Ext(name))
+				base := strings.TrimSuffix(name, ext)
+				if (ext == ".mp3" || ext == ".mp4" || ext == ".bin") && isHexTokenName(base) {
+					shouldRemove = true
+				}
+			}
+			if shouldRemove {
+				if err := os.Remove(path); err == nil {
+					removed++
+				}
+			}
+		}
+		if debugTriggerLogEnabled && removed > 0 {
+			log.Printf("voice translate startup cleanup removed=%d max_age=%s dir=%s", removed, maxAge, tmpDir)
+		}
+	})
+}
+
+func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang string) (string, error) {
 	bin := strings.TrimSpace(os.Getenv("VOT_CLI_BIN"))
 	if bin == "" {
 		bin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/vot-cli"
@@ -256,11 +438,11 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile string) (string, 
 		"--output=" + outputDir,
 		"--output-file=" + outputFile,
 	}
-	if resLang := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_RESLANG")); resLang != "" {
-		args = append(args, "--reslang="+resLang)
+	if v := normalizeVOTLang(resLang); v != "" {
+		args = append(args, "--reslang="+v)
 	}
-	if srcLang := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_SRCLANG")); srcLang != "" {
-		args = append(args, "--lang="+srcLang)
+	if v := normalizeVOTLang(srcLang); v != "" && v != "auto" {
+		args = append(args, "--lang="+v)
 	}
 	args = append(args, sourcePath)
 	var cmd *exec.Cmd
@@ -325,16 +507,204 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile string) (string, 
 	return "", fmt.Errorf("vot-cli output missing after success (%s)", clipText(strings.TrimSpace(string(out)), 500))
 }
 
+func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang, outFormat string) (string, error) {
+	bin := strings.TrimSpace(os.Getenv("VOT_CLI_BIN"))
+	if bin == "" {
+		bin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/vot-cli"
+	}
+	nodeBin := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_NODE_BIN"))
+	if nodeBin == "" {
+		nodeBin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/node"
+	}
+	useNodeWrapper := false
+	if _, err := os.Stat(nodeBin); err == nil {
+		if _, err2 := os.Stat(bin); err2 == nil {
+			useNodeWrapper = true
+		}
+	}
+	if !useNodeWrapper {
+		if _, err := os.Stat(bin); err != nil {
+			bin = "vot-cli"
+		}
+		if _, err := exec.LookPath(bin); err != nil {
+			return "", err
+		}
+	}
+	subsArg := "--subs"
+	ext := ".json"
+	if strings.EqualFold(strings.TrimSpace(outFormat), "srt") {
+		subsArg = "--subs-srt"
+		ext = ".srt"
+	}
+	args := []string{
+		subsArg,
+		"--output=" + outputDir,
+		"--output-file=" + outputFile,
+	}
+	if v := normalizeVOTLang(resLang); v != "" {
+		args = append(args, "--reslang="+v)
+	}
+	if v := normalizeVOTLang(srcLang); v != "" && v != "auto" {
+		args = append(args, "--lang="+v)
+	}
+	args = append(args, sourcePath)
+	var cmd *exec.Cmd
+	if useNodeWrapper {
+		nodeArgs := append([]string{bin}, args...)
+		cmd = exec.Command(nodeBin, nodeArgs...)
+	} else {
+		cmd = exec.Command(bin, args...)
+	}
+	cmd.Env = append(os.Environ(),
+		"PATH=/home/appuser/.nvm/versions/node/v20.20.2/bin:"+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("vot-cli subs failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
+	}
+
+	candidates := []string{
+		filepath.Join(outputDir, outputFile+ext),
+		filepath.Join(outputDir, outputFile+".json"),
+		filepath.Join(outputDir, outputFile+".srt"),
+		filepath.Join(outputDir, outputFile+".vtt"),
+	}
+	for _, p := range candidates {
+		if st, statErr := os.Stat(p); statErr == nil && st.Size() > 0 {
+			return p, nil
+		}
+	}
+	entries, readErr := os.ReadDir(outputDir)
+	if readErr == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := strings.ToLower(strings.TrimSpace(e.Name()))
+			if strings.HasSuffix(name, ".srt") || strings.HasSuffix(name, ".vtt") || strings.HasSuffix(name, ".json") {
+				p := filepath.Join(outputDir, e.Name())
+				if st, statErr := os.Stat(p); statErr == nil && st.Size() > 0 {
+					return p, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("vot-cli subtitles output missing after success (%s)", clipText(strings.TrimSpace(string(out)), 500))
+}
+
+func subtitlesToPlainText(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(path)), ".json") {
+		type subtitleItem struct {
+			Text string `json:"text"`
+		}
+		var wrap struct {
+			Subtitles []subtitleItem `json:"subtitles"`
+		}
+		if err := json.Unmarshal(raw, &wrap); err == nil && len(wrap.Subtitles) > 0 {
+			lines := make([]string, 0, len(wrap.Subtitles))
+			for _, it := range wrap.Subtitles {
+				t := strings.TrimSpace(it.Text)
+				if t != "" {
+					lines = append(lines, t)
+				}
+			}
+			return strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+		var arr []subtitleItem
+		if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+			lines := make([]string, 0, len(arr))
+			for _, it := range arr {
+				t := strings.TrimSpace(it.Text)
+				if t != "" {
+					lines = append(lines, t)
+				}
+			}
+			return strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+	}
+	s := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		if strings.Contains(t, "-->") {
+			continue
+		}
+		isNum := true
+		for _, r := range t {
+			if r < '0' || r > '9' {
+				isNum = false
+				break
+			}
+		}
+		if isNum {
+			continue
+		}
+		if strings.HasPrefix(t, "WEBVTT") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func subtitlesJSONToSRT(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	type subtitleItem struct {
+		Text       string `json:"text"`
+		StartMS    int64  `json:"startMs"`
+		DurationMS int64  `json:"durationMs"`
+	}
+	items := make([]subtitleItem, 0)
+	var wrap struct {
+		Subtitles []subtitleItem `json:"subtitles"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err == nil && len(wrap.Subtitles) > 0 {
+		items = wrap.Subtitles
+	} else {
+		var arr []subtitleItem
+		if err2 := json.Unmarshal(raw, &arr); err2 != nil || len(arr) == 0 {
+			return "", fmt.Errorf("invalid subtitles json")
+		}
+		items = arr
+	}
+	var b strings.Builder
+	for i, it := range items {
+		start := float64(it.StartMS) / 1000.0
+		end := float64(it.StartMS+it.DurationMS) / 1000.0
+		if end < start {
+			end = start
+		}
+		b.WriteString(strconv.Itoa(i + 1))
+		b.WriteString("\n")
+		b.WriteString(fmtSRTTime(start))
+		b.WriteString(" --> ")
+		b.WriteString(fmtSRTTime(end))
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(it.Text))
+		b.WriteString("\n\n")
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "", fmt.Errorf("empty subtitles")
+	}
+	return out + "\n", nil
+}
+
 func cleanupVoiceTranslateOptionsLocked(now time.Time) {
 	for k, v := range voiceTranslateOptionData {
 		if v.expiresAt.After(now) {
 			continue
-		}
-		if strings.TrimSpace(v.translatedPath) != "" {
-			_ = os.Remove(v.translatedPath)
-		}
-		if strings.TrimSpace(v.mixedPath) != "" {
-			_ = os.Remove(v.mixedPath)
 		}
 		delete(voiceTranslateOptionData, k)
 	}
@@ -383,7 +753,59 @@ func renderVoiceTranslateOptionKeyboard(token string) tgbotapi.InlineKeyboardMar
 			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|text|"+token),
 			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|subs|"+token),
 		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|cancel|"+token),
+		),
 	)
+}
+
+type voiceSourceLang struct {
+	Code  string
+	Label string
+}
+
+var voiceTranslateSourceLangs = []voiceSourceLang{
+	{Code: "ru", Label: "🇷🇺 Русский"},
+	{Code: "en", Label: "🇺🇸 English"},
+	{Code: "es", Label: "🇪🇸 Español"},
+	{Code: "de", Label: "🇩🇪 Deutsch"},
+	{Code: "fr", Label: "🇫🇷 Français"},
+	{Code: "it", Label: "🇮🇹 Italiano"},
+	{Code: "ja", Label: "🇯🇵 日本語"},
+	{Code: "ko", Label: "🇰🇷 한국어"},
+	{Code: "zh", Label: "🇨🇳 中文"},
+	{Code: "ar", Label: "🇸🇦 العربية"},
+	{Code: "kk", Label: "🇰🇿 Қазақша"},
+	{Code: "lt", Label: "🇱🇹 Lietuvių"},
+	{Code: "lv", Label: "🇱🇻 Latviešu"},
+}
+
+func renderVoiceTranslateLangKeyboard(token, action string) tgbotapi.InlineKeyboardMarkup {
+	target := normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
+	if target == "" || target == "auto" {
+		target = "ru"
+	}
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
+	row := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("🌐 Авто", "vtr|lang|"+action+"|"+token+"|auto"),
+	}
+	rows = append(rows, row)
+	row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
+	for i, l := range voiceTranslateSourceLangs {
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(l.Label, "vtr|lang|"+action+"|"+token+"|"+l.Code))
+		if len(row) == 4 || i == len(voiceTranslateSourceLangs)-1 {
+			rows = append(rows, row)
+			row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
+		}
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🎯 Целевой: "+strings.ToUpper(target), "vtr|noop|"+token),
+	))
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "vtr|back|"+token),
+		tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|cancel|"+token),
+	))
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func audioDurationSec(path string) float64 {
@@ -412,84 +834,110 @@ func fmtSRTTime(sec float64) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, z)
 }
 
-func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bool {
-	if bot == nil || cb == nil || !strings.HasPrefix(cb.Data, "vtr|") {
+func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, q *voiceTranslateQueue) bool {
+	if bot == nil || cb == nil || q == nil || !strings.HasPrefix(cb.Data, "vtr|") {
 		return false
 	}
 	parts := strings.Split(cb.Data, "|")
-	if len(parts) != 3 {
+	if len(parts) < 2 {
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверная кнопка"))
 		return true
 	}
 	action := strings.TrimSpace(parts[1])
-	token := strings.TrimSpace(parts[2])
+	token := ""
+	switch action {
+	case "lang":
+		if len(parts) >= 4 {
+			token = strings.TrimSpace(parts[3])
+		}
+	default:
+		if len(parts) >= 3 {
+			token = strings.TrimSpace(parts[2])
+		}
+	}
+	if token == "" {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверная кнопка"))
+		return true
+	}
 	entry, ok, msg := takeVoiceTranslateOption(token, cb.From.ID)
 	if !ok {
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
 		return true
 	}
-	sendCtx := sendContext{Bot: bot, ChatID: entry.chatID, ReplyTo: entry.replyTo}
-	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Готовлю..."))
 
 	switch action {
-	case "audio":
-		if strings.TrimSpace(entry.translatedPath) == "" {
-			reply(sendCtx, "Файл перевода недоступен.", false)
-			return true
-		}
-		if err := sendAudioFromFile(sendCtx, entry.translatedPath, "", "Дорожка перевода"); err != nil {
-			reply(sendCtx, "Не удалось отправить дорожку перевода.", false)
-		}
-		return true
-	case "mix":
-		if strings.TrimSpace(entry.mixedPath) == "" {
-			reply(sendCtx, "Файл микса недоступен.", false)
-			return true
-		}
-		if entry.hasVideo {
-			if err := sendVideoFromFile(sendCtx, entry.mixedPath, "Готовый микс с переводом."); err != nil {
-				reply(sendCtx, "Не удалось отправить микс.", false)
-			}
-		} else {
-			if err := sendAudioFromFile(sendCtx, entry.mixedPath, "", "Готовый микс с переводом"); err != nil {
-				reply(sendCtx, "Не удалось отправить микс.", false)
-			}
+	case "cancel":
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
+		if cb.Message != nil {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    cb.Message.Chat.ID,
+				MessageID: cb.Message.MessageID,
+			})
 		}
 		return true
-	case "text", "subs":
-		if strings.TrimSpace(entry.translatedPath) == "" {
-			reply(sendCtx, "Файл перевода недоступен.", false)
+	case "audio", "mix", "text", "subs":
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(
+				cb.Message.Chat.ID,
+				cb.Message.MessageID,
+				"Выберите язык перевода:",
+				renderVoiceTranslateLangKeyboard(token, action),
+			)
+			if _, err := bot.Send(edit); err != nil {
+				_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "не удалось показать языки"))
+				return true
+			}
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Выберите язык"))
+		return true
+	case "back":
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(
+				cb.Message.Chat.ID,
+				cb.Message.MessageID,
+				"Действия с переводом:",
+				renderVoiceTranslateOptionKeyboard(token),
+			)
+			_, _ = bot.Send(edit)
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Назад"))
+		return true
+	case "noop":
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+		return true
+	case "lang":
+		if len(parts) != 5 && len(parts) != 6 {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверный язык"))
 			return true
 		}
-		audioBytes, err := os.ReadFile(entry.translatedPath)
-		if err != nil || len(audioBytes) == 0 {
-			reply(sendCtx, "Не удалось прочитать дорожку перевода.", false)
+		runAction := strings.TrimSpace(parts[2])
+		srcLang := normalizeVOTLang(strings.TrimSpace(parts[4]))
+		if srcLang == "" {
+			srcLang = "auto"
+		}
+		resLang := normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
+		if resLang == "" || resLang == "auto" {
+			resLang = "ru"
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Запускаю..."))
+		task := voiceTranslateTask{
+			Bot:     bot,
+			ChatID:  entry.chatID,
+			ReplyTo: entry.replyTo,
+			Action:  runAction,
+			Media:   entry.media,
+			SrcLang: srcLang,
+			ResLang: resLang,
+		}
+		if !q.enqueue(task) {
+			reply(sendContext{Bot: bot, ChatID: entry.chatID, ReplyTo: entry.replyTo}, "Очередь голосового перевода переполнена, попробуйте чуть позже.", false)
 			return true
 		}
-		txt, err := transcribeAudioBytes(strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), strings.TrimSpace(os.Getenv("AUDIO_TRANSCRIPTION_MODEL")), filepath.Base(entry.translatedPath), audioBytes)
-		if err != nil || strings.TrimSpace(txt) == "" {
-			reply(sendCtx, "Не удалось получить текст перевода.", false)
-			return true
-		}
-		if action == "text" {
-			sendHTML(sendCtx, "<b>Текст перевода:</b>\n"+html.EscapeString(strings.TrimSpace(txt)), false)
-			return true
-		}
-		dur := audioDurationSec(entry.translatedPath)
-		if dur <= 0 {
-			dur = 60
-		}
-		srt := "1\n" + fmtSRTTime(0) + " --> " + fmtSRTTime(dur) + "\n" + strings.TrimSpace(txt) + "\n"
-		tmp, e := os.CreateTemp("", "translate_subs_*.srt")
-		if e != nil {
-			reply(sendCtx, "Не удалось подготовить subtitle файл.", false)
-			return true
-		}
-		_ = os.WriteFile(tmp.Name(), []byte(srt), 0o644)
-		_ = tmp.Close()
-		defer os.Remove(tmp.Name())
-		if err := sendDocumentFromFile(sendCtx, tmp.Name(), ""); err != nil {
-			reply(sendCtx, "Не удалось отправить subtitle файл.", false)
+		if cb.Message != nil {
+			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+				ChatID:    cb.Message.Chat.ID,
+				MessageID: cb.Message.MessageID,
+			})
 		}
 		return true
 	default:
@@ -498,7 +946,30 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 	}
 }
 
+func normalizeVOTLang(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	if v == "auto" {
+		return "auto"
+	}
+	if len(v) > 2 {
+		parts := strings.FieldsFunc(v, func(r rune) bool {
+			return r == '-' || r == '_' || r == ';' || r == ','
+		})
+		if len(parts) > 0 {
+			v = parts[0]
+		}
+	}
+	if len(v) >= 2 {
+		return v[:2]
+	}
+	return ""
+}
+
 func newVoiceTranslateQueue(workers, size int) *voiceTranslateQueue {
+	cleanupVoiceTranslateStartup()
 	if workers < 1 {
 		workers = 1
 	}
@@ -528,11 +999,10 @@ func (q *voiceTranslateQueue) enqueue(task voiceTranslateTask) bool {
 	}
 }
 
-func detectReplyMedia(msg *tgbotapi.Message) (info replyMediaInfo, sizeBytes int64, ok bool) {
-	if msg == nil || msg.ReplyToMessage == nil {
+func detectMediaInMessage(src *tgbotapi.Message) (info replyMediaInfo, sizeBytes int64, ok bool) {
+	if src == nil {
 		return replyMediaInfo{}, 0, false
 	}
-	src := msg.ReplyToMessage
 	if src.Voice != nil && strings.TrimSpace(src.Voice.FileID) != "" {
 		return replyMediaInfo{FileID: strings.TrimSpace(src.Voice.FileID), HasVideo: false, Ext: ".ogg"}, int64(src.Voice.FileSize), true
 	}
@@ -577,6 +1047,25 @@ func detectReplyMedia(msg *tgbotapi.Message) (info replyMediaInfo, sizeBytes int
 	return replyMediaInfo{}, 0, false
 }
 
+func detectReplyMedia(msg *tgbotapi.Message) (info replyMediaInfo, sizeBytes int64, ok bool) {
+	_, info, sizeBytes, ok = detectReplyMediaSource(msg)
+	return info, sizeBytes, ok
+}
+
+func detectReplyMediaSource(msg *tgbotapi.Message) (source *tgbotapi.Message, info replyMediaInfo, sizeBytes int64, ok bool) {
+	if msg == nil || msg.ReplyToMessage == nil {
+		return nil, replyMediaInfo{}, 0, false
+	}
+	src := msg.ReplyToMessage
+	for i := 0; i < 4 && src != nil; i++ {
+		if mi, sz, yes := detectMediaInMessage(src); yes {
+			return src, mi, sz, true
+		}
+		src = src.ReplyToMessage
+	}
+	return nil, replyMediaInfo{}, 0, false
+}
+
 func votLangFromEnv(key, fallback string) string {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
 	if v == "" {
@@ -601,9 +1090,15 @@ func votServiceIDForSource(sourceURL string) string {
 	return hex.EncodeToString(h[:])[:24]
 }
 
-func runVOTBackendTranslate(sourceURL string) (votProviderResult, error) {
-	from := votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en")
-	to := votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
+func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResult, error) {
+	from := normalizeVOTLang(srcLang)
+	if from == "" {
+		from = votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en")
+	}
+	to := normalizeVOTLang(resLang)
+	if to == "" || to == "auto" {
+		to = votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
+	}
 	timeoutSec := envInt("VOICE_TRANSLATE_TIMEOUT_SEC", 500)
 	if timeoutSec < 60 {
 		timeoutSec = 60
@@ -899,28 +1394,30 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 	return outPath, nil
 }
 
-func convertAudioToMP4ForVOT(inputPath, outPath string) error {
+func convertAudioToAudioOnlyMP4(inputPath, outPath string) error {
 	cmd := exec.Command("ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
 		"-y",
-		"-f", "lavfi",
-		"-i", "color=c=black:s=640x360:r=25",
 		"-i", inputPath,
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-tune", "stillimage",
+		"-map", "0:a:0?",
+		"-vn",
+		"-ac", "1",
+		"-ar", "24000",
 		"-c:a", "aac",
-		"-shortest",
+		"-b:a", "48k",
+		"-movflags", "+faststart",
 		outPath,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("ffmpeg audio->mp4 failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
+		return fmt.Errorf("ffmpeg audio->audio-only-mp4 failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
 	}
 	return nil
 }
 
 func processVoiceTranslateTask(task voiceTranslateTask) {
-	if task.Bot == nil || task.Msg == nil || task.ChatID == 0 {
+	if task.Bot == nil || task.ChatID == 0 {
 		return
 	}
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.ChatID, ReplyTo: task.ReplyTo}
@@ -933,12 +1430,33 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		progress.SetFrame(0)
 		progress.SetStage("Подготовка")
 	}
-	mediaInfo, _, ok := detectReplyMedia(task.Msg)
+	var (
+		mediaInfo replyMediaInfo
+		ok        bool
+	)
+	if strings.TrimSpace(task.Media.FileID) != "" {
+		mediaInfo = task.Media
+		ok = true
+	} else {
+		mediaInfo, _, ok = detectReplyMedia(task.Msg)
+	}
 	if !ok {
 		reply(sendCtx, "Нужен реплай на аудио/видео/voice.", false)
 		return
 	}
 	cacheKey := buildVoiceTranslateCacheKey(mediaInfo.FileID)
+	srcLang := normalizeVOTLang(task.SrcLang)
+	if srcLang == "" {
+		srcLang = normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en"))
+		if srcLang == "" {
+			srcLang = "en"
+		}
+	}
+	resLang := normalizeVOTLang(task.ResLang)
+	if resLang == "" || resLang == "auto" {
+		resLang = votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
+	}
+	cacheKey = buildVoiceTranslateCacheKeyWithLang(mediaInfo.FileID, srcLang, resLang)
 	providerUsed := "cache"
 	sourceURL, err := task.Bot.GetFileDirectURL(mediaInfo.FileID)
 	if err != nil {
@@ -990,14 +1508,144 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		return
 	}
 
-	sourceForVOT := sourcePath
-	if progress != nil {
-		progress.SetFrame(2)
-		if mediaInfo.HasVideo {
-			progress.SetStage("Подготовка видео для перевода")
-		} else {
-			progress.SetStage("Подготовка аудио для перевода")
+	sourceForVOTAudio := sourcePath
+	if cachedSource, ok := getVoiceSourceCache(mediaInfo.FileID); ok {
+		sourceForVOTAudio = cachedSource
+		if progress != nil {
+			progress.SetFrame(2)
+			progress.SetStage("Использую кеш mp4 для перевода")
 		}
+	} else {
+		if progress != nil {
+			progress.SetFrame(2)
+			progress.SetStage("Подготовка mp4 для перевода")
+		}
+		mp4Tmp, e := os.CreateTemp("", "vot_src_audio_only_*.mp4")
+		if e != nil {
+			reply(sendCtx, "Не удалось подготовить mp4 для перевода.", false)
+			return
+		}
+		sourceMP4ForVOT := mp4Tmp.Name()
+		_ = mp4Tmp.Close()
+		defer os.Remove(sourceMP4ForVOT)
+		if e := convertAudioToAudioOnlyMP4(sourcePath, sourceMP4ForVOT); e != nil {
+			if debugTriggerLogEnabled {
+				log.Printf("voice translate build audio-only mp4 failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, e)
+			}
+			reply(sendCtx, "Не удалось подготовить mp4 для перевода.", false)
+			return
+		}
+		if cachePath, cacheErr := setVoiceSourceCache(mediaInfo.FileID, sourceMP4ForVOT); cacheErr == nil && strings.TrimSpace(cachePath) != "" {
+			sourceForVOTAudio = cachePath
+		} else {
+			sourceForVOTAudio = sourceMP4ForVOT
+			if debugTriggerLogEnabled && cacheErr != nil {
+				log.Printf("voice translate source mp4 cache save failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cacheErr)
+			}
+		}
+	}
+	sourceForVOTSubs := sourceForVOTAudio
+	if mediaInfo.HasVideo {
+		// For subtitles/text, VOT works more reliably with the original video MP4 URL.
+		sourceForVOTSubs = sourcePath
+	}
+
+	shareSource := sourceForVOTAudio
+	if task.Action == "text" || task.Action == "subs" {
+		shareSource = sourceForVOTSubs
+	}
+
+	shareTTL := time.Duration(envInt("VOICE_TRANSLATE_SHARE_TTL_SEC", 1800)) * time.Second
+	shareToken := registerVoiceShareFile(shareSource, shareTTL)
+	if shareToken == "" {
+		if debugTriggerLogEnabled {
+			log.Printf("voice translate share token failed chat=%d replyTo=%d", task.ChatID, task.ReplyTo)
+		}
+		reply(sendCtx, "Не удалось подготовить публичную ссылку для перевода.", false)
+		return
+	}
+	defer releaseVoiceShareFile(shareToken)
+	publicURL := buildVoiceSharePublicURL(shareToken)
+	if strings.TrimSpace(publicURL) == "" {
+		reply(sendCtx, "Не удалось подготовить публичную ссылку для перевода.", false)
+		return
+	}
+
+	if task.Action == "text" || task.Action == "subs" {
+		// Warm up VOT translation for this URL first: for some sources
+		// subtitles list stays empty until translation job is created.
+		if _, ok := getVoiceTranslateCache(cacheKey); !ok {
+			if progress != nil {
+				progress.SetFrame(3)
+				progress.SetStage("Голосовой перевод")
+			}
+			seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed", srcLang, resLang)
+			if seedErr != nil {
+				if debugTriggerLogEnabled {
+					log.Printf("voice translate subtitles warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
+				}
+			} else if strings.TrimSpace(seedOut) != "" {
+				cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+				if in, err := os.Open(seedOut); err == nil {
+					if out, err2 := os.Create(cacheDst); err2 == nil {
+						_, _ = io.Copy(out, in)
+						_ = out.Close()
+						setVoiceTranslateCache(cacheKey, cacheDst, "vot-cli")
+					}
+					_ = in.Close()
+				}
+			}
+		}
+
+		if progress != nil {
+			progress.SetFrame(4)
+			progress.SetStage("Субтитры через VOT")
+		}
+		subsFormat := "json"
+		if task.Action == "subs" {
+			subsFormat = "srt"
+		}
+		subsPath, err := runVOTCLISubtitlesLocal(publicURL, workDir, "translated_subs", srcLang, resLang, subsFormat)
+		if err != nil {
+			if debugTriggerLogEnabled {
+				log.Printf("voice translate subtitles failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, err)
+			}
+			errText := strings.ToLower(err.Error())
+			if strings.Contains(errText, "subtitles output missing") {
+				reply(sendCtx, "VOT не вернул субтитры для этого файла (пустой список). Перевод аудио/микс может работать, а subtitles/text для этого источника недоступны.", false)
+			} else {
+				reply(sendCtx, "Не удалось получить субтитры через VOT.", false)
+			}
+			return
+		}
+		if task.Action == "subs" {
+			if progress != nil {
+				progress.SetFrame(8)
+				progress.SetStage("Отправка результата")
+			}
+			if strings.HasSuffix(strings.ToLower(strings.TrimSpace(subsPath)), ".json") {
+				if srt, convErr := subtitlesJSONToSRT(subsPath); convErr == nil && strings.TrimSpace(srt) != "" {
+					tmp, e := os.CreateTemp("", "translate_subs_*.srt")
+					if e == nil {
+						_ = os.WriteFile(tmp.Name(), []byte(srt), 0o644)
+						_ = tmp.Close()
+						defer os.Remove(tmp.Name())
+						subsPath = tmp.Name()
+					}
+				}
+			}
+			if err := sendDocumentFromFile(sendCtx, subsPath, ""); err != nil {
+				reply(sendCtx, "Не удалось отправить subtitle файл.", false)
+			}
+			return
+		}
+		txt := subtitlesToPlainText(subsPath)
+		if strings.TrimSpace(txt) == "" {
+			reply(sendCtx, "Не удалось извлечь текст из субтитров VOT.", false)
+			return
+		}
+		sendHTML(sendCtx, "<b>Текст перевода:</b>\n"+html.EscapeString(strings.TrimSpace(txt)), false)
+		return
 	}
 
 	mp3Path := filepath.Join(workDir, "translated.mp3")
@@ -1008,86 +1656,31 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		mp3Path = cachedMP3
 	} else {
-		shareTTL := time.Duration(envInt("VOICE_TRANSLATE_SHARE_TTL_SEC", 1800)) * time.Second
-		token := registerVoiceShareFile(sourceForVOT, shareTTL)
-		if token == "" {
-			if debugTriggerLogEnabled {
-				log.Printf("voice translate share token failed chat=%d replyTo=%d", task.ChatID, task.ReplyTo)
-			}
-			reply(sendCtx, "Не удалось подготовить публичную ссылку для перевода.", false)
-			return
-		}
-		publicURL := buildVoiceSharePublicURL(token)
-		defer releaseVoiceShareFile(token)
-		if strings.TrimSpace(publicURL) == "" {
-			reply(sendCtx, "Не удалось подготовить публичную ссылку для перевода.", false)
-			return
-		}
-
 		if progress != nil {
 			progress.SetFrame(3)
 			progress.SetStage("Голосовой перевод")
 		}
-		translated, err := runVOTBackendTranslate(publicURL)
-		translatedByCLI := false
-		if err != nil {
+		cliSourceURL := publicURL
+		cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated", srcLang, resLang)
+		if cliErr != nil {
+			msg := "Не удалось выполнить голосовой перевод."
+			errText := strings.ToLower(cliErr.Error())
+			if strings.Contains(errText, "timeout") {
+				msg = "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
+			} else if strings.Contains(errText, "too big") {
+				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
+				msg = fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
+			}
 			if debugTriggerLogEnabled {
-				log.Printf("voice translate backend failed chat=%d replyTo=%d err=%v publicURL=%s", task.ChatID, task.ReplyTo, err, clipText(publicURL, 200))
+				log.Printf("voice translate cli failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cliErr)
 			}
-			cliSourceURL := publicURL
-			if !mediaInfo.HasVideo {
-				mp4Tmp, e := os.CreateTemp("", "vot_cli_source_*.mp4")
-				if e == nil {
-					mp4ForCLI := mp4Tmp.Name()
-					_ = mp4Tmp.Close()
-					defer os.Remove(mp4ForCLI)
-					if convErr := convertAudioToMP4ForVOT(sourcePath, mp4ForCLI); convErr == nil {
-						cliTTL := time.Duration(envInt("VOICE_TRANSLATE_SHARE_TTL_SEC", 1800)) * time.Second
-						cliToken := registerVoiceShareFile(mp4ForCLI, cliTTL)
-						if cliToken != "" {
-							defer releaseVoiceShareFile(cliToken)
-							if cliURL := buildVoiceSharePublicURL(cliToken); strings.TrimSpace(cliURL) != "" {
-								cliSourceURL = cliURL
-							}
-						}
-					}
-				}
-			}
-			cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated")
-			if cliErr != nil {
-				msg := "Не удалось выполнить голосовой перевод."
-				errText := strings.ToLower(err.Error())
-				if strings.Contains(errText, "timeout") {
-					msg = "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
-				} else if strings.Contains(errText, "too big") {
-					maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
-					msg = fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
-				}
-				if debugTriggerLogEnabled {
-					log.Printf("voice translate cli fallback failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cliErr)
-				}
-				reply(sendCtx, msg, false)
-				return
-			}
-			if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
-				mp3Path = cliOut
-			}
-			translatedByCLI = true
+			reply(sendCtx, msg, false)
+			return
 		}
-
-		if !translatedByCLI {
-			providerUsed = translated.providerUsed
-			if progress != nil {
-				progress.SetFrame(5)
-				progress.SetStage("Скачивание дорожки перевода")
-			}
-			if err := downloadFileToPath(translated.translatedURL, mp3Path); err != nil {
-				reply(sendCtx, "Не удалось скачать аудио перевода.", false)
-				return
-			}
-		} else {
-			providerUsed = "vot-cli"
+		if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
+			mp3Path = cliOut
 		}
+		providerUsed = "vot-cli"
 	}
 	if !strings.HasPrefix(mp3Path, "/home/appuser/trigger_admin_bot/static/tmp/") {
 		cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
@@ -1101,6 +1694,21 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 	}
 
+	if debugTriggerLogEnabled {
+		log.Printf("voice translate success chat=%d replyTo=%d provider=%s", task.ChatID, task.ReplyTo, providerUsed)
+	}
+
+	if task.Action == "audio" {
+		if progress != nil {
+			progress.SetFrame(8)
+			progress.SetStage("Отправка результата")
+		}
+		if err := sendAudioFromFile(sendCtx, mp3Path, "", ""); err != nil {
+			reply(sendCtx, "Не удалось отправить дорожку перевода.", false)
+		}
+		return
+	}
+	// default action is mix
 	if progress != nil {
 		progress.SetFrame(7)
 		progress.SetStage("Микширование аудио")
@@ -1114,73 +1722,17 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		return
 	}
 	defer os.Remove(mixedPath)
-
-	if debugTriggerLogEnabled {
-		log.Printf("voice translate success chat=%d replyTo=%d provider=%s", task.ChatID, task.ReplyTo, providerUsed)
-	}
-
-	translatedForOption := ""
-	if st, e := os.Stat(mp3Path); e == nil && st.Size() > 0 {
-		dst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_tr_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey+time.Now().String())))+".mp3")
-		if in, e1 := os.Open(mp3Path); e1 == nil {
-			if out, e2 := os.Create(dst); e2 == nil {
-				_, _ = io.Copy(out, in)
-				_ = out.Close()
-				translatedForOption = dst
-			}
-			_ = in.Close()
-		}
-	}
-	mixedForOption := ""
-	if st, e := os.Stat(mixedPath); e == nil && st.Size() > 0 {
-		ext := ".mp3"
-		if mediaInfo.HasVideo {
-			ext = ".mp4"
-		}
-		dst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_mix_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey+time.Now().String()+"mix")))+ext)
-		if in, e1 := os.Open(mixedPath); e1 == nil {
-			if out, e2 := os.Create(dst); e2 == nil {
-				_, _ = io.Copy(out, in)
-				_ = out.Close()
-				mixedForOption = dst
-			}
-			_ = in.Close()
-		}
-	}
-	optToken := ""
-	if translatedForOption != "" || mixedForOption != "" {
-		optToken = putVoiceTranslateOption(voiceTranslateOptionEntry{
-			chatID:         task.ChatID,
-			userID:         task.Msg.From.ID,
-			replyTo:        task.ReplyTo,
-			hasVideo:       mediaInfo.HasVideo,
-			translatedPath: translatedForOption,
-			mixedPath:      mixedForOption,
-		})
-	}
-
 	if progress != nil {
 		progress.SetFrame(8)
 		progress.SetStage("Отправка результата")
 	}
 	if mediaInfo.HasVideo {
-		if err := sendVideoFromFile(sendCtx, mixedPath, "Перевод подмешан в исходный звук."); err != nil {
-			reply(sendCtx, "Не удалось отправить видео с переводом.", false)
-			return
+		if err := sendVideoFromFile(sendCtx, mixedPath, ""); err != nil {
+			reply(sendCtx, "Не удалось отправить микс.", false)
 		}
 		return
 	}
-	if err := sendAudioFromFile(sendCtx, mixedPath, "", "Перевод подмешан в исходный звук"); err != nil {
-		reply(sendCtx, "Не удалось отправить аудио с переводом.", false)
-		return
-	}
-	if strings.TrimSpace(optToken) != "" {
-		menu := tgbotapi.NewMessage(task.ChatID, "Действия с переводом:")
-		menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(optToken)
-		if task.ReplyTo > 0 {
-			menu.ReplyToMessageID = task.ReplyTo
-			menu.AllowSendingWithoutReply = true
-		}
-		_, _ = task.Bot.Send(menu)
+	if err := sendAudioFromFile(sendCtx, mixedPath, "", ""); err != nil {
+		reply(sendCtx, "Не удалось отправить микс.", false)
 	}
 }
