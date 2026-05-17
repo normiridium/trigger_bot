@@ -42,6 +42,7 @@ type replyMediaInfo struct {
 	FileID   string
 	HasVideo bool
 	Ext      string
+	Name     string
 }
 
 type voiceTranslateQueue struct {
@@ -84,6 +85,7 @@ type voiceTranslateCacheEntry struct {
 	expiresAt time.Time
 	createdAt time.Time
 	provider  string
+	baseName  string
 }
 
 type voiceTranslateCacheDiskEntry struct {
@@ -92,6 +94,7 @@ type voiceTranslateCacheDiskEntry struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
 	Provider  string    `json:"provider,omitempty"`
+	BaseName  string    `json:"base_name,omitempty"`
 }
 
 var (
@@ -153,17 +156,20 @@ func loadVoiceTranslateCacheLocked() {
 	for _, r := range rows {
 		key := strings.TrimSpace(r.Key)
 		path := strings.TrimSpace(r.MP3Path)
-		if key == "" || path == "" || !r.ExpiresAt.After(now) {
+		if key == "" || !r.ExpiresAt.After(now) {
 			continue
 		}
-		if _, statErr := os.Stat(path); statErr != nil {
-			continue
+		if path != "" {
+			if _, statErr := os.Stat(path); statErr != nil {
+				path = ""
+			}
 		}
 		voiceTranslateCache[key] = voiceTranslateCacheEntry{
 			mp3Path:   path,
 			expiresAt: r.ExpiresAt,
 			createdAt: r.CreatedAt,
 			provider:  strings.TrimSpace(r.Provider),
+			baseName:  strings.TrimSpace(r.BaseName),
 		}
 	}
 }
@@ -171,7 +177,7 @@ func loadVoiceTranslateCacheLocked() {
 func saveVoiceTranslateCacheLocked() {
 	rows := make([]voiceTranslateCacheDiskEntry, 0, len(voiceTranslateCache))
 	for k, v := range voiceTranslateCache {
-		if strings.TrimSpace(k) == "" || strings.TrimSpace(v.mp3Path) == "" {
+		if strings.TrimSpace(k) == "" {
 			continue
 		}
 		rows = append(rows, voiceTranslateCacheDiskEntry{
@@ -180,6 +186,7 @@ func saveVoiceTranslateCacheLocked() {
 			ExpiresAt: v.expiresAt,
 			CreatedAt: v.createdAt,
 			Provider:  strings.TrimSpace(v.provider),
+			BaseName:  strings.TrimSpace(v.baseName),
 		})
 	}
 	_ = os.MkdirAll(filepath.Dir(voiceTranslateCacheIndexPath), 0o755)
@@ -239,7 +246,40 @@ func setVoiceTranslateCache(key, mp3Path, provider string) {
 		createdAt: time.Now(),
 		expiresAt: time.Now().Add(voiceTranslateCacheTTL()),
 		provider:  strings.TrimSpace(provider),
+		baseName:  strings.TrimSpace(voiceTranslateCache[key].baseName),
 	}
+	saveVoiceTranslateCacheLocked()
+}
+
+func getVoiceCacheBaseName(key string) string {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return ""
+	}
+	voiceTranslateCacheMu.Lock()
+	defer voiceTranslateCacheMu.Unlock()
+	loadVoiceTranslateCacheLocked()
+	return strings.TrimSpace(voiceTranslateCache[k].baseName)
+}
+
+func setVoiceCacheBaseName(key, baseName string) {
+	k := strings.TrimSpace(key)
+	if k == "" {
+		return
+	}
+	base := sanitizeVoiceBaseName(baseName)
+	voiceTranslateCacheMu.Lock()
+	defer voiceTranslateCacheMu.Unlock()
+	loadVoiceTranslateCacheLocked()
+	v := voiceTranslateCache[k]
+	v.baseName = base
+	if v.createdAt.IsZero() {
+		v.createdAt = time.Now()
+	}
+	if v.expiresAt.Before(time.Now()) {
+		v.expiresAt = time.Now().Add(voiceTranslateCacheTTL())
+	}
+	voiceTranslateCache[k] = v
 	saveVoiceTranslateCacheLocked()
 }
 
@@ -1066,7 +1106,7 @@ func detectMediaInMessage(src *tgbotapi.Message) (info replyMediaInfo, sizeBytes
 		return replyMediaInfo{}, 0, false
 	}
 	if src.Voice != nil && strings.TrimSpace(src.Voice.FileID) != "" {
-		return replyMediaInfo{FileID: strings.TrimSpace(src.Voice.FileID), HasVideo: false, Ext: ".ogg"}, int64(src.Voice.FileSize), true
+		return replyMediaInfo{FileID: strings.TrimSpace(src.Voice.FileID), HasVideo: false, Ext: ".ogg", Name: "voice"}, int64(src.Voice.FileSize), true
 	}
 	if src.Audio != nil && strings.TrimSpace(src.Audio.FileID) != "" {
 		ext := ".m4a"
@@ -1076,13 +1116,17 @@ func detectMediaInMessage(src *tgbotapi.Message) (info replyMediaInfo, sizeBytes
 		} else if strings.Contains(mime, "ogg") || strings.Contains(mime, "opus") {
 			ext = ".ogg"
 		}
-		return replyMediaInfo{FileID: strings.TrimSpace(src.Audio.FileID), HasVideo: false, Ext: ext}, int64(src.Audio.FileSize), true
+		name := strings.TrimSpace(src.Audio.FileName)
+		if name == "" {
+			name = strings.TrimSpace(src.Audio.Title)
+		}
+		return replyMediaInfo{FileID: strings.TrimSpace(src.Audio.FileID), HasVideo: false, Ext: ext, Name: name}, int64(src.Audio.FileSize), true
 	}
 	if src.Video != nil && strings.TrimSpace(src.Video.FileID) != "" {
-		return replyMediaInfo{FileID: strings.TrimSpace(src.Video.FileID), HasVideo: true, Ext: ".mp4"}, int64(src.Video.FileSize), true
+		return replyMediaInfo{FileID: strings.TrimSpace(src.Video.FileID), HasVideo: true, Ext: ".mp4", Name: strings.TrimSpace(src.Video.FileName)}, int64(src.Video.FileSize), true
 	}
 	if src.VideoNote != nil && strings.TrimSpace(src.VideoNote.FileID) != "" {
-		return replyMediaInfo{FileID: strings.TrimSpace(src.VideoNote.FileID), HasVideo: true, Ext: ".mp4"}, int64(src.VideoNote.FileSize), true
+		return replyMediaInfo{FileID: strings.TrimSpace(src.VideoNote.FileID), HasVideo: true, Ext: ".mp4", Name: "video_note"}, int64(src.VideoNote.FileSize), true
 	}
 	if src.Document != nil && strings.TrimSpace(src.Document.FileID) != "" {
 		mime := strings.ToLower(strings.TrimSpace(src.Document.MimeType))
@@ -1103,6 +1147,7 @@ func detectMediaInMessage(src *tgbotapi.Message) (info replyMediaInfo, sizeBytes
 				FileID:   strings.TrimSpace(src.Document.FileID),
 				HasVideo: strings.HasPrefix(mime, "video/"),
 				Ext:      ext,
+				Name:     strings.TrimSpace(src.Document.FileName),
 			}, int64(src.Document.FileSize), true
 		}
 	}
@@ -1150,6 +1195,149 @@ func votLangFromEnv(key, fallback string) string {
 func votServiceIDForSource(sourceURL string) string {
 	h := sha1.Sum([]byte(strings.TrimSpace(sourceURL)))
 	return hex.EncodeToString(h[:])[:24]
+}
+
+func sanitizeVoiceBaseName(name string) string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return ""
+	}
+	n = filepath.Base(n)
+	n = strings.TrimSpace(strings.Trim(n, `"'`))
+	if n == "" || n == "." || n == ".." {
+		return ""
+	}
+	ext := filepath.Ext(n)
+	if ext != "" {
+		n = strings.TrimSuffix(n, ext)
+	}
+	n = strings.TrimSpace(n)
+	n = strings.ReplaceAll(n, "/", "_")
+	n = strings.ReplaceAll(n, "\\", "_")
+	if n == "" {
+		return ""
+	}
+	return n
+}
+
+func resolveVoiceBaseName(cacheKey string, media replyMediaInfo) string {
+	if v := sanitizeVoiceBaseName(media.Name); v != "" {
+		return v
+	}
+	if v := sanitizeVoiceBaseName(getVoiceCacheBaseName(cacheKey)); v != "" {
+		return v
+	}
+	if media.HasVideo {
+		return "video"
+	}
+	return "audio"
+}
+
+func voiceOutName(cacheKey string, media replyMediaInfo, ext string) string {
+	base := resolveVoiceBaseName(cacheKey, media)
+	e := strings.TrimSpace(ext)
+	if e == "" {
+		e = ".bin"
+	}
+	if !strings.HasPrefix(e, ".") {
+		e = "." + e
+	}
+	return base + e
+}
+
+func sendDocumentFromFileNamed(ctx sendContext, filePath, fileName, caption string) error {
+	filePath = strings.TrimSpace(filePath)
+	fileName = strings.TrimSpace(fileName)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return fmt.Errorf("invalid document send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	fd, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	if fileName == "" {
+		fileName = filepath.Base(filePath)
+	}
+	m := tgbotapi.NewDocument(ctx.ChatID, tgbotapi.FileReader{Name: fileName, Reader: fd})
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	_, err = ctx.Bot.Send(m)
+	return err
+}
+
+func sendAudioFromFileNamed(ctx sendContext, filePath, fileName, performer, title string) error {
+	filePath = strings.TrimSpace(filePath)
+	fileName = strings.TrimSpace(fileName)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return fmt.Errorf("invalid audio send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	fd, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	if fileName == "" {
+		fileName = filepath.Base(filePath)
+	}
+	m := tgbotapi.NewAudio(ctx.ChatID, tgbotapi.FileReader{Name: fileName, Reader: fd})
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	if strings.TrimSpace(performer) != "" {
+		m.Performer = clipText(strings.TrimSpace(performer), 64)
+	}
+	if strings.TrimSpace(title) != "" {
+		m.Title = clipText(strings.TrimSpace(title), 64)
+	}
+	_, err = ctx.Bot.Send(m)
+	return err
+}
+
+func sendVideoFromFileNamed(ctx sendContext, filePath, fileName, caption string) error {
+	filePath = strings.TrimSpace(filePath)
+	fileName = strings.TrimSpace(fileName)
+	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
+		return fmt.Errorf("invalid video send params")
+	}
+	if err := ensureTelegramUploadLimit(filePath); err != nil {
+		return err
+	}
+	fd, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	if fileName == "" {
+		fileName = filepath.Base(filePath)
+	}
+	m := tgbotapi.NewVideo(ctx.ChatID, tgbotapi.FileReader{Name: fileName, Reader: fd})
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	m.SupportsStreaming = true
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	_, err = ctx.Bot.Send(m)
+	return err
 }
 
 func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResult, error) {
@@ -1519,6 +1707,9 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		resLang = votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
 	}
 	cacheKey = buildVoiceTranslateCacheKeyWithLang(mediaInfo.FileID, srcLang, resLang)
+	if n := sanitizeVoiceBaseName(mediaInfo.Name); n != "" {
+		setVoiceCacheBaseName(cacheKey, n)
+	}
 	providerUsed := "cache"
 	sourceURL, err := task.Bot.GetFileDirectURL(mediaInfo.FileID)
 	if err != nil {
@@ -1640,7 +1831,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 					progress.SetFrame(8)
 					progress.SetStage("Отправка результата (кеш)")
 				}
-				if err := sendDocumentFromFile(sendCtx, cached, ""); err != nil {
+				if err := sendDocumentFromFileNamed(sendCtx, cached, voiceOutName(cacheKey, mediaInfo, ".srt"), ""); err != nil {
 					reply(sendCtx, "Не удалось отправить subtitle файл.", false)
 				}
 				return
@@ -1651,7 +1842,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 					progress.SetFrame(8)
 					progress.SetStage("Отправка результата (кеш)")
 				}
-				if err := sendDocumentFromFile(sendCtx, cached, ""); err != nil {
+				if err := sendDocumentFromFileNamed(sendCtx, cached, voiceOutName(cacheKey, mediaInfo, ".txt"), ""); err != nil {
 					reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
 				}
 				return
@@ -1755,7 +1946,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 					}
 				}
 			}
-			if err := sendDocumentFromFile(sendCtx, subsPath, ""); err != nil {
+			if err := sendDocumentFromFileNamed(sendCtx, subsPath, voiceOutName(cacheKey, mediaInfo, ".srt"), ""); err != nil {
 				reply(sendCtx, "Не удалось отправить subtitle файл.", false)
 			}
 			saveCacheFile(voiceSubtitlesCachePath(cacheKey), subsPath)
@@ -1794,7 +1985,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			return
 		}
 		saveCacheFile(voiceTextCachePath(cacheKey), tmp.Name())
-		if err := sendDocumentFromFile(sendCtx, tmp.Name(), ""); err != nil {
+		if err := sendDocumentFromFileNamed(sendCtx, tmp.Name(), voiceOutName(cacheKey, mediaInfo, ".txt"), ""); err != nil {
 			reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
 		}
 		return
@@ -1855,7 +2046,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			progress.SetFrame(8)
 			progress.SetStage("Отправка результата")
 		}
-		if err := sendAudioFromFile(sendCtx, mp3Path, "", ""); err != nil {
+		if err := sendAudioFromFileNamed(sendCtx, mp3Path, voiceOutName(cacheKey, mediaInfo, ".mp3"), "", ""); err != nil {
 			reply(sendCtx, "Не удалось отправить дорожку перевода.", false)
 		}
 		return
@@ -1879,12 +2070,12 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		progress.SetStage("Отправка результата")
 	}
 	if mediaInfo.HasVideo {
-		if err := sendVideoFromFile(sendCtx, mixedPath, ""); err != nil {
+		if err := sendVideoFromFileNamed(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp4"), ""); err != nil {
 			reply(sendCtx, "Не удалось отправить микс.", false)
 		}
 		return
 	}
-	if err := sendAudioFromFile(sendCtx, mixedPath, "", ""); err != nil {
+	if err := sendAudioFromFileNamed(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp3"), "", ""); err != nil {
 		reply(sendCtx, "Не удалось отправить микс.", false)
 	}
 }
