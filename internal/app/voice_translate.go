@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
@@ -19,6 +20,9 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const (
@@ -89,12 +93,12 @@ type voiceTranslateCacheEntry struct {
 }
 
 type voiceTranslateCacheDiskEntry struct {
-	Key       string    `json:"key"`
-	MP3Path   string    `json:"mp3_path"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-	Provider  string    `json:"provider,omitempty"`
-	BaseName  string    `json:"base_name,omitempty"`
+	Key       string    `json:"key" bson:"key"`
+	MP3Path   string    `json:"mp3_path" bson:"mp3_path"`
+	ExpiresAt time.Time `json:"expires_at" bson:"expires_at"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	Provider  string    `json:"provider,omitempty" bson:"provider,omitempty"`
+	BaseName  string    `json:"base_name,omitempty" bson:"base_name,omitempty"`
 }
 
 var (
@@ -105,9 +109,45 @@ var (
 	voiceTranslateOptionMu    sync.Mutex
 	voiceTranslateOptionData  = map[string]voiceTranslateOptionEntry{}
 	voiceTranslateStartupOnce sync.Once
+
+	voiceCacheMongoInitOnce sync.Once
+	voiceCacheMongoColl     *mongo.Collection
+	voiceCacheMongoOK       bool
 )
 
 const voiceTranslateCacheIndexPath = "/home/appuser/trigger_admin_bot/static/tmp/voice_cache_index.json"
+
+func voiceTranslateMongoCollection() (*mongo.Collection, bool) {
+	voiceCacheMongoInitOnce.Do(func() {
+		uri := strings.TrimSpace(os.Getenv("MONGO_URI"))
+		if uri == "" {
+			return
+		}
+		ctx, cancel := mongoCtx()
+		defer cancel()
+		client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+		if err != nil {
+			log.Printf("voice cache mongo connect failed: %v", err)
+			return
+		}
+		if err := client.Ping(ctx, nil); err != nil {
+			log.Printf("voice cache mongo ping failed: %v", err)
+			_ = client.Disconnect(context.Background())
+			return
+		}
+		db := client.Database(mongoDBNameFromURI(uri))
+		coll := db.Collection("voice_cache_index")
+		idxCtx, idxCancel := mongoCtx()
+		defer idxCancel()
+		_, _ = coll.Indexes().CreateMany(idxCtx, []mongo.IndexModel{
+			{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)},
+			{Keys: bson.D{{Key: "expires_at", Value: 1}}},
+		})
+		voiceCacheMongoColl = coll
+		voiceCacheMongoOK = true
+	})
+	return voiceCacheMongoColl, voiceCacheMongoOK
+}
 
 func voiceTranslateCacheTTL() time.Duration {
 	sec := envInt("VOICE_TRANSLATE_CACHE_TTL_SEC", 3600)
@@ -144,15 +184,24 @@ func loadVoiceTranslateCacheLocked() {
 		return
 	}
 	voiceCacheLoaded = true
-	raw, err := os.ReadFile(voiceTranslateCacheIndexPath)
-	if err != nil || len(raw) == 0 {
+	coll, ok := voiceTranslateMongoCollection()
+	if !ok || coll == nil {
 		return
 	}
-	var rows []voiceTranslateCacheDiskEntry
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		return
-	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
 	now := time.Now()
+	cur, err := coll.Find(ctx, bson.M{"expires_at": bson.M{"$gt": now}})
+	if err != nil {
+		log.Printf("voice cache mongo find failed: %v", err)
+		return
+	}
+	defer cur.Close(ctx)
+	var rows []voiceTranslateCacheDiskEntry
+	if err := cur.All(ctx, &rows); err != nil {
+		log.Printf("voice cache mongo decode failed: %v", err)
+		return
+	}
 	for _, r := range rows {
 		key := strings.TrimSpace(r.Key)
 		path := strings.TrimSpace(r.MP3Path)
@@ -175,6 +224,11 @@ func loadVoiceTranslateCacheLocked() {
 }
 
 func saveVoiceTranslateCacheLocked() {
+	coll, ok := voiceTranslateMongoCollection()
+	if !ok || coll == nil {
+		return
+	}
+	now := time.Now()
 	rows := make([]voiceTranslateCacheDiskEntry, 0, len(voiceTranslateCache))
 	for k, v := range voiceTranslateCache {
 		if strings.TrimSpace(k) == "" {
@@ -189,16 +243,21 @@ func saveVoiceTranslateCacheLocked() {
 			BaseName:  strings.TrimSpace(v.baseName),
 		})
 	}
-	_ = os.MkdirAll(filepath.Dir(voiceTranslateCacheIndexPath), 0o755)
-	tmp := voiceTranslateCacheIndexPath + ".tmp"
-	raw, err := json.Marshal(rows)
-	if err != nil {
-		return
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	_, _ = coll.DeleteMany(ctx, bson.M{"expires_at": bson.M{"$lte": now}})
+	for _, row := range rows {
+		filter := bson.M{"key": row.Key}
+		set := bson.M{
+			"key":        row.Key,
+			"mp3_path":   row.MP3Path,
+			"expires_at": row.ExpiresAt,
+			"created_at": row.CreatedAt,
+			"provider":   row.Provider,
+			"base_name":  row.BaseName,
+		}
+		_, _ = coll.UpdateOne(ctx, filter, bson.M{"$set": set}, options.Update().SetUpsert(true))
 	}
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, voiceTranslateCacheIndexPath)
 }
 
 func getVoiceTranslateCache(key string) (string, bool) {
