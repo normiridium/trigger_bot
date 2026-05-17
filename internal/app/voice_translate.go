@@ -2,16 +2,19 @@ package app
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +43,17 @@ type replyMediaInfo struct {
 
 type voiceTranslateQueue struct {
 	ch chan voiceTranslateTask
+}
+
+type voiceTranslateOptionEntry struct {
+	token          string
+	chatID         int64
+	userID         int64
+	replyTo        int
+	hasVideo       bool
+	translatedPath string
+	mixedPath      string
+	expiresAt      time.Time
 }
 
 type votTranslateRequest struct {
@@ -83,6 +97,9 @@ var (
 	voiceTranslateCacheMu sync.Mutex
 	voiceTranslateCache   = map[string]voiceTranslateCacheEntry{}
 	voiceCacheLoaded      bool
+
+	voiceTranslateOptionMu   sync.Mutex
+	voiceTranslateOptionData = map[string]voiceTranslateOptionEntry{}
 )
 
 const voiceTranslateCacheIndexPath = "/home/appuser/trigger_admin_bot/static/tmp/voice_cache_index.json"
@@ -306,6 +323,179 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile string) (string, 
 		}
 	}
 	return "", fmt.Errorf("vot-cli output missing after success (%s)", clipText(strings.TrimSpace(string(out)), 500))
+}
+
+func cleanupVoiceTranslateOptionsLocked(now time.Time) {
+	for k, v := range voiceTranslateOptionData {
+		if v.expiresAt.After(now) {
+			continue
+		}
+		if strings.TrimSpace(v.translatedPath) != "" {
+			_ = os.Remove(v.translatedPath)
+		}
+		if strings.TrimSpace(v.mixedPath) != "" {
+			_ = os.Remove(v.mixedPath)
+		}
+		delete(voiceTranslateOptionData, k)
+	}
+}
+
+func newVoiceTranslateOptionToken() string {
+	var b [6]byte
+	_, _ = crand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func putVoiceTranslateOption(e voiceTranslateOptionEntry) string {
+	voiceTranslateOptionMu.Lock()
+	defer voiceTranslateOptionMu.Unlock()
+	cleanupVoiceTranslateOptionsLocked(time.Now())
+	token := newVoiceTranslateOptionToken()
+	e.token = token
+	if e.expiresAt.IsZero() {
+		e.expiresAt = time.Now().Add(2 * time.Hour)
+	}
+	voiceTranslateOptionData[token] = e
+	return token
+}
+
+func takeVoiceTranslateOption(token string, userID int64) (voiceTranslateOptionEntry, bool, string) {
+	voiceTranslateOptionMu.Lock()
+	defer voiceTranslateOptionMu.Unlock()
+	cleanupVoiceTranslateOptionsLocked(time.Now())
+	v, ok := voiceTranslateOptionData[token]
+	if !ok {
+		return voiceTranslateOptionEntry{}, false, "меню устарело"
+	}
+	if v.userID != 0 && userID != 0 && v.userID != userID {
+		return voiceTranslateOptionEntry{}, false, "эта кнопка доступна только автору"
+	}
+	return v, true, ""
+}
+
+func renderVoiceTranslateOptionKeyboard(token string) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "vtr|audio|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Скачать микс", "vtr|mix|"+token),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|text|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|subs|"+token),
+		),
+	)
+}
+
+func audioDurationSec(path string) float64 {
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nokey=1:noprint_wrappers=1", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	val := strings.TrimSpace(string(out))
+	if val == "" {
+		return 0
+	}
+	f, _ := strconv.ParseFloat(val, 64)
+	return f
+}
+
+func fmtSRTTime(sec float64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	ms := int64(sec * 1000)
+	h := ms / 3600000
+	m := (ms % 3600000) / 60000
+	s := (ms % 60000) / 1000
+	z := ms % 1000
+	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, z)
+}
+
+func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bool {
+	if bot == nil || cb == nil || !strings.HasPrefix(cb.Data, "vtr|") {
+		return false
+	}
+	parts := strings.Split(cb.Data, "|")
+	if len(parts) != 3 {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверная кнопка"))
+		return true
+	}
+	action := strings.TrimSpace(parts[1])
+	token := strings.TrimSpace(parts[2])
+	entry, ok, msg := takeVoiceTranslateOption(token, cb.From.ID)
+	if !ok {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+		return true
+	}
+	sendCtx := sendContext{Bot: bot, ChatID: entry.chatID, ReplyTo: entry.replyTo}
+	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Готовлю..."))
+
+	switch action {
+	case "audio":
+		if strings.TrimSpace(entry.translatedPath) == "" {
+			reply(sendCtx, "Файл перевода недоступен.", false)
+			return true
+		}
+		if err := sendAudioFromFile(sendCtx, entry.translatedPath, "", "Дорожка перевода"); err != nil {
+			reply(sendCtx, "Не удалось отправить дорожку перевода.", false)
+		}
+		return true
+	case "mix":
+		if strings.TrimSpace(entry.mixedPath) == "" {
+			reply(sendCtx, "Файл микса недоступен.", false)
+			return true
+		}
+		if entry.hasVideo {
+			if err := sendVideoFromFile(sendCtx, entry.mixedPath, "Готовый микс с переводом."); err != nil {
+				reply(sendCtx, "Не удалось отправить микс.", false)
+			}
+		} else {
+			if err := sendAudioFromFile(sendCtx, entry.mixedPath, "", "Готовый микс с переводом"); err != nil {
+				reply(sendCtx, "Не удалось отправить микс.", false)
+			}
+		}
+		return true
+	case "text", "subs":
+		if strings.TrimSpace(entry.translatedPath) == "" {
+			reply(sendCtx, "Файл перевода недоступен.", false)
+			return true
+		}
+		audioBytes, err := os.ReadFile(entry.translatedPath)
+		if err != nil || len(audioBytes) == 0 {
+			reply(sendCtx, "Не удалось прочитать дорожку перевода.", false)
+			return true
+		}
+		txt, err := transcribeAudioBytes(strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), strings.TrimSpace(os.Getenv("AUDIO_TRANSCRIPTION_MODEL")), filepath.Base(entry.translatedPath), audioBytes)
+		if err != nil || strings.TrimSpace(txt) == "" {
+			reply(sendCtx, "Не удалось получить текст перевода.", false)
+			return true
+		}
+		if action == "text" {
+			sendHTML(sendCtx, "<b>Текст перевода:</b>\n"+html.EscapeString(strings.TrimSpace(txt)), false)
+			return true
+		}
+		dur := audioDurationSec(entry.translatedPath)
+		if dur <= 0 {
+			dur = 60
+		}
+		srt := "1\n" + fmtSRTTime(0) + " --> " + fmtSRTTime(dur) + "\n" + strings.TrimSpace(txt) + "\n"
+		tmp, e := os.CreateTemp("", "translate_subs_*.srt")
+		if e != nil {
+			reply(sendCtx, "Не удалось подготовить subtitle файл.", false)
+			return true
+		}
+		_ = os.WriteFile(tmp.Name(), []byte(srt), 0o644)
+		_ = tmp.Close()
+		defer os.Remove(tmp.Name())
+		if err := sendDocumentFromFile(sendCtx, tmp.Name(), ""); err != nil {
+			reply(sendCtx, "Не удалось отправить subtitle файл.", false)
+		}
+		return true
+	default:
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неизвестное действие"))
+		return true
+	}
 }
 
 func newVoiceTranslateQueue(workers, size int) *voiceTranslateQueue {
@@ -844,7 +1034,26 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate backend failed chat=%d replyTo=%d err=%v publicURL=%s", task.ChatID, task.ReplyTo, err, clipText(publicURL, 200))
 			}
-			cliOut, cliErr := runVOTCLITranslateLocal(publicURL, workDir, "translated")
+			cliSourceURL := publicURL
+			if !mediaInfo.HasVideo {
+				mp4Tmp, e := os.CreateTemp("", "vot_cli_source_*.mp4")
+				if e == nil {
+					mp4ForCLI := mp4Tmp.Name()
+					_ = mp4Tmp.Close()
+					defer os.Remove(mp4ForCLI)
+					if convErr := convertAudioToMP4ForVOT(sourcePath, mp4ForCLI); convErr == nil {
+						cliTTL := time.Duration(envInt("VOICE_TRANSLATE_SHARE_TTL_SEC", 1800)) * time.Second
+						cliToken := registerVoiceShareFile(mp4ForCLI, cliTTL)
+						if cliToken != "" {
+							defer releaseVoiceShareFile(cliToken)
+							if cliURL := buildVoiceSharePublicURL(cliToken); strings.TrimSpace(cliURL) != "" {
+								cliSourceURL = cliURL
+							}
+						}
+					}
+				}
+			}
+			cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated")
 			if cliErr != nil {
 				msg := "Не удалось выполнить голосовой перевод."
 				errText := strings.ToLower(err.Error())
@@ -910,6 +1119,46 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		log.Printf("voice translate success chat=%d replyTo=%d provider=%s", task.ChatID, task.ReplyTo, providerUsed)
 	}
 
+	translatedForOption := ""
+	if st, e := os.Stat(mp3Path); e == nil && st.Size() > 0 {
+		dst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_tr_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey+time.Now().String())))+".mp3")
+		if in, e1 := os.Open(mp3Path); e1 == nil {
+			if out, e2 := os.Create(dst); e2 == nil {
+				_, _ = io.Copy(out, in)
+				_ = out.Close()
+				translatedForOption = dst
+			}
+			_ = in.Close()
+		}
+	}
+	mixedForOption := ""
+	if st, e := os.Stat(mixedPath); e == nil && st.Size() > 0 {
+		ext := ".mp3"
+		if mediaInfo.HasVideo {
+			ext = ".mp4"
+		}
+		dst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_mix_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey+time.Now().String()+"mix")))+ext)
+		if in, e1 := os.Open(mixedPath); e1 == nil {
+			if out, e2 := os.Create(dst); e2 == nil {
+				_, _ = io.Copy(out, in)
+				_ = out.Close()
+				mixedForOption = dst
+			}
+			_ = in.Close()
+		}
+	}
+	optToken := ""
+	if translatedForOption != "" || mixedForOption != "" {
+		optToken = putVoiceTranslateOption(voiceTranslateOptionEntry{
+			chatID:         task.ChatID,
+			userID:         task.Msg.From.ID,
+			replyTo:        task.ReplyTo,
+			hasVideo:       mediaInfo.HasVideo,
+			translatedPath: translatedForOption,
+			mixedPath:      mixedForOption,
+		})
+	}
+
 	if progress != nil {
 		progress.SetFrame(8)
 		progress.SetStage("Отправка результата")
@@ -924,5 +1173,14 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if err := sendAudioFromFile(sendCtx, mixedPath, "", "Перевод подмешан в исходный звук"); err != nil {
 		reply(sendCtx, "Не удалось отправить аудио с переводом.", false)
 		return
+	}
+	if strings.TrimSpace(optToken) != "" {
+		menu := tgbotapi.NewMessage(task.ChatID, "Действия с переводом:")
+		menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(optToken)
+		if task.ReplyTo > 0 {
+			menu.ReplyToMessageID = task.ReplyTo
+			menu.AllowSendingWithoutReply = true
+		}
+		_, _ = task.Bot.Send(menu)
 	}
 }

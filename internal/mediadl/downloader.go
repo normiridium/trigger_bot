@@ -237,28 +237,34 @@ func (d Downloader) buildGenericDownloadArgsForService(service, url, outTpl stri
 	service = strings.ToLower(strings.TrimSpace(service))
 	switch service {
 	case "tiktok":
-		args := []string{
-			"-f", "bestvideo+bestaudio/best",
-			"--merge-output-format", "mp4",
-			"--no-playlist",
-			"--quiet",
-			"--no-warnings",
-			"--extractor-args", d.extractorArgs(),
-			"--print", "after_move:__FILE__%(filepath)s",
-			"-o", outTpl,
-		}
-		args = append(d.ytDLPAuthArgs(), args...)
-		if maxMB := d.maxSizeMB(); maxMB > 0 {
-			args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
-		}
-		args = append(args, url)
-		if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
-			args = append([]string{"--proxy", "socks5://" + proxy}, args...)
-		}
-		return args
+		return d.buildTikTokAudioSafeArgs(url, outTpl)
 	default:
 		return d.buildGenericDownloadArgs(url, outTpl)
 	}
+}
+
+func (d Downloader) buildTikTokAudioSafeArgs(url, outTpl string) []string {
+	args := []string{
+		// Prefer TikTok "download" rendition first: it is usually the most stable AV mux.
+		// Then fallback to generic formats with explicit audio requirement.
+		"-f", "download/best[acodec!=none][vcodec!=none]/best[acodec!=none]/best",
+		"--merge-output-format", "mp4",
+		"--no-playlist",
+		"--quiet",
+		"--no-warnings",
+		"--extractor-args", d.extractorArgs(),
+		"--print", "after_move:__FILE__%(filepath)s",
+		"-o", outTpl,
+	}
+	args = append(d.ytDLPAuthArgs(), args...)
+	if maxMB := d.maxSizeMB(); maxMB > 0 {
+		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
+	}
+	args = append(args, url)
+	if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
+		args = append([]string{"--proxy", "socks5://" + proxy}, args...)
+	}
+	return args
 }
 
 func (d Downloader) Probe(ctx context.Context, rawURL string) (ProbeResult, error) {

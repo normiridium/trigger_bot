@@ -854,6 +854,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			log.Printf("media video downloaded chat=%d path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
 		}
 		videoPath := res.FilePath
+		if !videoHasAudioTrack(videoPath) {
+			return errors.New("в этом видео нет доступной аудиодорожки у источника")
+		}
 		coubLoopPath := ""
 		defer func() {
 			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
@@ -956,6 +959,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			}
 			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
 		default:
+			if !videoHasAudioTrack(mediaPath) {
+				return errors.New("в этом видео нет доступной аудиодорожки у источника")
+			}
 			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
 				if progress != nil {
 					progress.SetFrame(8) // 90%
@@ -1009,6 +1015,19 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		progress.SetStage("Отправка аудио")
 	}
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+}
+
+func videoHasAudioTrack(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func withMediaDownloadProgress(ctx context.Context, progress *mediaProgressHandle) context.Context {

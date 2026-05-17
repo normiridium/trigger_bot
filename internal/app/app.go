@@ -3004,6 +3004,9 @@ func Run() {
 			) {
 				continue
 			}
+			if handleVoiceTranslateOptionCallback(bot, update.Update.CallbackQuery) {
+				continue
+			}
 			if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
 				continue
 			}
