@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
@@ -1639,12 +1638,25 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			}
 			return
 		}
-		txt := subtitlesToPlainText(subsPath)
-		if strings.TrimSpace(txt) == "" {
+		txt := strings.TrimSpace(subtitlesToPlainText(subsPath))
+		if txt == "" {
 			reply(sendCtx, "Не удалось извлечь текст из субтитров VOT.", false)
 			return
 		}
-		sendHTML(sendCtx, "<b>Текст перевода:</b>\n"+html.EscapeString(strings.TrimSpace(txt)), false)
+		tmp, e := os.CreateTemp("", "translate_text_*.txt")
+		if e != nil {
+			reply(sendCtx, "Не удалось подготовить текстовый файл перевода.", false)
+			return
+		}
+		_ = tmp.Close()
+		defer os.Remove(tmp.Name())
+		if err := os.WriteFile(tmp.Name(), []byte(txt+"\n"), 0o644); err != nil {
+			reply(sendCtx, "Не удалось сохранить текстовый файл перевода.", false)
+			return
+		}
+		if err := sendDocumentFromFile(sendCtx, tmp.Name(), ""); err != nil {
+			reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
+		}
 		return
 	}
 
