@@ -16,7 +16,7 @@ import (
 )
 
 type moderationRequest struct {
-	Action      string
+	Action      moderationAction
 	Silent      bool
 	Targets     []string
 	Duration    time.Duration
@@ -24,9 +24,53 @@ type moderationRequest struct {
 	Reason      string
 }
 
+type moderationAction string
+
 const (
 	moderationConfirmQuestionCount = 3
+
+	moderationActionBan         moderationAction = "ban"
+	moderationActionUnban       moderationAction = "unban"
+	moderationActionMute        moderationAction = "mute"
+	moderationActionUnmute      moderationAction = "unmute"
+	moderationActionKick        moderationAction = "kick"
+	moderationActionReadonly    moderationAction = moderationAction(cmdReadonly)
+	moderationActionReloadAdmin moderationAction = moderationAction(cmdReloadAdmins)
 )
+
+type moderationCommandSpec struct {
+	Action moderationAction
+	Silent bool
+}
+
+var moderationCommandMap = map[string]moderationCommandSpec{
+	"!ban":           {Action: moderationActionBan},
+	"/ban":           {Action: moderationActionBan},
+	"!sban":          {Action: moderationActionBan, Silent: true},
+	"/sban":          {Action: moderationActionBan, Silent: true},
+	"!unban":         {Action: moderationActionUnban},
+	"/unban":         {Action: moderationActionUnban},
+	"!sunban":        {Action: moderationActionUnban, Silent: true},
+	"/sunban":        {Action: moderationActionUnban, Silent: true},
+	"!mute":          {Action: moderationActionMute},
+	"/mute":          {Action: moderationActionMute},
+	"!smute":         {Action: moderationActionMute, Silent: true},
+	"/smute":         {Action: moderationActionMute, Silent: true},
+	"!unmute":        {Action: moderationActionUnmute},
+	"/unmute":        {Action: moderationActionUnmute},
+	"!kick":          {Action: moderationActionKick},
+	"/kick":          {Action: moderationActionKick},
+	"!skick":         {Action: moderationActionKick, Silent: true},
+	"/skick":         {Action: moderationActionKick, Silent: true},
+	"!readonly":      {Action: moderationActionReadonly},
+	"/readonly":      {Action: moderationActionReadonly},
+	"!ro":            {Action: moderationActionReadonly},
+	"/ro":            {Action: moderationActionReadonly},
+	"!channelmode":   {Action: moderationActionReadonly},
+	"/channelmode":   {Action: moderationActionReadonly},
+	"!reload_admins": {Action: moderationActionReloadAdmin},
+	"/reload_admins": {Action: moderationActionReloadAdmin},
+}
 
 type moderationConfirmState struct {
 	ID           string
@@ -146,17 +190,17 @@ func genderedModerationVerb(tag, male, female, unknown string) string {
 	})
 }
 
-func moderationActionVerb(action, senderTag string) string {
-	switch strings.TrimSpace(action) {
-	case "ban":
+func moderationActionVerb(action moderationAction, senderTag string) string {
+	switch action {
+	case moderationActionBan:
 		return genderedModerationVerb(senderTag, "забанил", "забанила", "забанил(а)")
-	case "unban":
+	case moderationActionUnban:
 		return genderedModerationVerb(senderTag, "разбанил", "разбанила", "разбанил(а)")
-	case "mute":
+	case moderationActionMute:
 		return genderedModerationVerb(senderTag, "замьютил", "замьютила", "замьютил(а)")
-	case "unmute":
+	case moderationActionUnmute:
 		return genderedModerationVerb(senderTag, "размьютил", "размьютила", "размьютил(а)")
-	case "kick":
+	case moderationActionKick:
 		return genderedModerationVerb(senderTag, "кикнул", "кикнула", "кикнул(а)")
 	default:
 		return genderedModerationVerb(senderTag, "изменил", "изменила", "изменил(а)")
@@ -189,42 +233,18 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 	args := parts[1:]
 	out := moderationRequest{Reason: reason}
 
-	switch cmd {
-	case "!ban", "/ban":
-		out.Action = "ban"
-	case "!sban", "/sban":
-		out.Action = "ban"
-		out.Silent = true
-	case "!unban", "/unban":
-		out.Action = "unban"
-	case "!sunban", "/sunban":
-		out.Action = "unban"
-		out.Silent = true
-	case "!mute", "/mute":
-		out.Action = "mute"
-	case "!smute", "/smute":
-		out.Action = "mute"
-		out.Silent = true
-	case "!unmute", "/unmute":
-		out.Action = "unmute"
-	case "!kick", "/kick":
-		out.Action = "kick"
-	case "!skick", "/skick":
-		out.Action = "kick"
-		out.Silent = true
-	case "!readonly", "!ro", "!channelmode", "/readonly", "/ro", "/channelmode":
-		out.Action = cmdReadonly
-	case "!reload_admins", "/reload_admins":
-		out.Action = cmdReloadAdmins
-	default:
+	spec, ok := moderationCommandMap[cmd]
+	if !ok {
 		return moderationRequest{}, false, nil
 	}
+	out.Action = spec.Action
+	out.Silent = spec.Silent
 
-	if out.Action == cmdReloadAdmins {
+	if out.Action == moderationActionReloadAdmin {
 		return out, true, nil
 	}
 
-	if out.Action == cmdReadonly {
+	if out.Action == moderationActionReadonly {
 		if len(args) > 0 {
 			if d, ok := parseModerationDurationToken(args[0]); ok {
 				out.Duration = d
@@ -238,7 +258,7 @@ func parseModerationCommand(text string) (moderationRequest, bool, error) {
 	for _, a := range args {
 		v := strings.TrimSpace(strings.Trim(a, ",;"))
 		if v != "" {
-			if (out.Action == "ban" || out.Action == "mute") && out.Duration == 0 {
+			if (out.Action == moderationActionBan || out.Action == moderationActionMute) && out.Duration == 0 {
 				if d, ok := parseModerationDurationToken(v); ok {
 					out.Duration = d
 					out.DurationRaw = strings.ToLower(strings.TrimSpace(v))
@@ -363,22 +383,22 @@ func syncAdminCacheForUser(bot *tgbotapi.BotAPI, cache *adminStatusCache, chatID
 	return isAdmin
 }
 
-func moderationRequiresConfirm(action string) bool {
+func moderationRequiresConfirm(action moderationAction) bool {
 	switch action {
-	case "ban", "mute", "kick":
+	case moderationActionBan, moderationActionMute, moderationActionKick:
 		return true
 	default:
 		return false
 	}
 }
 
-func moderationConfirmQuestions(action string) [moderationConfirmQuestionCount]string {
+func moderationConfirmQuestions(action moderationAction) [moderationConfirmQuestionCount]string {
 	questions := [moderationConfirmQuestionCount]string{
 		"Нарушение правил действительно есть",
 		"Это не первое нарушение",
 		"Наказание соразмерно ситуации",
 	}
-	if action == cmdMute {
+	if action == moderationActionMute {
 		questions[1] = "Пользователь получал предупреждение"
 	}
 	return questions
@@ -386,24 +406,24 @@ func moderationConfirmQuestions(action string) [moderationConfirmQuestionCount]s
 
 func moderationActionLabel(req moderationRequest) string {
 	switch req.Action {
-	case "ban":
+	case moderationActionBan:
 		if req.Duration > 0 {
 			return "Бан на " + humanModerationDurationRU(req.Duration, req.DurationRaw)
 		}
 		return "Бан"
-	case "mute":
+	case moderationActionMute:
 		if req.Duration > 0 {
 			return "Мут на " + humanModerationDurationRU(req.Duration, req.DurationRaw)
 		}
 		return "Мут"
-	case "kick":
+	case moderationActionKick:
 		return "Кик"
-	case "unban":
+	case moderationActionUnban:
 		return "Разбан"
-	case "unmute":
+	case moderationActionUnmute:
 		return "Размут"
 	default:
-		return strings.ToUpper(req.Action)
+		return strings.ToUpper(string(req.Action))
 	}
 }
 
@@ -472,7 +492,7 @@ func applyModerationToTargets(bot *tgbotapi.BotAPI, store *Store, chatID int64, 
 		cfgMember := tgbotapi.ChatMemberConfig{ChatID: chatID, UserID: uid}
 		var err error
 		switch req.Action {
-		case "ban":
+		case moderationActionBan:
 			cfg := tgbotapi.BanChatMemberConfig{
 				ChatMemberConfig: cfgMember,
 				RevokeMessages:   true,
@@ -481,12 +501,12 @@ func applyModerationToTargets(bot *tgbotapi.BotAPI, store *Store, chatID int64, 
 				cfg.UntilDate = time.Now().Add(req.Duration).Unix()
 			}
 			_, err = bot.Request(cfg)
-		case "unban":
+		case moderationActionUnban:
 			_, err = bot.Request(tgbotapi.UnbanChatMemberConfig{
 				ChatMemberConfig: cfgMember,
 				OnlyIfBanned:     false,
 			})
-		case "mute":
+		case moderationActionMute:
 			cfg := tgbotapi.RestrictChatMemberConfig{
 				ChatMemberConfig: cfgMember,
 				Permissions:      &tgbotapi.ChatPermissions{},
@@ -505,12 +525,12 @@ func applyModerationToTargets(bot *tgbotapi.BotAPI, store *Store, chatID int64, 
 					_ = store.DeleteScheduledUnmute(chatID, uid)
 				}
 			}
-		case "unmute":
+		case moderationActionUnmute:
 			err = unmuteChatMember(bot, chatID, uid)
 			if err == nil && store != nil {
 				_ = store.DeleteScheduledUnmute(chatID, uid)
 			}
-		case "kick":
+		case moderationActionKick:
 			_, err = bot.Request(tgbotapi.BanChatMemberConfig{
 				ChatMemberConfig: cfgMember,
 				UntilDate:        time.Now().Add(45 * time.Second).Unix(),
@@ -523,7 +543,7 @@ func applyModerationToTargets(bot *tgbotapi.BotAPI, store *Store, chatID int64, 
 				})
 			}
 		default:
-			err = fmt.Errorf("unsupported moderation action: %s", req.Action)
+			err = fmt.Errorf("unsupported moderation action: %s", string(req.Action))
 		}
 		if err != nil && firstErr == nil {
 			firstErr = err
@@ -553,7 +573,7 @@ func buildModerationResultText(userIndex *chatUserIndex, chatID int64, moderator
 	b.WriteString(verb)
 	b.WriteByte(' ')
 	b.WriteString(strings.Join(targetLinks, ", "))
-	if req.DurationRaw != "" && (req.Action == "ban" || req.Action == "mute") {
+	if req.DurationRaw != "" && (req.Action == moderationActionBan || req.Action == moderationActionMute) {
 		b.WriteString(" на ")
 		b.WriteString(html.EscapeString(humanModerationDurationRU(req.Duration, req.DurationRaw)))
 	}
@@ -670,7 +690,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		senderTag = getChatMemberTagRaw(ctx.Bot.Token, msg.Chat.ID, msg.From.ID)
 	}
 
-	if req.Action == cmdReloadAdmins {
+	if req.Action == moderationActionReloadAdmin {
 		if ctx.AdminCache == nil {
 			reply(sendCtx.WithReply(msg.MessageID), "Кэш админов недоступен.", false)
 			return true
@@ -694,7 +714,7 @@ func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text 
 		return true
 	}
 
-	if req.Action == cmdReadonly {
+	if req.Action == moderationActionReadonly {
 		turnOn := true
 		if ctx.Readonly != nil && ctx.Readonly.IsOn(msg.Chat.ID) {
 			turnOn = false
