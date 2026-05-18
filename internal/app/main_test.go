@@ -143,6 +143,7 @@ func TestExtractSupportedMediaURL(t *testing.T) {
 		{in: "скачай https://www.youtube.com/watch?v=abc123", want: "https://www.youtube.com/watch?v=abc123"},
 		{in: "линк https://instagram.com/reel/ABCDEF/?igsh=123", want: "https://instagram.com/reel/ABCDEF/?igsh=123"},
 		{in: "вот https://www.tiktok.com/@artist/video/123456789", want: "https://www.tiktok.com/@artist/video/123456789"},
+		{in: "вк https://vk.com/audio-2000703018_12703018", want: "https://vk.com/audio-2000703018_12703018"},
 		{in: "https://soundcloud.com/artist/track", want: "https://soundcloud.com/artist/track"},
 		{in: "смотри https://x.com/artist/status/1234567890", want: "https://x.com/artist/status/1234567890"},
 		{in: "https://example.org/video", want: ""},
@@ -434,6 +435,10 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 	mode, interactive = mediaModeAndInteractivity("x", true)
 	if mode != "video" || interactive {
 		t.Fatalf("x must force video/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity("vk", true)
+	if mode != "audio" || interactive {
+		t.Fatalf("vk must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity("youtube", true)
 	if mode != "audio" || !interactive {

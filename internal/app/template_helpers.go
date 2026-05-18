@@ -1878,6 +1878,9 @@ func mediaModeAndInteractivity(service string, interactive bool) (mode string, u
 	switch service {
 	case "soundcloud":
 		return mediadl.ModeAudio, false
+	case "vk":
+		// VK music links should go straight to audio download.
+		return mediadl.ModeAudio, false
 	case "coub":
 		return mediadl.ModeAuto, interactive
 	case "instagram":

@@ -2695,7 +2695,7 @@ func Run() {
 	}
 	spotifyDownloader := spotifymusic.Downloader{
 		YTDLPBin:     strings.TrimSpace(os.Getenv("YTDLP_BIN")),
-		ProxySocks:   strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		ProxySocks:   "",
 		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 	}
@@ -2717,13 +2717,20 @@ func Run() {
 	if mediaMaxMB <= 0 {
 		mediaMaxMB = telegramUploadMaxMB
 	}
+	mediaCookiesFile := strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FILE"))
+	if mediaCookiesFile == "" {
+		const defaultCookiesPath = "/home/appuser/trigger_admin_bot/cookies.txt"
+		if st, statErr := os.Stat(defaultCookiesPath); statErr == nil && st != nil && !st.IsDir() && st.Size() > 0 {
+			mediaCookiesFile = defaultCookiesPath
+		}
+	}
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		ProxySocks:         strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
 		AudioFormat:        strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality:       strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 		ExtractorArgs:      strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
-		CookiesFile:        strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FILE")),
+		CookiesFile:        mediaCookiesFile,
 		CookiesFromBrowser: strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
 		MaxSizeMB:          mediaMaxMB,
 		MaxHeight:          envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),

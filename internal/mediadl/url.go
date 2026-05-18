@@ -18,6 +18,8 @@ func NormalizeSupportedURL(raw string) (normalized string, service string, ok bo
 	switch {
 	case host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" || host == "youtu.be":
 		return raw, "youtube", true
+	case host == "vk.com" || host == "www.vk.com" || host == "m.vk.com" || host == "vk.ru" || host == "www.vk.ru":
+		return raw, "vk", true
 	case host == "instagram.com" || host == "www.instagram.com":
 		return raw, "instagram", true
 	case host == "tiktok.com" || host == "www.tiktok.com" || host == "m.tiktok.com" || host == "vm.tiktok.com" || host == "vt.tiktok.com":

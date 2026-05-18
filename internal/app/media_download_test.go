@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestSanitizeMetaValue(t *testing.T) {
 	got := sanitizeMetaValue("  hi\x00there  ", 20)
@@ -44,5 +48,24 @@ func TestNormalizeID3LyricsLang(t *testing.T) {
 	}
 	if got := normalizeID3LyricsLang("12#"); got != "eng" {
 		t.Fatalf("expected eng fallback for invalid code, got %q", got)
+	}
+}
+
+func TestUserFacingMediaDownloadErrorVKBadbrowser(t *testing.T) {
+	err := errors.New("yt-dlp probe failed: exit status 1: ERROR: Unsupported URL: https://vk.com/badbrowser.php")
+	got := userFacingMediaDownloadError(err)
+	if !strings.Contains(got, "VK временно не выдал медиа-поток") {
+		t.Fatalf("unexpected message: %q", got)
+	}
+}
+
+func TestUserFacingMediaDownloadErrorFallbackKeepsReason(t *testing.T) {
+	err := errors.New("yt-dlp probe failed: exit status 1")
+	got := userFacingMediaDownloadError(err)
+	if !strings.Contains(got, "yt-dlp probe failed") {
+		t.Fatalf("expected raw reason, got %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "неизвестная ошибка") {
+		t.Fatalf("unexpected unknown error fallback: %q", got)
 	}
 }

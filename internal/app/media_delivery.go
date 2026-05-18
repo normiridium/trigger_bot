@@ -615,6 +615,8 @@ func mediaServiceEmoji(service, mode string) string {
 			return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 		case "x":
 			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
+		case "vk":
+			return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
 		case "soundcloud":
 			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 		default:
@@ -632,6 +634,8 @@ func mediaServiceEmoji(service, mode string) string {
 		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 	case "x":
 		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
+	case "vk":
+		return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
 	default:
 		return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 	}

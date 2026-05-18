@@ -29,3 +29,6 @@ backups/
 
 # runtime temp/cache artifacts
 static/tmp/
+
+# local proxy runtime/config artifacts
+.singbox/

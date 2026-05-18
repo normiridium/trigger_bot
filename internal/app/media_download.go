@@ -751,7 +751,8 @@ func userFacingMediaDownloadError(err error) string {
 	if err == nil {
 		return "не удалось скачать: неизвестная ошибка"
 	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	compact := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
+	msg := strings.ToLower(compact)
 	switch {
 	case strings.Contains(msg, "request entity too large"):
 		return "файл слишком большой для отправки в Telegram"
@@ -765,10 +766,15 @@ func userFacingMediaDownloadError(err error) string {
 		return "YouTube временно не выдал медиа-потоки для этого видео"
 	case strings.Contains(msg, "only images are available for download") || strings.Contains(msg, "storyboard"):
 		return "YouTube вернул только storyboard вместо аудио/видео"
+	case strings.Contains(msg, "vk.com/badbrowser.php") || strings.Contains(msg, "vk.ru/badbrowser.php"):
+		return "VK временно не выдал медиа-поток (badbrowser), попробуйте позже"
 	case strings.Contains(msg, "unsupported media url"):
 		return "ссылка не поддерживается"
 	default:
-		return "не удалось скачать: неизвестная ошибка"
+		if compact == "" {
+			return "не удалось скачать: неизвестная ошибка"
+		}
+		return "не удалось скачать: " + clipText(compact, 220)
 	}
 }
 
