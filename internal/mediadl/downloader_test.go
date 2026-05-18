@@ -40,11 +40,8 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 		MaxHeight:          480,
 		ProxySocks:         "127.0.0.1:1234",
 	}
-	args := d.buildDownloadArgs("https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
+	args := d.buildDownloadArgs("vk", "https://vk.com/audio-2000703018_12703018", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--proxy socks5://127.0.0.1:1234") {
-		t.Fatalf("expected proxy args, got: %s", joined)
-	}
 	if !strings.Contains(joined, "--audio-format m4a") || !strings.Contains(joined, "--audio-quality 192K") {
 		t.Fatalf("expected audio args, got: %s", joined)
 	}
@@ -62,6 +59,19 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 	}
 }
 
+func TestWithVKProxyArgs(t *testing.T) {
+	d := Downloader{ProxySocks: "127.0.0.1:1234"}
+	base := []string{"--quiet", "https://vk.com/audio-1_2"}
+	vk := d.withVKProxyArgs("vk", append([]string{}, base...))
+	if got := strings.Join(vk, " "); !strings.Contains(got, "--proxy socks5://127.0.0.1:1234") {
+		t.Fatalf("expected vk proxy args, got: %s", got)
+	}
+	yt := d.withVKProxyArgs("youtube", append([]string{}, base...))
+	if got := strings.Join(yt, " "); strings.Contains(got, "--proxy") {
+		t.Fatalf("did not expect proxy for youtube, got: %s", got)
+	}
+}
+
 func TestAudioFormatSelectorsForRetry(t *testing.T) {
 	d := Downloader{MaxHeight: 480}
 	got := strings.Join(d.audioFormatSelectorsForRetry(), " | ")
@@ -75,7 +85,7 @@ func TestAudioFormatSelectorsForRetry(t *testing.T) {
 
 func TestDownloaderBuildVideoDownloadArgs(t *testing.T) {
 	d := Downloader{MaxSizeMB: 55, MaxHeight: 720}
-	args := d.buildVideoDownloadArgs("https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
+	args := d.buildVideoDownloadArgs("youtube", "https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--merge-output-format mp4") {
 		t.Fatalf("expected mp4 merge, got: %s", joined)
@@ -88,9 +98,23 @@ func TestDownloaderBuildVideoDownloadArgs(t *testing.T) {
 	}
 }
 
+func TestVideoFormatSelectorsForRetry(t *testing.T) {
+	d := Downloader{MaxHeight: 720}
+	got := strings.Join(d.videoFormatSelectorsForRetry(), " | ")
+	if !strings.Contains(got, "bestvideo[height<=720]+bestaudio") {
+		t.Fatalf("expected primary selector, got: %s", got)
+	}
+	if !strings.Contains(got, "best[height<=720]/best") {
+		t.Fatalf("expected constrained best selector, got: %s", got)
+	}
+	if !strings.Contains(got, "bestvideo+bestaudio/best") || !strings.Contains(got, "best") {
+		t.Fatalf("expected generic fallback selectors, got: %s", got)
+	}
+}
+
 func TestDownloaderBuildProbeArgsWithoutFormat(t *testing.T) {
 	d := Downloader{CookiesFile: "/tmp/cookies.txt"}
-	args := d.buildProbeArgs("https://instagram.com/reel/abc", "")
+	args := d.buildProbeArgs("instagram", "https://instagram.com/reel/abc", "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, " -f ") || strings.HasPrefix(joined, "-f ") {
 		t.Fatalf("unexpected format flag in probe args: %s", joined)
@@ -108,6 +132,8 @@ func TestNormalizeSupportedURL(t *testing.T) {
 	}{
 		{in: "https://www.youtube.com/watch?v=abc", service: "youtube", ok: true},
 		{in: "https://youtu.be/abc", service: "youtube", ok: true},
+		{in: "https://vk.com/audio-2000703018_12703018", service: "vk", ok: true},
+		{in: "https://m.vk.com/video-1_456239017", service: "vk", ok: true},
 		{in: "https://www.instagram.com/reel/abc/", service: "instagram", ok: true},
 		{in: "https://www.tiktok.com/@artist/video/123456789", service: "tiktok", ok: true},
 		{in: "https://vm.tiktok.com/ZM123abc/", service: "tiktok", ok: true},
