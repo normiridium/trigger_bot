@@ -1764,6 +1764,27 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
+func resolveDefaultCookiesFile() string {
+	candidates := []string{"cookies.txt"}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := strings.TrimSpace(filepath.Dir(exePath))
+		if exeDir != "" {
+			candidates = append(candidates, filepath.Join(exeDir, "cookies.txt"))
+		}
+	}
+	for _, path := range candidates {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		st, err := os.Stat(path)
+		if err == nil && st != nil && !st.IsDir() && st.Size() > 0 {
+			return path
+		}
+	}
+	return ""
+}
+
 func gptReplyReactionChancePercent() int {
 	v := envInt("GPT_REPLY_REACTION_CHANCE_PERCENT", 25)
 	if v < 0 {
@@ -2719,10 +2740,7 @@ func Run() {
 	}
 	mediaCookiesFile := strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FILE"))
 	if mediaCookiesFile == "" {
-		const defaultCookiesPath = "/home/appuser/trigger_admin_bot/cookies.txt"
-		if st, statErr := os.Stat(defaultCookiesPath); statErr == nil && st != nil && !st.IsDir() && st.Size() > 0 {
-			mediaCookiesFile = defaultCookiesPath
-		}
+		mediaCookiesFile = resolveDefaultCookiesFile()
 	}
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),

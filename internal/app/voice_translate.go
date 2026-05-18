@@ -115,7 +115,47 @@ var (
 	voiceCacheMongoOK       bool
 )
 
-const voiceTranslateCacheIndexPath = "/home/appuser/trigger_admin_bot/static/tmp/voice_cache_index.json"
+func voiceTranslateTmpDir() string {
+	if v := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_TMP_DIR")); v != "" {
+		return v
+	}
+	return filepath.Join("static", "tmp")
+}
+
+func voiceTranslateCacheIndexPath() string {
+	if v := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_CACHE_INDEX_PATH")); v != "" {
+		return v
+	}
+	return filepath.Join(voiceTranslateTmpDir(), "voice_cache_index.json")
+}
+
+func voiceTranslateCacheDir() string {
+	return filepath.Dir(voiceTranslateCacheIndexPath())
+}
+
+func voiceTranslateCacheMP3Path(cacheKey string) string {
+	return filepath.Join(voiceTranslateCacheDir(), "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+}
+
+func pathWithinVoiceTranslateTmpDir(path string) bool {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return false
+	}
+	absPath, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	absTmp, err := filepath.Abs(voiceTranslateTmpDir())
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absTmp, absPath)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
 
 func voiceTranslateMongoCollection() (*mongo.Collection, bool) {
 	voiceCacheMongoInitOnce.Do(func() {
@@ -348,7 +388,7 @@ func voiceSourceCachePath(fileID string) string {
 		return ""
 	}
 	sum := sha1.Sum([]byte(id))
-	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_vot_src_cache_"+fmt.Sprintf("%x", sum)+".mp4")
+	return filepath.Join(voiceTranslateCacheDir(), "voice_vot_src_cache_"+fmt.Sprintf("%x", sum)+".mp4")
 }
 
 func getVoiceSourceCache(fileID string) (string, bool) {
@@ -407,7 +447,7 @@ func voiceSubtitlesCachePath(cacheKey string) string {
 		return ""
 	}
 	sum := sha1.Sum([]byte(k))
-	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_subs_cache_"+fmt.Sprintf("%x", sum)+".srt")
+	return filepath.Join(voiceTranslateCacheDir(), "voice_subs_cache_"+fmt.Sprintf("%x", sum)+".srt")
 }
 
 func voiceTextCachePath(cacheKey string) string {
@@ -416,7 +456,7 @@ func voiceTextCachePath(cacheKey string) string {
 		return ""
 	}
 	sum := sha1.Sum([]byte(k))
-	return filepath.Join(filepath.Dir(voiceTranslateCacheIndexPath), "voice_text_cache_"+fmt.Sprintf("%x", sum)+".txt")
+	return filepath.Join(voiceTranslateCacheDir(), "voice_text_cache_"+fmt.Sprintf("%x", sum)+".txt")
 }
 
 func getFreshFile(path string) (string, bool) {
@@ -484,7 +524,7 @@ func cleanupVoiceTranslateStartup() {
 			maxAgeSec = 300
 		}
 		maxAge := time.Duration(maxAgeSec) * time.Second
-		tmpDir := filepath.Dir(voiceTranslateCacheIndexPath)
+		tmpDir := voiceTranslateCacheDir()
 
 		keepCacheFiles := map[string]struct{}{}
 		voiceTranslateCacheMu.Lock()
@@ -575,11 +615,17 @@ func cleanupVoiceTranslateStartup() {
 func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang string) (string, error) {
 	bin := strings.TrimSpace(os.Getenv("VOT_CLI_BIN"))
 	if bin == "" {
-		bin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/vot-cli"
+		bin = "vot-cli"
 	}
 	nodeBin := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_NODE_BIN"))
 	if nodeBin == "" {
-		nodeBin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/node"
+		nodeBin = "node"
+	}
+	if path, err := exec.LookPath(bin); err == nil {
+		bin = path
+	}
+	if path, err := exec.LookPath(nodeBin); err == nil {
+		nodeBin = path
 	}
 	useNodeWrapper := false
 	if _, err := os.Stat(nodeBin); err == nil {
@@ -613,9 +659,7 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 	} else {
 		cmd = exec.Command(bin, args...)
 	}
-	cmd.Env = append(os.Environ(),
-		"PATH=/home/appuser/.nvm/versions/node/v20.20.2/bin:"+os.Getenv("PATH"),
-	)
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("vot-cli failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
@@ -671,11 +715,17 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang, outFormat string) (string, error) {
 	bin := strings.TrimSpace(os.Getenv("VOT_CLI_BIN"))
 	if bin == "" {
-		bin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/vot-cli"
+		bin = "vot-cli"
 	}
 	nodeBin := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_NODE_BIN"))
 	if nodeBin == "" {
-		nodeBin = "/home/appuser/.nvm/versions/node/v20.20.2/bin/node"
+		nodeBin = "node"
+	}
+	if path, err := exec.LookPath(bin); err == nil {
+		bin = path
+	}
+	if path, err := exec.LookPath(nodeBin); err == nil {
+		nodeBin = path
 	}
 	useNodeWrapper := false
 	if _, err := os.Stat(nodeBin); err == nil {
@@ -716,9 +766,7 @@ func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 	} else {
 		cmd = exec.Command(bin, args...)
 	}
-	cmd.Env = append(os.Environ(),
-		"PATH=/home/appuser/.nvm/versions/node/v20.20.2/bin:"+os.Getenv("PATH"),
-	)
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("vot-cli subs failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
@@ -1920,7 +1968,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 				log.Printf("voice translate subtitles warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
 			}
 		} else if strings.TrimSpace(seedOut) != "" {
-			cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+			cacheDst := voiceTranslateCacheMP3Path(cacheKey)
 			if in, err := os.Open(seedOut); err == nil {
 				if out, err2 := os.Create(cacheDst); err2 == nil {
 					_, _ = io.Copy(out, in)
@@ -1954,7 +2002,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 				}
 				seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed_retry", srcLang, resLang)
 				if seedErr == nil && strings.TrimSpace(seedOut) != "" {
-					cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+					cacheDst := voiceTranslateCacheMP3Path(cacheKey)
 					if in, openErr := os.Open(seedOut); openErr == nil {
 						if out, createErr := os.Create(cacheDst); createErr == nil {
 							_, _ = io.Copy(out, in)
@@ -2084,8 +2132,8 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		providerUsed = "vot-cli"
 	}
-	if !strings.HasPrefix(mp3Path, "/home/appuser/trigger_admin_bot/static/tmp/") {
-		cacheDst := filepath.Join("/home/appuser/trigger_admin_bot/static/tmp", "voice_cache_"+fmt.Sprintf("%x", sha1.Sum([]byte(cacheKey)))+".mp3")
+	if !pathWithinVoiceTranslateTmpDir(mp3Path) {
+		cacheDst := voiceTranslateCacheMP3Path(cacheKey)
 		if in, err := os.Open(mp3Path); err == nil {
 			if out, err2 := os.Create(cacheDst); err2 == nil {
 				_, _ = io.Copy(out, in)
