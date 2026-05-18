@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"trigger-admin-bot/internal/chataccess"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -17,61 +18,6 @@ var openAIQuotaErrorState = struct {
 	last map[int64]time.Time
 }{
 	last: make(map[int64]time.Time),
-}
-
-type chatAllowList struct {
-	enabled bool
-	ids     map[int64]struct{}
-}
-
-type disallowedChatNotifier struct {
-	mu   sync.Mutex
-	last map[int64]time.Time
-	ttl  time.Duration
-}
-
-func parseAllowedChatIDs(raw string) (chatAllowList, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return chatAllowList{enabled: false}, nil
-	}
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
-	})
-	ids := make(map[int64]struct{}, len(parts))
-	for _, part := range parts {
-		v := strings.TrimSpace(part)
-		if v == "" {
-			continue
-		}
-		id, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return chatAllowList{}, fmt.Errorf("invalid ALLOWED_CHAT_IDS value %q: %w", v, err)
-		}
-		ids[id] = struct{}{}
-	}
-	if len(ids) == 0 {
-		return chatAllowList{enabled: false}, nil
-	}
-	return chatAllowList{enabled: true, ids: ids}, nil
-}
-
-func (a chatAllowList) Allows(chatID int64) bool {
-	if !a.enabled {
-		return true
-	}
-	_, ok := a.ids[chatID]
-	return ok
-}
-
-func newDisallowedChatNotifier(ttl time.Duration) *disallowedChatNotifier {
-	if ttl <= 0 {
-		ttl = 10 * time.Minute
-	}
-	return &disallowedChatNotifier{
-		last: make(map[int64]time.Time),
-		ttl:  ttl,
-	}
 }
 
 func isOpenAIInsufficientQuotaError(err error) bool {
@@ -119,27 +65,6 @@ func pickOlenyamHungryTrigger(items []Trigger, isAdmin bool) *Trigger {
 	return nil
 }
 
-func (n *disallowedChatNotifier) shouldNotify(chatID int64, now time.Time) bool {
-	if n == nil || chatID == 0 {
-		return false
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if prev, ok := n.last[chatID]; ok && now.Sub(prev) < n.ttl {
-		return false
-	}
-	return true
-}
-
-func (n *disallowedChatNotifier) markNotified(chatID int64, now time.Time) {
-	if n == nil || chatID == 0 {
-		return
-	}
-	n.mu.Lock()
-	n.last[chatID] = now
-	n.mu.Unlock()
-}
-
 func notifyDisallowedChat(bot *tgbotapi.BotAPI, chatID int64) error {
 	if bot == nil || chatID == 0 {
 		return errors.New("invalid notifyDisallowedChat args")
@@ -159,16 +84,7 @@ func notifyDisallowedChat(bot *tgbotapi.BotAPI, chatID int64) error {
 	return nil
 }
 
-func isActiveChatMemberStatus(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "member", "administrator", "creator":
-		return true
-	default:
-		return false
-	}
-}
-
-func handleDisallowedMyChatMemberNotice(bot *tgbotapi.BotAPI, allowed chatAllowList, notifier *disallowedChatNotifier, upd *rawChatMemberUpdated) {
+func handleDisallowedMyChatMemberNotice(bot *tgbotapi.BotAPI, allowed chataccess.AllowList, notifier *chataccess.DisallowedChatNotifier, upd *rawChatMemberUpdated) {
 	if bot == nil || upd == nil || upd.Chat == nil || upd.NewChatMember == nil || upd.NewChatMember.User == nil {
 		return
 	}
@@ -182,7 +98,7 @@ func handleDisallowedMyChatMemberNotice(bot *tgbotapi.BotAPI, allowed chatAllowL
 		oldStatus = strings.TrimSpace(upd.OldChatMember.Status)
 	}
 	// Notify only when bot becomes active in chat (added/unbanned), not on every status change.
-	if !isActiveChatMemberStatus(newStatus) || isActiveChatMemberStatus(oldStatus) {
+	if !chataccess.IsActiveChatMemberStatus(newStatus) || chataccess.IsActiveChatMemberStatus(oldStatus) {
 		return
 	}
 	chatID := upd.Chat.ID
@@ -190,10 +106,10 @@ func handleDisallowedMyChatMemberNotice(bot *tgbotapi.BotAPI, allowed chatAllowL
 		return
 	}
 	now := time.Now()
-	if !notifier.shouldNotify(chatID, now) {
+	if !notifier.ShouldNotify(chatID, now) {
 		return
 	}
 	if err := notifyDisallowedChat(bot, chatID); err == nil {
-		notifier.markNotified(chatID, now)
+		notifier.MarkNotified(chatID, now)
 	}
 }

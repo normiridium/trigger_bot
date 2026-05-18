@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"trigger-admin-bot/internal/chataccess"
 	"trigger-admin-bot/internal/chatclear"
 	"trigger-admin-bot/internal/match"
 	"trigger-admin-bot/internal/model"
@@ -1270,14 +1271,15 @@ func (w *WebAdmin) mtprotoChatOptions(rw http.ResponseWriter, r *http.Request) {
 		Title  string `json:"title"`
 	}
 	raw := strings.TrimSpace(os.Getenv("ALLOWED_CHAT_IDS"))
-	allowed, err := parseAllowedChatIDs(raw)
+	allowed, err := chataccess.ParseAllowedChatIDs(raw)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	items := make([]item, 0, len(allowed.ids))
+	allowedIDs := allowed.IDs()
+	items := make([]item, 0, len(allowedIDs))
 	token := strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", ""))
-	for chatID := range allowed.ids {
+	for _, chatID := range allowedIDs {
 		title := resolveChatTitleForAdmin(token, chatID)
 		items = append(items, item{ChatID: chatID, Title: title})
 	}
