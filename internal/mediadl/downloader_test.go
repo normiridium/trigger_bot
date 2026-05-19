@@ -1,6 +1,7 @@
 package mediadl
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -40,7 +41,7 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 		MaxHeight:          480,
 		ProxySocks:         "127.0.0.1:1234",
 	}
-	args := d.buildDownloadArgs("vk", "https://vk.com/audio-2000703018_12703018", "/tmp/%(title)s.%(ext)s")
+	args := d.buildDownloadArgs(ServiceVK, "https://vk.com/audio-2000703018_12703018", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--audio-format m4a") || !strings.Contains(joined, "--audio-quality 192K") {
 		t.Fatalf("expected audio args, got: %s", joined)
@@ -62,11 +63,11 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 func TestWithVKProxyArgs(t *testing.T) {
 	d := Downloader{ProxySocks: "127.0.0.1:1234"}
 	base := []string{"--quiet", "https://vk.com/audio-1_2"}
-	vk := d.withVKProxyArgs("vk", append([]string{}, base...))
+	vk := d.withVKProxyArgs(ServiceVK, append([]string{}, base...))
 	if got := strings.Join(vk, " "); !strings.Contains(got, "--proxy socks5://127.0.0.1:1234") {
 		t.Fatalf("expected vk proxy args, got: %s", got)
 	}
-	yt := d.withVKProxyArgs("youtube", append([]string{}, base...))
+	yt := d.withVKProxyArgs(ServiceYouTube, append([]string{}, base...))
 	if got := strings.Join(yt, " "); strings.Contains(got, "--proxy") {
 		t.Fatalf("did not expect proxy for youtube, got: %s", got)
 	}
@@ -85,7 +86,7 @@ func TestAudioFormatSelectorsForRetry(t *testing.T) {
 
 func TestDownloaderBuildVideoDownloadArgs(t *testing.T) {
 	d := Downloader{MaxSizeMB: 55, MaxHeight: 720}
-	args := d.buildVideoDownloadArgs("youtube", "https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
+	args := d.buildVideoDownloadArgs(ServiceYouTube, "https://youtu.be/abc", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--merge-output-format mp4") {
 		t.Fatalf("expected mp4 merge, got: %s", joined)
@@ -114,7 +115,7 @@ func TestVideoFormatSelectorsForRetry(t *testing.T) {
 
 func TestDownloaderBuildProbeArgsWithoutFormat(t *testing.T) {
 	d := Downloader{CookiesFile: "/tmp/cookies.txt"}
-	args := d.buildProbeArgs("instagram", "https://instagram.com/reel/abc", "")
+	args := d.buildProbeArgs(ServiceInstagram, "https://instagram.com/reel/abc", "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, " -f ") || strings.HasPrefix(joined, "-f ") {
 		t.Fatalf("unexpected format flag in probe args: %s", joined)
@@ -127,21 +128,21 @@ func TestDownloaderBuildProbeArgsWithoutFormat(t *testing.T) {
 func TestNormalizeSupportedURL(t *testing.T) {
 	cases := []struct {
 		in      string
-		service string
+		service Service
 		ok      bool
 	}{
-		{in: "https://www.youtube.com/watch?v=abc", service: "youtube", ok: true},
-		{in: "https://youtu.be/abc", service: "youtube", ok: true},
-		{in: "https://vk.com/audio-2000703018_12703018", service: "vk", ok: true},
-		{in: "https://m.vk.com/video-1_456239017", service: "vk", ok: true},
-		{in: "https://www.instagram.com/reel/abc/", service: "instagram", ok: true},
-		{in: "https://www.tiktok.com/@artist/video/123456789", service: "tiktok", ok: true},
-		{in: "https://vm.tiktok.com/ZM123abc/", service: "tiktok", ok: true},
-		{in: "https://soundcloud.com/artist/track", service: "soundcloud", ok: true},
-		{in: "https://coub.com/view/2x6x9z", service: "coub", ok: true},
-		{in: "https://x.com/artist/status/1234567890", service: "x", ok: true},
-		{in: "https://twitter.com/artist/status/1234567890", service: "x", ok: true},
-		{in: "https://example.org/video", service: "", ok: false},
+		{in: "https://www.youtube.com/watch?v=abc", service: ServiceYouTube, ok: true},
+		{in: "https://youtu.be/abc", service: ServiceYouTube, ok: true},
+		{in: "https://vk.com/audio-2000703018_12703018", service: ServiceVK, ok: true},
+		{in: "https://m.vk.com/video-1_456239017", service: ServiceVK, ok: true},
+		{in: "https://www.instagram.com/reel/abc/", service: ServiceInstagram, ok: true},
+		{in: "https://www.tiktok.com/@artist/video/123456789", service: ServiceTikTok, ok: true},
+		{in: "https://vm.tiktok.com/ZM123abc/", service: ServiceTikTok, ok: true},
+		{in: "https://soundcloud.com/artist/track", service: ServiceSoundCloud, ok: true},
+		{in: "https://coub.com/view/2x6x9z", service: ServiceCoub, ok: true},
+		{in: "https://x.com/artist/status/1234567890", service: ServiceX, ok: true},
+		{in: "https://twitter.com/artist/status/1234567890", service: ServiceX, ok: true},
+		{in: "https://example.org/video", service: ServiceUnknown, ok: false},
 	}
 	for _, tc := range cases {
 		_, service, ok := NormalizeSupportedURL(tc.in)
@@ -173,5 +174,26 @@ func TestInferMediaKindByPath(t *testing.T) {
 	}
 	if got := inferMediaKindByPath("/tmp/a.mp3"); got != MediaKindAudio {
 		t.Fatalf("mp3 should be audio, got %q", got)
+	}
+}
+
+func TestIsYTDLPYouTubeRetryable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "format unavailable", err: errors.New("ERROR: requested format is not available"), want: true},
+		{name: "not a bot", err: errors.New("Sign in to confirm you're not a bot"), want: true},
+		{name: "n challenge", err: errors.New("n challenge solving failed"), want: true},
+		{name: "storyboard only", err: errors.New("Only images are available for download"), want: true},
+		{name: "fatal", err: errors.New("http 500"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tc := range cases {
+		got := isYTDLPYouTubeRetryable(tc.err)
+		if got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
 	}
 }

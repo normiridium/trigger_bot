@@ -602,46 +602,44 @@ func buildMediaAudioTitle(title, sourceURL, service string) string {
 	return clipText(title, 120)
 }
 
-func mediaServiceEmoji(service, mode string) string {
-	service = strings.ToLower(strings.TrimSpace(service))
-	mode = strings.ToLower(strings.TrimSpace(mode))
+func mediaServiceEmoji(service mediadl.Service, mode mediadl.Mode) string {
 	if mode == mediadl.ModeVideo {
 		switch service {
-		case "coub":
+		case mediadl.ServiceCoub:
 			return `<tg-emoji emoji-id="5197233100463039550">🤘</tg-emoji>`
-		case "instagram":
+		case mediadl.ServiceInstagram:
 			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
-		case "tiktok":
+		case mediadl.ServiceTikTok:
 			return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
-		case "x":
+		case mediadl.ServiceX:
 			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
-		case "vk":
+		case mediadl.ServiceVK:
 			return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
-		case "soundcloud":
+		case mediadl.ServiceSoundCloud:
 			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 		default:
 			return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 		}
 	}
 	switch service {
-	case "coub":
+	case mediadl.ServiceCoub:
 		return `<tg-emoji emoji-id="5197233100463039550">🤘</tg-emoji>`
-	case "youtube":
+	case mediadl.ServiceYouTube:
 		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
-	case "instagram":
+	case mediadl.ServiceInstagram:
 		return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
-	case "tiktok":
+	case mediadl.ServiceTikTok:
 		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
-	case "x":
+	case mediadl.ServiceX:
 		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
-	case "vk":
+	case mediadl.ServiceVK:
 		return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
 	default:
 		return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 	}
 }
 
-func buildMediaVideoCaption(path, title, sourceURL, service string) string {
+func buildMediaVideoCaption(path, title, sourceURL string, service mediadl.Service) string {
 	title = strings.TrimSpace(title)
 	sourceURL = strings.TrimSpace(sourceURL)
 	sizeMB := 0.0
@@ -677,7 +675,7 @@ func buildMediaVideoCaption(path, title, sourceURL, service string) string {
 	return head + "\n" + stats
 }
 
-func buildMediaPhotoCaption(path, title, sourceURL, service string) string {
+func buildMediaPhotoCaption(path, title, sourceURL string, service mediadl.Service) string {
 	title = strings.TrimSpace(title)
 	sourceURL = strings.TrimSpace(sourceURL)
 	sizeMB := 0.0

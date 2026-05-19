@@ -91,9 +91,9 @@ func transcodeVideoForLimit(ctx context.Context, sourcePath, outPath string, max
 		"-c:v", "libx264",
 		"-preset", "veryfast",
 		"-pix_fmt", "yuv420p",
-		"-b:v", strconv.Itoa(videoBitrateKbps)+"k",
-		"-maxrate", strconv.Itoa(maxRateKbps)+"k",
-		"-bufsize", strconv.Itoa(bufSizeKbps)+"k",
+		"-b:v", strconv.Itoa(videoBitrateKbps) + "k",
+		"-maxrate", strconv.Itoa(maxRateKbps) + "k",
+		"-bufsize", strconv.Itoa(bufSizeKbps) + "k",
 		"-c:a", "aac",
 		"-b:a", "96k",
 		"-ac", "2",
@@ -643,7 +643,7 @@ func yandexPerformerTitleFromPath(path string) (string, string) {
 type mediaDownloadTask struct {
 	SendCtx      sendContext
 	URL          string
-	Mode         string
+	Mode         mediadl.Mode
 	DL           MediaDownloadPort
 	Msg          *tgbotapi.Message
 	Trigger      *Trigger
@@ -702,7 +702,7 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 						}
 						log.Printf("media queue send failed chat=%d err=%v", chatID, err)
 						title := "ошибка скачивания файла"
-						switch strings.TrimSpace(strings.ToLower(task.Mode)) {
+						switch task.Mode {
 						case mediadl.ModeVideo:
 							title = "ошибка скачивания видео"
 						case mediadl.ModeAudio:
@@ -730,14 +730,14 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 	return q
 }
 
-func mediaTaskTimeout(mode string, rawURL string) time.Duration {
+func mediaTaskTimeout(mode mediadl.Mode, rawURL string) time.Duration {
 	baseSec := envInt("MEDIA_DOWNLOAD_TIMEOUT_SEC", 500)
 	if baseSec < 60 {
 		baseSec = 60
 	}
-	mode = strings.ToLower(strings.TrimSpace(mode))
+	modeStr := strings.ToLower(strings.TrimSpace(string(mode)))
 	urlLower := strings.ToLower(strings.TrimSpace(rawURL))
-	if strings.HasPrefix(mode, "coub_loop:") || strings.Contains(urlLower, "coub.com/") {
+	if strings.HasPrefix(modeStr, mediadl.ModeCoubLoopPrefix) || strings.Contains(urlLower, "coub.com/") {
 		sec := envInt("COUB_MEDIA_DOWNLOAD_TIMEOUT_SEC", 600)
 		if sec < baseSec {
 			sec = baseSec
@@ -790,11 +790,11 @@ func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
 	}
 }
 
-func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode string, progress *mediaProgressHandle) error {
-	mode = strings.TrimSpace(strings.ToLower(mode))
+func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode mediadl.Mode, progress *mediaProgressHandle) error {
+	mode = mediadl.Mode(strings.TrimSpace(strings.ToLower(string(mode))))
 	coubLoopParts := 0
-	if strings.HasPrefix(mode, "coub_loop:") {
-		spec := strings.TrimSpace(strings.TrimPrefix(mode, "coub_loop:"))
+	if strings.HasPrefix(string(mode), mediadl.ModeCoubLoopPrefix) {
+		spec := strings.TrimSpace(strings.TrimPrefix(string(mode), mediadl.ModeCoubLoopPrefix))
 		if spec == "all" {
 			coubLoopParts = 0
 		} else if v, err := strconv.Atoi(spec); err == nil && v > 0 {
@@ -802,7 +802,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		}
 		mode = mediadl.ModeAuto
 	}
-	if mode == "" {
+	if mode == mediadl.Mode("") {
 		mode = mediadl.ModeAudio
 	}
 	log.Printf(
@@ -877,7 +877,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				_ = os.Remove(coubLoopPath)
 			}
 		}()
-		if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+		if res.Service == mediadl.ServiceCoub {
 			if progress != nil {
 				progress.SetFrame(8) // 90%
 				progress.SetStage("Сборка видео")
@@ -963,12 +963,12 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			if progress != nil {
 				progress.SetStage("Отправка аудио")
 			}
-			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, string(res.Service)), res.SourceURL, string(res.Service))
 		default:
 			if !videoHasAudioTrack(mediaPath) {
 				return errors.New("в этом видео нет доступной аудиодорожки у источника")
 			}
-			if strings.EqualFold(strings.TrimSpace(res.Service), "coub") {
+			if res.Service == mediadl.ServiceCoub {
 				if progress != nil {
 					progress.SetFrame(8) // 90%
 					progress.SetStage("Сборка видео")
@@ -1020,7 +1020,7 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		progress.SetFrame(8)
 		progress.SetStage("Отправка аудио")
 	}
-	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, res.Service), res.SourceURL, res.Service)
+	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, string(res.Service)), res.SourceURL, string(res.Service))
 }
 
 func videoHasAudioTrack(path string) bool {
@@ -1274,7 +1274,8 @@ func buildAudioCaption(path string, service string, sourceURL string) string {
 	if bitrateKbps <= 0 && stats.DurationSec > 0 {
 		bitrateKbps = int64(float64(stats.SizeBytes*8)/stats.DurationSec/1000.0 + 0.5)
 	}
-	emoji := mediaServiceEmoji(service, mediadl.ModeAudio)
+	serviceID := mediadl.Service(strings.ToLower(strings.TrimSpace(service)))
+	emoji := mediaServiceEmoji(serviceID, mediadl.ModeAudio)
 	durToken := dur
 	if durToken != "" && sourceURL != "" {
 		durToken = buildSourceLinkHTML(sourceURL, durToken)

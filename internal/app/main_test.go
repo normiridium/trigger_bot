@@ -8,6 +8,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"trigger-admin-bot/internal/mediadl"
 	"trigger-admin-bot/internal/trigger"
 )
 
@@ -346,16 +347,16 @@ func TestBuildAudioCaption_AttachesSourceLink(t *testing.T) {
 }
 
 func TestMediaServiceEmoji(t *testing.T) {
-	if got := mediaServiceEmoji("youtube", "video"); !strings.Contains(got, "5463206079913533096") {
+	if got := mediaServiceEmoji(mediadl.ServiceYouTube, mediadl.ModeVideo); !strings.Contains(got, "5463206079913533096") {
 		t.Fatalf("unexpected youtube video emoji: %q", got)
 	}
-	if got := mediaServiceEmoji("youtube", "audio"); !strings.Contains(got, "5463206079913533096") {
+	if got := mediaServiceEmoji(mediadl.ServiceYouTube, mediadl.ModeAudio); !strings.Contains(got, "5463206079913533096") {
 		t.Fatalf("unexpected youtube audio emoji: %q", got)
 	}
-	if got := mediaServiceEmoji("instagram", "video"); !strings.Contains(got, "5463238270693416950") {
+	if got := mediaServiceEmoji(mediadl.ServiceInstagram, mediadl.ModeVideo); !strings.Contains(got, "5463238270693416950") {
 		t.Fatalf("unexpected instagram video emoji: %q", got)
 	}
-	if got := mediaServiceEmoji("soundcloud", "audio"); !strings.Contains(got, "5359614685664523140") {
+	if got := mediaServiceEmoji(mediadl.ServiceSoundCloud, mediadl.ModeAudio); !strings.Contains(got, "5359614685664523140") {
 		t.Fatalf("unexpected soundcloud emoji: %q", got)
 	}
 }
@@ -420,31 +421,31 @@ func TestBuildMediaPhotoCaption(t *testing.T) {
 }
 
 func TestMediaModeAndInteractivity(t *testing.T) {
-	mode, interactive := mediaModeAndInteractivity("soundcloud", true)
+	mode, interactive := mediaModeAndInteractivity(mediadl.ServiceSoundCloud, true)
 	if mode != "audio" || interactive {
 		t.Fatalf("soundcloud must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("instagram", true)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceInstagram, true)
 	if mode != "auto" || interactive {
 		t.Fatalf("instagram must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("tiktok", true)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceTikTok, true)
 	if mode != "auto" || interactive {
 		t.Fatalf("tiktok must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("x", true)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceX, true)
 	if mode != "video" || interactive {
 		t.Fatalf("x must force video/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("vk", true)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceVK, true)
 	if mode != "audio" || interactive {
 		t.Fatalf("vk must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("youtube", true)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceYouTube, true)
 	if mode != "audio" || !interactive {
 		t.Fatalf("youtube should keep interactive when enabled, got mode=%q interactive=%v", mode, interactive)
 	}
-	mode, interactive = mediaModeAndInteractivity("youtube", false)
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceYouTube, false)
 	if mode != "audio" || interactive {
 		t.Fatalf("youtube should keep interactive=false, got mode=%q interactive=%v", mode, interactive)
 	}
@@ -1007,7 +1008,6 @@ func TestExtractLeadingReactionCandidateNoEmoji(t *testing.T) {
 		t.Fatalf("list marker must not be treated as reaction emoji")
 	}
 }
-
 
 func TestParseModerationCommandBan(t *testing.T) {
 	raw := "!ban @user 2h\nспам ссылками"

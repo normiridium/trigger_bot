@@ -86,9 +86,9 @@ func mtprotoSetupChatKeyboard(bot *tgbotapi.BotAPI) tgbotapi.InlineKeyboardMarku
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(chatIDs)+1)
 	for _, id := range chatIDs {
 		label := resolveChatButtonLabel(bot, id)
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, "mtpset|chat|"+strconv.FormatInt(id, 10))))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, mtprotoSetupCallbackPrefix+"|"+mtprotoSetupCallbackChat+"|"+strconv.FormatInt(id, 10))))
 	}
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Отмена", "mtpset|cancel")))
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("Отмена", mtprotoSetupCallbackPrefix+"|"+mtprotoSetupCallbackCancel)))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
@@ -138,20 +138,20 @@ func handleSetMTProtoCallback(bot *tgbotapi.BotAPI, setup *mtprotoSetupManager, 
 		return false
 	}
 	parts := strings.Split(strings.TrimSpace(cb.Data), "|")
-	if len(parts) == 0 || parts[0] != "mtpset" {
+	if len(parts) == 0 || parts[0] != mtprotoSetupCallbackPrefix {
 		return false
 	}
 	if cb.Message.Chat.ID != cb.From.ID {
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Делайте это в личке с ботом"))
 		return true
 	}
-	if len(parts) >= 2 && parts[1] == "cancel" {
+	if len(parts) >= 2 && parts[1] == mtprotoSetupCallbackCancel {
 		setup.del(cb.From.ID)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		_, _ = bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, "Настройка MTProto отменена."))
 		return true
 	}
-	if len(parts) < 3 || parts[1] != "chat" {
+	if len(parts) < 3 || parts[1] != mtprotoSetupCallbackChat {
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Неизвестное действие"))
 		return true
 	}
@@ -165,6 +165,12 @@ func handleSetMTProtoCallback(bot *tgbotapi.BotAPI, setup *mtprotoSetupManager, 
 	_, _ = bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, "Введите телефон в формате +79991234567"))
 	return true
 }
+
+const (
+	mtprotoSetupCallbackPrefix = "mtpset"
+	mtprotoSetupCallbackCancel = "cancel"
+	mtprotoSetupCallbackChat   = "chat"
+)
 
 func handleSetMTProtoPrivateText(bot *tgbotapi.BotAPI, svc chatclear.Service, setup *mtprotoSetupManager, msg *tgbotapi.Message) bool {
 	if bot == nil || msg == nil || msg.Chat == nil || msg.From == nil || svc == nil || setup == nil {

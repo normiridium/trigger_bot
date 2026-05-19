@@ -94,15 +94,15 @@ func SelectIdleAutoReplyTrigger(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, ite
 		if !engine.TriggerModeMatches(bot, &it, msg) {
 			continue
 		}
-		if it.AdminMode != "anybody" {
+		if it.AdminMode != model.AdminModeAnybody {
 			if !adminChecked {
 				isAdmin = isAdminFn()
 				adminChecked = true
 			}
-			if it.AdminMode == "admins" && !isAdmin {
+			if it.AdminMode == model.AdminModeAdmins && !isAdmin {
 				continue
 			}
-			if it.AdminMode == "not_admins" && isAdmin {
+			if it.AdminMode == model.AdminModeNotAdmin && isAdmin {
 				continue
 			}
 		}

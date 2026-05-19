@@ -1142,17 +1142,17 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 		return true
 	}
 	switch action {
-	case "noop":
+	case quoteStickerActionNoop:
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 		return true
-	case "cancel":
+	case quoteStickerActionCancel:
 		sessions.Delete(sid)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		if cb.Message != nil {
 			_, _ = bot.Request(tgbotapi.NewEditMessageText(cb.Message.Chat.ID, cb.Message.MessageID, "Сохранение quote-стикера отменено."))
 		}
 		return true
-	case "page":
+	case quoteStickerActionPage:
 		opts := effectiveQuoteStickerEmojiOptions()
 		totalPages := (len(opts) + quoteStickerEmojiPerPage - 1) / quoteStickerEmojiPerPage
 		if totalPages < 1 {
@@ -1179,7 +1179,7 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 			}
 		}
 		return true
-	case "pick":
+	case quoteStickerActionPick:
 		idx, err := strconv.Atoi(strings.TrimSpace(arg))
 		opts := effectiveQuoteStickerEmojiOptions()
 		if err != nil || idx < 0 || idx >= len(opts) {
@@ -1190,7 +1190,7 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 		st.Page = idx / quoteStickerEmojiPerPage
 		sessions.Put(st)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Выбрано "+st.Emoji))
-	case "save":
+	case quoteStickerActionSave:
 		if strings.TrimSpace(st.Emoji) == "" {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Сначала выберите эмодзи"))
 			return true
@@ -1244,3 +1244,11 @@ func handleQuoteStickerCallback(bot *tgbotapi.BotAPI, sessions *quoteStickerSess
 	}
 	return true
 }
+
+const (
+	quoteStickerActionNoop   = "noop"
+	quoteStickerActionCancel = "cancel"
+	quoteStickerActionPage   = "page"
+	quoteStickerActionPick   = "pick"
+	quoteStickerActionSave   = "save"
+)

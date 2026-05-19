@@ -160,12 +160,12 @@ func handleClearChatCallback(bot *tgbotapi.BotAPI, adminCache *adminStatusCache,
 	}
 
 	switch action {
-	case "c":
+	case clearChatConfirmActionCancel:
 		confirms.del(id)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: st.ChatID, MessageID: cb.Message.MessageID})
 		return true
-	case "a":
+	case clearChatConfirmActionApply:
 		confirms.del(id)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Запускаю очистку..."))
 		if cleaner == nil {
@@ -192,3 +192,8 @@ func handleClearChatCallback(bot *tgbotapi.BotAPI, adminCache *adminStatusCache,
 		return true
 	}
 }
+
+const (
+	clearChatConfirmActionCancel = "c"
+	clearChatConfirmActionApply  = "a"
+)

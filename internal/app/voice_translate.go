@@ -36,11 +36,43 @@ type voiceTranslateTask struct {
 	ChatID  int64
 	ReplyTo int
 	Msg     *tgbotapi.Message
-	Action  string
+	Action  voiceTranslateAction
 	Media   replyMediaInfo
 	SrcLang string
 	ResLang string
 }
+
+type voiceTranslateAction string
+
+const (
+	voiceTranslateActionAudio  voiceTranslateAction = "audio"
+	voiceTranslateActionMix    voiceTranslateAction = "mix"
+	voiceTranslateActionText   voiceTranslateAction = "text"
+	voiceTranslateActionSubs   voiceTranslateAction = "subs"
+	voiceTranslateActionCancel voiceTranslateAction = "cancel"
+	voiceTranslateActionBack   voiceTranslateAction = "back"
+	voiceTranslateActionNoop   voiceTranslateAction = "noop"
+	voiceTranslateActionLang   voiceTranslateAction = "lang"
+)
+
+type votProvider string
+
+const (
+	votProviderYandex       votProvider = "yandex"
+	votProviderYandexLively votProvider = "yandex_lively"
+)
+
+type votService string
+
+const votServiceTelegram votService = "telegram"
+
+type votTranslateStatus string
+
+const (
+	votTranslateStatusSuccess votTranslateStatus = "success"
+	votTranslateStatusWaiting votTranslateStatus = "waiting"
+	votTranslateStatusFailed  votTranslateStatus = "failed"
+)
 
 type replyMediaInfo struct {
 	FileID   string
@@ -63,20 +95,20 @@ type voiceTranslateOptionEntry struct {
 }
 
 type votTranslateRequest struct {
-	Provider string `json:"provider"`
-	Service  string `json:"service"`
-	VideoID  string `json:"video_id"`
-	FromLang string `json:"from_lang"`
-	ToLang   string `json:"to_lang"`
-	RawVideo string `json:"raw_video"`
+	Provider votProvider `json:"provider"`
+	Service  votService  `json:"service"`
+	VideoID  string      `json:"video_id"`
+	FromLang string      `json:"from_lang"`
+	ToLang   string      `json:"to_lang"`
+	RawVideo string      `json:"raw_video"`
 }
 
 type votTranslateResponse struct {
-	Status        string `json:"status"`
-	TranslatedURL string `json:"translated_url"`
-	RemainingTime int    `json:"remaining_time"`
-	Message       string `json:"message"`
-	ID            any    `json:"id"`
+	Status        votTranslateStatus `json:"status"`
+	TranslatedURL string             `json:"translated_url"`
+	RemainingTime int                `json:"remaining_time"`
+	Message       string             `json:"message"`
+	ID            any                `json:"id"`
 }
 
 type votProviderResult struct {
@@ -955,15 +987,15 @@ func takeVoiceTranslateOption(token string, userID int64) (voiceTranslateOptionE
 func renderVoiceTranslateOptionKeyboard(token string) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "vtr|audio|"+token),
-			tgbotapi.NewInlineKeyboardButtonData("Скачать микс", "vtr|mix|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "vtr|"+string(voiceTranslateActionAudio)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Скачать микс", "vtr|"+string(voiceTranslateActionMix)+"|"+token),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|text|"+token),
-			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|subs|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|"+string(voiceTranslateActionText)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|"+string(voiceTranslateActionSubs)+"|"+token),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|cancel|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|"+string(voiceTranslateActionCancel)+"|"+token),
 		),
 	)
 }
@@ -989,30 +1021,30 @@ var voiceTranslateSourceLangs = []voiceSourceLang{
 	{Code: "lv", Label: "🇱🇻 Latviešu"},
 }
 
-func renderVoiceTranslateLangKeyboard(token, action string) tgbotapi.InlineKeyboardMarkup {
+func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction) tgbotapi.InlineKeyboardMarkup {
 	target := normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
 	if target == "" || target == "auto" {
 		target = "ru"
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
 	row := []tgbotapi.InlineKeyboardButton{
-		tgbotapi.NewInlineKeyboardButtonData("🌐 Авто", "vtr|lang|"+action+"|"+token+"|auto"),
+		tgbotapi.NewInlineKeyboardButtonData("🌐 Авто", "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|auto"),
 	}
 	rows = append(rows, row)
 	row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
 	for i, l := range voiceTranslateSourceLangs {
-		row = append(row, tgbotapi.NewInlineKeyboardButtonData(l.Label, "vtr|lang|"+action+"|"+token+"|"+l.Code))
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(l.Label, "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|"+l.Code))
 		if len(row) == 4 || i == len(voiceTranslateSourceLangs)-1 {
 			rows = append(rows, row)
 			row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
 		}
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🎯 Целевой: "+strings.ToUpper(target), "vtr|noop|"+token),
+		tgbotapi.NewInlineKeyboardButtonData("🎯 Целевой: "+strings.ToUpper(target), "vtr|"+string(voiceTranslateActionNoop)+"|"+token),
 	))
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "vtr|back|"+token),
-		tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|cancel|"+token),
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "vtr|"+string(voiceTranslateActionBack)+"|"+token),
+		tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|"+string(voiceTranslateActionCancel)+"|"+token),
 	))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
@@ -1043,6 +1075,23 @@ func fmtSRTTime(sec float64) string {
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, z)
 }
 
+func parseVoiceTranslateAction(raw string) (voiceTranslateAction, bool) {
+	a := voiceTranslateAction(strings.TrimSpace(raw))
+	switch a {
+	case voiceTranslateActionAudio,
+		voiceTranslateActionMix,
+		voiceTranslateActionText,
+		voiceTranslateActionSubs,
+		voiceTranslateActionCancel,
+		voiceTranslateActionBack,
+		voiceTranslateActionNoop,
+		voiceTranslateActionLang:
+		return a, true
+	default:
+		return "", false
+	}
+}
+
 func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, q *voiceTranslateQueue) bool {
 	if bot == nil || cb == nil || q == nil || !strings.HasPrefix(cb.Data, "vtr|") {
 		return false
@@ -1052,10 +1101,14 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверная кнопка"))
 		return true
 	}
-	action := strings.TrimSpace(parts[1])
+	action, okAction := parseVoiceTranslateAction(parts[1])
+	if !okAction {
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неизвестное действие"))
+		return true
+	}
 	token := ""
 	switch action {
-	case "lang":
+	case voiceTranslateActionLang:
 		if len(parts) >= 4 {
 			token = strings.TrimSpace(parts[3])
 		}
@@ -1075,7 +1128,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 	}
 
 	switch action {
-	case "cancel":
+	case voiceTranslateActionCancel:
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		if cb.Message != nil {
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
@@ -1084,7 +1137,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 			})
 		}
 		return true
-	case "audio", "mix", "text", "subs":
+	case voiceTranslateActionAudio, voiceTranslateActionMix, voiceTranslateActionText, voiceTranslateActionSubs:
 		if cb.Message != nil {
 			edit := tgbotapi.NewEditMessageTextAndMarkup(
 				cb.Message.Chat.ID,
@@ -1099,7 +1152,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Выберите язык"))
 		return true
-	case "back":
+	case voiceTranslateActionBack:
 		if cb.Message != nil {
 			edit := tgbotapi.NewEditMessageTextAndMarkup(
 				cb.Message.Chat.ID,
@@ -1111,15 +1164,19 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Назад"))
 		return true
-	case "noop":
+	case voiceTranslateActionNoop:
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 		return true
-	case "lang":
+	case voiceTranslateActionLang:
 		if len(parts) != 5 && len(parts) != 6 {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверный язык"))
 			return true
 		}
-		runAction := strings.TrimSpace(parts[2])
+		runAction, okRunAction := parseVoiceTranslateAction(parts[2])
+		if !okRunAction || (runAction != voiceTranslateActionAudio && runAction != voiceTranslateActionMix && runAction != voiceTranslateActionText && runAction != voiceTranslateActionSubs) {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверное действие"))
+			return true
+		}
 		srcLang := normalizeVOTLang(strings.TrimSpace(parts[4]))
 		if srcLang == "" {
 			srcLang = "auto"
@@ -1461,13 +1518,13 @@ func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResu
 		timeoutSec = 60
 	}
 
-	baseProvider := strings.ToLower(strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PROVIDER")))
+	baseProvider := votProvider(strings.ToLower(strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PROVIDER"))))
 	if baseProvider == "" {
-		baseProvider = "yandex"
+		baseProvider = votProviderYandex
 	}
-	providers := []string{baseProvider}
-	if baseProvider == "yandex_lively" {
-		providers = []string{"yandex_lively", "yandex"}
+	providers := []votProvider{baseProvider}
+	if baseProvider == votProviderYandexLively {
+		providers = []votProvider{votProviderYandexLively, votProviderYandex}
 	}
 
 	client := &http.Client{Timeout: 90 * time.Second}
@@ -1476,7 +1533,7 @@ func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResu
 	for _, provider := range providers {
 		reqBody := votTranslateRequest{
 			Provider: provider,
-			Service:  "telegram",
+			Service:  votServiceTelegram,
 			VideoID:  votServiceIDForSource(sourceURL),
 			FromLang: from,
 			ToLang:   to,
@@ -1525,17 +1582,17 @@ func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResu
 				break
 			}
 
-			switch strings.ToLower(strings.TrimSpace(parsed.Status)) {
-			case "success":
+			switch votTranslateStatus(strings.ToLower(strings.TrimSpace(string(parsed.Status)))) {
+			case votTranslateStatusSuccess:
 				if strings.TrimSpace(parsed.TranslatedURL) == "" {
 					lastErr = fmt.Errorf("vot backend returned success without translated_url")
 					break
 				}
 				return votProviderResult{
 					translatedURL: strings.TrimSpace(parsed.TranslatedURL),
-					providerUsed:  provider,
+					providerUsed:  string(provider),
 				}, nil
-			case "waiting":
+			case votTranslateStatusWaiting:
 				sleepSec := parsed.RemainingTime
 				if sleepSec <= 0 {
 					sleepSec = 6
@@ -1545,7 +1602,7 @@ func runVOTBackendTranslate(sourceURL, srcLang, resLang string) (votProviderResu
 				}
 				time.Sleep(time.Duration(sleepSec) * time.Second)
 				continue
-			case "failed":
+			case votTranslateStatusFailed:
 				if strings.TrimSpace(parsed.Message) != "" {
 					lastErr = fmt.Errorf("vot backend failed: %s", parsed.Message)
 				} else {
@@ -1911,7 +1968,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	}
 
 	shareSource := sourceForVOTAudio
-	if task.Action == "text" || task.Action == "subs" {
+	if task.Action == voiceTranslateActionText || task.Action == voiceTranslateActionSubs {
 		shareSource = sourceForVOTSubs
 	}
 
@@ -1931,8 +1988,8 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		return
 	}
 
-	if task.Action == "text" || task.Action == "subs" {
-		if task.Action == "subs" {
+	if task.Action == voiceTranslateActionText || task.Action == voiceTranslateActionSubs {
+		if task.Action == voiceTranslateActionSubs {
 			if cached, ok := getFreshFile(voiceSubtitlesCachePath(cacheKey)); ok {
 				if progress != nil {
 					progress.SetFrame(8)
@@ -1984,7 +2041,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			progress.SetStage("Субтитры через VOT")
 		}
 		subsFormat := "json"
-		if task.Action == "subs" {
+		if task.Action == voiceTranslateActionSubs {
 			subsFormat = "srt"
 		}
 		subsPath, err := runVOTCLISubtitlesLocal(publicURL, workDir, "translated_subs", srcLang, resLang, subsFormat)
@@ -2037,7 +2094,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			return
 		}
 	HAVE_SUBS:
-		if task.Action == "subs" {
+		if task.Action == voiceTranslateActionSubs {
 			if progress != nil {
 				progress.SetFrame(8)
 				progress.SetStage("Отправка результата")
@@ -2148,7 +2205,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		log.Printf("voice translate success chat=%d replyTo=%d provider=%s", task.ChatID, task.ReplyTo, providerUsed)
 	}
 
-	if task.Action == "audio" {
+	if task.Action == voiceTranslateActionAudio {
 		if progress != nil {
 			progress.SetFrame(8)
 			progress.SetStage("Отправка результата")

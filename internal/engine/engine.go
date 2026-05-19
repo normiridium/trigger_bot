@@ -69,15 +69,15 @@ func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
-		if cand.AdminMode != "anybody" {
+		if cand.AdminMode != model.AdminModeAnybody {
 			if !adminChecked {
 				isAdmin = input.IsAdminFn()
 				adminChecked = true
 			}
-			if cand.AdminMode == "admins" && !isAdmin {
+			if cand.AdminMode == model.AdminModeAdmins && !isAdmin {
 				continue
 			}
-			if cand.AdminMode == "not_admins" && isAdmin {
+			if cand.AdminMode == model.AdminModeNotAdmin && isAdmin {
 				continue
 			}
 		}
@@ -110,15 +110,15 @@ func (e *TriggerEngine) SelectNewMember(input SelectNewMemberInput) *model.Trigg
 		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}
-		if cand.AdminMode != "anybody" {
+		if cand.AdminMode != model.AdminModeAnybody {
 			if !adminChecked {
 				isAdmin = input.IsAdminFn()
 				adminChecked = true
 			}
-			if cand.AdminMode == "admins" && !isAdmin {
+			if cand.AdminMode == model.AdminModeAdmins && !isAdmin {
 				continue
 			}
-			if cand.AdminMode == "not_admins" && isAdmin {
+			if cand.AdminMode == model.AdminModeNotAdmin && isAdmin {
 				continue
 			}
 		}
@@ -136,11 +136,11 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 	}
 	mode := tr.TriggerMode
 	switch mode {
-	case "only_replies":
+	case model.TriggerModeOnlyReplies:
 		return msg.ReplyToMessage != nil
-	case "only_replies_to_any_bot":
+	case model.TriggerModeOnlyRepliesToBot:
 		return msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil && msg.ReplyToMessage.From.IsBot
-	case "only_replies_to_combot":
+	case model.TriggerModeOnlyRepliesToSelf:
 		// Legacy storage key kept for compatibility, actual behavior:
 		// trigger only on replies to this bot's own messages.
 		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
@@ -150,7 +150,7 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 			return false
 		}
 		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
-	case "only_replies_to_combot_no_media":
+	case model.TriggerModeOnlyRepliesToSelfNoMedia:
 		// Same as reply-to-self mode, but ignores only replies to bot media messages.
 		// Incoming user media (voice/audio/etc.) is allowed.
 		if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
@@ -163,9 +163,9 @@ func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.M
 			return false
 		}
 		return msg.ReplyToMessage.From.IsBot && msg.ReplyToMessage.From.ID == bot.Self.ID
-	case "never_on_replies":
+	case model.TriggerModeNeverOnReplies:
 		return msg.ReplyToMessage == nil
-	case "command_reply":
+	case model.TriggerModeCommandReply:
 		return msg.IsCommand()
 	default:
 		return true

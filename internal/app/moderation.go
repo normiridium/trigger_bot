@@ -611,7 +611,7 @@ func handleModerationConfirmCallback(bot *tgbotapi.BotAPI, adminCache *adminStat
 	actorTag := getChatMemberTagRaw(bot.Token, st.ChatID, cb.From.ID)
 
 	switch action {
-	case "t":
+	case moderationConfirmActionToggle:
 		if len(parts) < 4 {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Некорректный выбор"))
 			return true
@@ -633,12 +633,12 @@ func handleModerationConfirmCallback(bot *tgbotapi.BotAPI, adminCache *adminStat
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Обновлено"))
 		return true
-	case "c":
+	case moderationConfirmActionCancel:
 		confirms.Delete(id)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: st.ChatID, MessageID: cb.Message.MessageID})
 		return true
-	case "a":
+	case moderationConfirmActionApply:
 		if !moderationConfirmAllChecked(st) {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отметь все пункты перед применением"))
 			return true
@@ -659,6 +659,12 @@ func handleModerationConfirmCallback(bot *tgbotapi.BotAPI, adminCache *adminStat
 		return false
 	}
 }
+
+const (
+	moderationConfirmActionToggle = "t"
+	moderationConfirmActionCancel = "c"
+	moderationConfirmActionApply  = "a"
+)
 
 func handleModerationCommand(ctx moderationContext, msg *tgbotapi.Message, text string) bool {
 	req, ok, err := parseModerationCommand(text)

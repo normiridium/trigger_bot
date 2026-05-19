@@ -1873,21 +1873,20 @@ func buildMediaDownloadQueryFromMessage(ctx templateContext, queryTemplate strin
 	return strings.TrimSpace(query)
 }
 
-func mediaModeAndInteractivity(service string, interactive bool) (mode string, useInteractive bool) {
-	service = strings.ToLower(strings.TrimSpace(service))
+func mediaModeAndInteractivity(service mediadl.Service, interactive bool) (mode mediadl.Mode, useInteractive bool) {
 	switch service {
-	case "soundcloud":
+	case mediadl.ServiceSoundCloud:
 		return mediadl.ModeAudio, false
-	case "vk":
+	case mediadl.ServiceVK:
 		// VK music links should go straight to audio download.
 		return mediadl.ModeAudio, false
-	case "coub":
+	case mediadl.ServiceCoub:
 		return mediadl.ModeAuto, interactive
-	case "instagram":
+	case mediadl.ServiceInstagram:
 		return mediadl.ModeAuto, false
-	case "tiktok":
+	case mediadl.ServiceTikTok:
 		return mediadl.ModeAuto, false
-	case "x":
+	case mediadl.ServiceX:
 		return mediadl.ModeVideo, false
 	default:
 		return mediadl.ModeAudio, interactive
@@ -2208,7 +2207,7 @@ func extractSupportedMediaURLByService(input string, service string) string {
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(gotService), service) {
+		if strings.EqualFold(strings.TrimSpace(string(gotService)), service) {
 			return norm
 		}
 	}

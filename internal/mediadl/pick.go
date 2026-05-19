@@ -13,11 +13,14 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+type Mode string
+
 const (
-	ModeAudio = "audio"
-	ModeVideo = "video"
-	ModePhoto = "photo"
-	ModeAuto  = "auto"
+	ModeAudio          Mode = "audio"
+	ModeVideo          Mode = "video"
+	ModePhoto          Mode = "photo"
+	ModeAuto           Mode = "auto"
+	ModeCoubLoopPrefix      = "coub_loop:"
 )
 
 type ChoiceRequest struct {
@@ -31,7 +34,7 @@ type ChoiceRequest struct {
 	ExpiresAt    time.Time
 }
 
-type ChoiceProcessor func(ctx context.Context, req ChoiceRequest, mode string) error
+type ChoiceProcessor func(ctx context.Context, req ChoiceRequest, mode Mode) error
 
 type ChoiceFailureReporter func(chatID int64, title string, err error)
 
@@ -40,7 +43,7 @@ var choiceRequests = make(map[string]ChoiceRequest)
 
 func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.InlineKeyboardMarkup {
 	_, service, _ := NormalizeSupportedURL(req.URL)
-	if service == "coub" {
+	if service == ServiceCoub {
 		audioToken := putChoice(req)
 		videoToken := putChoice(req)
 		cancelToken := putChoice(req)
@@ -53,22 +56,22 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.Inli
 				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
 			),
 		}
-	if service == "instagram" {
-		photoToken := putChoice(req)
-		videoToken := putChoice(req)
-		cancelToken := putChoice(req)
-		rows := [][]tgbotapi.InlineKeyboardButton{
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
-				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
-			),
+		if service == ServiceInstagram {
+			photoToken := putChoice(req)
+			videoToken := putChoice(req)
+			cancelToken := putChoice(req)
+			rows := [][]tgbotapi.InlineKeyboardButton{
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
+					tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+				),
+			}
+			_ = msg
+			return tgbotapi.NewInlineKeyboardMarkup(rows...)
 		}
-		_ = msg
-		return tgbotapi.NewInlineKeyboardMarkup(rows...)
-	}
 
 		_ = msg
 		return tgbotapi.NewInlineKeyboardMarkup(rows...)
@@ -94,7 +97,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 	if cb == nil || bot == nil {
 		return false
 	}
-	mode := ""
+	mode := Mode("")
 	token := ""
 	switch {
 	case strings.HasPrefix(cb.Data, "mdpick_a:"):
@@ -177,16 +180,16 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Назад"))
 		return true
 	case strings.HasPrefix(cb.Data, "mdpick_cl1:"):
-		mode = "coub_loop:1"
+		mode = Mode(ModeCoubLoopPrefix + "1")
 		token = strings.TrimPrefix(cb.Data, "mdpick_cl1:")
 	case strings.HasPrefix(cb.Data, "mdpick_cl2:"):
-		mode = "coub_loop:2"
+		mode = Mode(ModeCoubLoopPrefix + "2")
 		token = strings.TrimPrefix(cb.Data, "mdpick_cl2:")
 	case strings.HasPrefix(cb.Data, "mdpick_cl5:"):
-		mode = "coub_loop:5"
+		mode = Mode(ModeCoubLoopPrefix + "5")
 		token = strings.TrimPrefix(cb.Data, "mdpick_cl5:")
 	case strings.HasPrefix(cb.Data, "mdpick_cla:"):
-		mode = "coub_loop:all"
+		mode = Mode(ModeCoubLoopPrefix + "all")
 		token = strings.TrimPrefix(cb.Data, "mdpick_cla:")
 	default:
 		return false
@@ -204,8 +207,8 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 			status = "🎵 Выбрано: аудио"
 		} else if mode == ModePhoto {
 			status = "🖼 Выбрано: картинка"
-		} else if strings.HasPrefix(mode, "coub_loop:") {
-			label := strings.TrimPrefix(mode, "coub_loop:")
+		} else if strings.HasPrefix(string(mode), ModeCoubLoopPrefix) {
+			label := strings.TrimPrefix(string(mode), ModeCoubLoopPrefix)
 			if label == "all" {
 				label = "все"
 			}

@@ -42,10 +42,12 @@ var ErrUnsupportedURL = errors.New("unsupported media url")
 var ErrTooLarge = errors.New("media file is too large")
 
 const (
-	MediaKindAudio = "audio"
-	MediaKindVideo = "video"
-	MediaKindPhoto = "photo"
+	MediaKindAudio MediaKind = "audio"
+	MediaKindVideo MediaKind = "video"
+	MediaKindPhoto MediaKind = "photo"
 )
+
+type MediaKind string
 
 type Downloader struct {
 	YTDLPBin           string
@@ -59,8 +61,8 @@ type Downloader struct {
 	MaxHeight          int
 }
 
-func (d Downloader) withVKProxyArgs(service string, args []string) []string {
-	if strings.ToLower(strings.TrimSpace(service)) != "vk" {
+func (d Downloader) withVKProxyArgs(service Service, args []string) []string {
+	if service != ServiceVK {
 		return args
 	}
 	proxy := strings.TrimSpace(d.ProxySocks)
@@ -83,7 +85,7 @@ type ProbeResult struct {
 	Artist     string
 	SizeBytes  int64
 	Duration   float64
-	Service    string
+	Service    Service
 	SourceURL  string
 	Restricted bool
 }
@@ -92,10 +94,10 @@ type DownloadResult struct {
 	FilePath   string
 	Title      string
 	Artist     string
-	MediaKind  string
+	MediaKind  MediaKind
 	SizeBytes  int64
 	Duration   float64
-	Service    string
+	Service    Service
 	SourceURL  string
 	Restricted bool
 }
@@ -215,7 +217,7 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
 	args := d.buildGenericDownloadArgsForService(probe.Service, probe.SourceURL, outTpl)
 	path, err := d.runDownload(ctx, args)
-	if err != nil && strings.EqualFold(strings.TrimSpace(probe.Service), "tiktok") && isYTDLPFormatUnavailable(err) {
+	if err != nil && probe.Service == ServiceTikTok && isYTDLPFormatUnavailable(err) {
 		// Fallback to generic auto-selection only when explicit AV merge is unavailable.
 		path, err = d.runDownload(ctx, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl))
 	}
@@ -243,17 +245,16 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	}, nil
 }
 
-func (d Downloader) buildGenericDownloadArgsForService(service, url, outTpl string) []string {
-	service = strings.ToLower(strings.TrimSpace(service))
+func (d Downloader) buildGenericDownloadArgsForService(service Service, url, outTpl string) []string {
 	switch service {
-	case "tiktok":
+	case ServiceTikTok:
 		return d.buildTikTokAudioSafeArgs(service, url, outTpl)
 	default:
 		return d.buildGenericDownloadArgs(service, url, outTpl)
 	}
 }
 
-func (d Downloader) buildTikTokAudioSafeArgs(service, url, outTpl string) []string {
+func (d Downloader) buildTikTokAudioSafeArgs(service Service, url, outTpl string) []string {
 	args := []string{
 		// Prefer TikTok "download" rendition first: it is usually the most stable AV mux.
 		// Then fallback to generic formats with explicit audio requirement.
@@ -283,7 +284,7 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 	if !ok {
 		return ProbeResult{}, ErrUnsupportedURL
 	}
-	if service != "youtube" {
+	if service != ServiceYouTube {
 		// Non-YouTube extractors often don't expose/accept height constraints for audio probing.
 		formatSelector = ""
 	}
@@ -296,7 +297,7 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 			out, err = d.runJSON(ctx, d.withVKProxyArgs(service, d.buildProbeArgs(service, normURL, "")))
 		}
 	}
-	if err == nil && service == "youtube" && !hasPlayableFormats(out) {
+	if err == nil && service == ServiceYouTube && !hasPlayableFormats(out) {
 		out, err = d.runJSON(ctx, d.buildProbeArgsYouTubeAndroidNoAuth(normURL, formatSelector))
 		if err != nil && strings.TrimSpace(formatSelector) != "" && isYTDLPFormatUnavailable(err) {
 			out, err = d.runJSON(ctx, d.buildProbeArgsYouTubeAndroidNoAuth(normURL, ""))
@@ -461,7 +462,7 @@ func parseYTDLPProgressPercent(line string) (float64, bool) {
 	return p, true
 }
 
-func (d Downloader) buildProbeArgs(service, url, formatSelector string) []string {
+func (d Downloader) buildProbeArgs(service Service, url, formatSelector string) []string {
 	args := []string{
 		"--no-playlist",
 		"--skip-download",
@@ -479,11 +480,11 @@ func (d Downloader) buildProbeArgs(service, url, formatSelector string) []string
 	return args
 }
 
-func (d Downloader) buildDownloadArgs(service, url, outTpl string) []string {
+func (d Downloader) buildDownloadArgs(service Service, url, outTpl string) []string {
 	return d.buildDownloadArgsWithOptions(service, url, outTpl, d.audioFormatSelector(), d.extractorArgs(), true)
 }
 
-func (d Downloader) buildDownloadArgsWithOptions(service, url, outTpl, formatSelector, extractorArgs string, includeAuth bool) []string {
+func (d Downloader) buildDownloadArgsWithOptions(service Service, url, outTpl, formatSelector, extractorArgs string, includeAuth bool) []string {
 	args := []string{
 		"-f", formatSelector,
 		"-x",
@@ -506,15 +507,15 @@ func (d Downloader) buildDownloadArgsWithOptions(service, url, outTpl, formatSel
 	return args
 }
 
-func (d Downloader) buildVideoDownloadArgs(service, url, outTpl string) []string {
+func (d Downloader) buildVideoDownloadArgs(service Service, url, outTpl string) []string {
 	return d.buildVideoDownloadArgsWithSelector(service, url, outTpl, d.videoFormatSelector())
 }
 
-func (d Downloader) buildVideoDownloadArgsWithSelector(service, url, outTpl, formatSelector string) []string {
+func (d Downloader) buildVideoDownloadArgsWithSelector(service Service, url, outTpl, formatSelector string) []string {
 	return d.buildVideoDownloadArgsWithOptions(service, url, outTpl, formatSelector, d.extractorArgs(), true)
 }
 
-func (d Downloader) buildVideoDownloadArgsWithOptions(service, url, outTpl, formatSelector, extractorArgs string, includeAuth bool) []string {
+func (d Downloader) buildVideoDownloadArgsWithOptions(service Service, url, outTpl, formatSelector, extractorArgs string, includeAuth bool) []string {
 	args := []string{
 		"-f", formatSelector,
 		"--merge-output-format", "mp4",
@@ -535,7 +536,7 @@ func (d Downloader) buildVideoDownloadArgsWithOptions(service, url, outTpl, form
 	return args
 }
 
-func (d Downloader) buildGenericDownloadArgs(service, url, outTpl string) []string {
+func (d Downloader) buildGenericDownloadArgs(service Service, url, outTpl string) []string {
 	args := []string{
 		"--no-playlist",
 		"--quiet",
@@ -635,6 +636,26 @@ func isYTDLPFormatUnavailable(err error) bool {
 	return strings.Contains(msg, "requested format is not available")
 }
 
+func isYTDLPYouTubeRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "requested format is not available") {
+		return true
+	}
+	if strings.Contains(msg, "sign in to confirm you're not a bot") || strings.Contains(msg, "sign in to confirm you’re not a bot") {
+		return true
+	}
+	if strings.Contains(msg, "n challenge solving failed") {
+		return true
+	}
+	if strings.Contains(msg, "only images are available for download") || strings.Contains(msg, "storyboard") {
+		return true
+	}
+	return false
+}
+
 func hasPlayableFormats(meta probeJSON) bool {
 	for _, f := range meta.Formats {
 		if strings.EqualFold(strings.TrimSpace(f.Acodec), "none") && strings.EqualFold(strings.TrimSpace(f.Vcodec), "none") {
@@ -663,7 +684,7 @@ func (d Downloader) buildProbeArgsYouTubeAndroidNoAuth(url, formatSelector strin
 }
 
 func (d Downloader) buildDownloadArgsYouTubeAndroidNoAuth(url, outTpl string) []string {
-	return d.buildDownloadArgsWithOptions("youtube", url, outTpl, d.audioFormatSelector(), "youtube:player_client=android", false)
+	return d.buildDownloadArgsWithOptions(ServiceYouTube, url, outTpl, d.audioFormatSelector(), "youtube:player_client=android", false)
 }
 
 func (d Downloader) audioFormatSelectorsForRetry() []string {
@@ -674,8 +695,8 @@ func (d Downloader) audioFormatSelectorsForRetry() []string {
 	}
 }
 
-func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service, url, outTpl string) (string, error) {
-	if service != "youtube" {
+func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service Service, url, outTpl string) (string, error) {
+	if service != ServiceYouTube {
 		return d.runDownload(ctx, d.withVKProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, "bestaudio/best", d.extractorArgs(), true)))
 	}
 	type candidate struct {
@@ -726,7 +747,7 @@ func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service, url
 			return path, nil
 		}
 		lastErr = err
-		if !isYTDLPFormatUnavailable(err) {
+		if !isYTDLPYouTubeRetryable(err) {
 			return "", err
 		}
 	}
@@ -738,7 +759,7 @@ func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service, url
 				return path, nil
 			}
 			lastErr = err
-			if !isYTDLPFormatUnavailable(err) {
+			if !isYTDLPYouTubeRetryable(err) {
 				return "", err
 			}
 		}
@@ -759,8 +780,8 @@ func (d Downloader) videoFormatSelectorsForRetry() []string {
 	}
 }
 
-func (d Downloader) downloadVideoWithFallbacks(ctx context.Context, service, url, outTpl string) (string, error) {
-	if service == "youtube" {
+func (d Downloader) downloadVideoWithFallbacks(ctx context.Context, service Service, url, outTpl string) (string, error) {
+	if service == ServiceYouTube {
 		return d.downloadYouTubeVideoWithFallbacks(ctx, service, url, outTpl)
 	}
 	selectors := d.videoFormatSelectorsForRetry()
@@ -790,7 +811,7 @@ func (d Downloader) downloadVideoWithFallbacks(ctx context.Context, service, url
 	return "", lastErr
 }
 
-func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, service, url, outTpl string) (string, error) {
+func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, service Service, url, outTpl string) (string, error) {
 	type candidate struct {
 		format      string
 		extractor   string
@@ -842,7 +863,7 @@ func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, servi
 			return path, nil
 		}
 		lastErr = err
-		if !isYTDLPFormatUnavailable(err) {
+		if !isYTDLPYouTubeRetryable(err) {
 			return "", err
 		}
 	}
@@ -857,7 +878,7 @@ func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, servi
 				return path, nil
 			}
 			lastErr = err
-			if !isYTDLPFormatUnavailable(err) {
+			if !isYTDLPYouTubeRetryable(err) {
 				return "", err
 			}
 		}
@@ -881,7 +902,7 @@ func (d Downloader) discoverYouTubeAudioFormatIDs(ctx context.Context, url strin
 			out = append(out, id)
 		}
 	}
-	if meta, err := d.runJSON(ctx, d.buildProbeArgs("youtube", url, "")); err == nil {
+	if meta, err := d.runJSON(ctx, d.buildProbeArgs(ServiceYouTube, url, "")); err == nil {
 		appendIDs(meta)
 		if len(out) > 0 {
 			return out, false
@@ -906,7 +927,7 @@ func (d Downloader) discoverYouTubeVideoFormatIDs(ctx context.Context, url strin
 			out = append(out, id)
 		}
 	}
-	if meta, err := d.runJSON(ctx, d.buildProbeArgs("youtube", url, "")); err == nil {
+	if meta, err := d.runJSON(ctx, d.buildProbeArgs(ServiceYouTube, url, "")); err == nil {
 		appendIDs(meta)
 		if len(out) > 0 {
 			return out, false
@@ -1028,7 +1049,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func inferMediaKindByPath(path string) string {
+func inferMediaKindByPath(path string) MediaKind {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(strings.TrimSpace(path)), "."))
 	switch ext {
 	case "jpg", "jpeg", "png", "webp", "avif":

@@ -1974,7 +1974,7 @@ func Run() {
 				func(chatID int64, title string, err error) {
 					reportChatFailure(bot, chatID, title, err)
 				},
-				func(ctx context.Context, req mediadl.ChoiceRequest, mode string) error {
+				func(ctx context.Context, req mediadl.ChoiceRequest, mode mediadl.Mode) error {
 					_ = ctx
 					log.Printf("media choice selected chat=%d user=%d mode=%s url=%q", req.ChatID, req.UserID, mode, clipText(req.URL, 220))
 					task := mediaDownloadTask{
