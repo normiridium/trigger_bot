@@ -1930,16 +1930,16 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		sourceForVOTAudio = cachedSource
 		if progress != nil {
 			progress.SetFrame(2)
-			progress.SetStage("Использую кеш mp4 для перевода")
+			progress.SetStage("Подготовка перевода")
 		}
 	} else {
 		if progress != nil {
 			progress.SetFrame(2)
-			progress.SetStage("Подготовка mp4 для перевода")
+			progress.SetStage("Подготовка перевода")
 		}
 		mp4Tmp, e := os.CreateTemp("", "vot_src_audio_only_*.mp4")
 		if e != nil {
-			reply(sendCtx, "Не удалось подготовить mp4 для перевода.", false)
+			reply(sendCtx, "Не удалось подготовить источник для перевода.", false)
 			return
 		}
 		sourceMP4ForVOT := mp4Tmp.Name()
@@ -1949,7 +1949,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate build audio-only mp4 failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, e)
 			}
-			reply(sendCtx, "Не удалось подготовить mp4 для перевода.", false)
+			reply(sendCtx, "Не удалось подготовить источник для перевода.", false)
 			return
 		}
 		if cachePath, cacheErr := setVoiceSourceCache(mediaInfo.FileID, sourceMP4ForVOT); cacheErr == nil && strings.TrimSpace(cachePath) != "" {
@@ -1993,7 +1993,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if cached, ok := getFreshFile(voiceSubtitlesCachePath(cacheKey)); ok {
 				if progress != nil {
 					progress.SetFrame(8)
-					progress.SetStage("Отправка результата (кеш)")
+					progress.SetStage("Отправка результата")
 				}
 				if err := sendDocumentFromFileNamed(sendCtx, cached, voiceOutName(cacheKey, mediaInfo, ".srt"), ""); err != nil {
 					reply(sendCtx, "Не удалось отправить subtitle файл.", false)
@@ -2004,7 +2004,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if cached, ok := getFreshFile(voiceTextCachePath(cacheKey)); ok {
 				if progress != nil {
 					progress.SetFrame(8)
-					progress.SetStage("Отправка результата (кеш)")
+					progress.SetStage("Отправка результата")
 				}
 				if err := sendDocumentFromFileNamed(sendCtx, cached, voiceOutName(cacheKey, mediaInfo, ".txt"), ""); err != nil {
 					reply(sendCtx, "Не удалось отправить текстовый файл перевода.", false)
@@ -2038,7 +2038,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 
 		if progress != nil {
 			progress.SetFrame(4)
-			progress.SetStage("Субтитры через VOT")
+			progress.SetStage("Субтитры")
 		}
 		subsFormat := "json"
 		if task.Action == voiceTranslateActionSubs {
@@ -2073,7 +2073,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 				}
 				if progress != nil {
 					progress.SetFrame(4)
-					progress.SetStage("Субтитры через VOT")
+					progress.SetStage("Субтитры")
 				}
 				subsPath, err = runVOTCLISubtitlesLocal(publicURL, workDir, "translated_subs_retry", srcLang, resLang, subsFormat)
 				if err == nil {
@@ -2087,9 +2087,9 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 				log.Printf("voice translate subtitles failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, err)
 			}
 			if emptySubs {
-				reply(sendCtx, "VOT не вернул субтитры для этого файла (пустой список). Перевод аудио/микс может работать, а subtitles/text для этого источника недоступны.", false)
+				reply(sendCtx, "Не удалось получить субтитры для этого файла (пустой список). Перевод аудио/микс может работать, а subtitles/text для этого источника недоступны.", false)
 			} else {
-				reply(sendCtx, "Не удалось получить субтитры через VOT.", false)
+				reply(sendCtx, "Не удалось получить субтитры.", false)
 			}
 			return
 		}
@@ -2118,7 +2118,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		txt := strings.TrimSpace(subtitlesToPlainText(subsPath))
 		if txt == "" {
-			reply(sendCtx, "Не удалось извлечь текст из субтитров VOT.", false)
+			reply(sendCtx, "Не удалось извлечь текст из субтитров.", false)
 			return
 		}
 		// Also persist subtitles cache when text is requested first,
@@ -2159,7 +2159,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if cachedMP3, ok := getVoiceTranslateCache(cacheKey); ok {
 		if progress != nil {
 			progress.SetFrame(6)
-			progress.SetStage("Использую кеш перевода")
+			progress.SetStage("Подготовка перевода")
 		}
 		mp3Path = cachedMP3
 	} else {

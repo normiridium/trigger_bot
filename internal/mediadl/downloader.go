@@ -221,6 +221,14 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		// Fallback to generic auto-selection only when explicit AV merge is unavailable.
 		path, err = d.runDownload(ctx, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl))
 	}
+	if err != nil && probe.Service == ServiceTikTok && isYTDLPTikTokNoDataBlocks(err) {
+		// Transient TikTok CDN glitch: force IPv4 and retry once.
+		path, err = d.runDownload(ctx, d.withTikTokRetryArgs(args))
+	}
+	if err != nil && probe.Service == ServiceTikTok && isYTDLPTikTokNoDataBlocks(err) {
+		// Last fallback: generic selector + IPv4.
+		path, err = d.runDownload(ctx, d.withTikTokRetryArgs(d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl)))
+	}
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -263,6 +271,9 @@ func (d Downloader) buildTikTokAudioSafeArgs(service Service, url, outTpl string
 		"--no-playlist",
 		"--quiet",
 		"--no-warnings",
+		"--retries", "8",
+		"--fragment-retries", "8",
+		"--file-access-retries", "3",
 		"--extractor-args", d.extractorArgs(),
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
@@ -634,6 +645,26 @@ func (d Downloader) ytDLPAuthArgs() []string {
 func isYTDLPFormatUnavailable(err error) bool {
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "requested format is not available")
+}
+
+func isYTDLPTikTokNoDataBlocks(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "did not get any data blocks")
+}
+
+func (d Downloader) withTikTokRetryArgs(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	// URL is expected as the last arg in our builders.
+	head := append([]string{}, args[:len(args)-1]...)
+	tail := args[len(args)-1]
+	head = append(head, "--force-ipv4")
+	head = append(head, tail)
+	return head
 }
 
 func isYTDLPYouTubeRetryable(err error) bool {
