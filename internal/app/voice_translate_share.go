@@ -128,7 +128,7 @@ func releaseVoiceShareFile(token string) {
 func buildVoiceSharePublicURL(token string) string {
 	base := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PUBLIC_BASE_URL"))
 	if base == "" {
-		base = "https://bot.example.invalid"
+		return ""
 	}
 	base = strings.TrimRight(base, "/")
 	voiceShareMu.Lock()

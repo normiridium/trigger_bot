@@ -1667,9 +1667,18 @@ func Run() {
 	defer store.Close()
 	log.Printf("storage backend: mongodb")
 
-	bot, err := tgbotapi.NewBotAPI(token)
+	apiEndpoint := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_API_ENDPOINT"))
+	bot, err := func() (*tgbotapi.BotAPI, error) {
+		if apiEndpoint == "" {
+			return tgbotapi.NewBotAPI(token)
+		}
+		return tgbotapi.NewBotAPIWithAPIEndpoint(token, apiEndpoint)
+	}()
 	if err != nil {
 		log.Fatalf("create bot failed: %v", err)
+	}
+	if apiEndpoint != "" {
+		log.Printf("telegram bot api endpoint: %s", apiEndpoint)
 	}
 	var spotifyMusicClient SpotifyMusicPort
 	spotifyClientID := strings.TrimSpace(firstNonEmptyEnv("SPOTIPY_CLIENT_ID", "SPOTIFY_CLIENT_ID"))

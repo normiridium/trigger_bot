@@ -1646,6 +1646,35 @@ func downloadFileToPath(sourceURL, outPath string) error {
 	return nil
 }
 
+func telegramFileEndpointTemplate() string {
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_FILE_ENDPOINT")); v != "" {
+		return v
+	}
+	return "https://api.telegram.org/file/bot%s/%s"
+}
+
+func getTelegramFileDirectURL(bot *tgbotapi.BotAPI, fileID string) (string, error) {
+	if bot == nil {
+		return "", fmt.Errorf("bot is nil")
+	}
+	fid := strings.TrimSpace(fileID)
+	if fid == "" {
+		return "", fmt.Errorf("file id is empty")
+	}
+	f, err := bot.GetFile(tgbotapi.FileConfig{FileID: fid})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(f.FilePath) == "" {
+		return "", fmt.Errorf("telegram file path is empty")
+	}
+	return fmt.Sprintf(
+		telegramFileEndpointTemplate(),
+		strings.TrimSpace(bot.Token),
+		strings.TrimLeft(strings.TrimSpace(f.FilePath), "/"),
+	), nil
+}
+
 func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo bool) (string, error) {
 	ext := ".mp3"
 	if hasVideo {
@@ -1875,7 +1904,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		setVoiceCacheBaseName(cacheKey, n)
 	}
 	providerUsed := "cache"
-	sourceURL, err := task.Bot.GetFileDirectURL(mediaInfo.FileID)
+	sourceURL, err := getTelegramFileDirectURL(task.Bot, mediaInfo.FileID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "file is too big") {
 			reply(sendCtx, "Telegram Bot API не даёт скачать файл больше 20 МБ. Для больших видео нужен local Bot API server/MTProto.", false)
@@ -2170,24 +2199,39 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		cliSourceURL := publicURL
 		cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated", srcLang, resLang)
 		if cliErr != nil {
-			msg := "Не удалось выполнить голосовой перевод."
-			errText := strings.ToLower(cliErr.Error())
-			if strings.Contains(errText, "timeout") {
-				msg = "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
-			} else if strings.Contains(errText, "too big") {
-				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
-				msg = fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
-			}
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate cli failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cliErr)
 			}
-			reply(sendCtx, msg, false)
-			return
+			// Fallback path: use VOT backend directly when local CLI is unavailable or failed.
+			backendRes, backendErr := runVOTBackendTranslate(cliSourceURL, srcLang, resLang)
+			if backendErr == nil && strings.TrimSpace(backendRes.translatedURL) != "" {
+				if dlErr := downloadFileToPath(backendRes.translatedURL, mp3Path); dlErr == nil {
+					providerUsed = strings.TrimSpace(backendRes.providerUsed)
+				} else {
+					backendErr = dlErr
+				}
+			}
+			if backendErr != nil || strings.TrimSpace(providerUsed) == "cache" {
+				msg := "Не удалось выполнить голосовой перевод."
+				errText := strings.ToLower(cliErr.Error())
+				if strings.Contains(errText, "timeout") {
+					msg = "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
+				} else if strings.Contains(errText, "too big") {
+					maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
+					msg = fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
+				}
+				if debugTriggerLogEnabled && backendErr != nil {
+					log.Printf("voice translate backend fallback failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, backendErr)
+				}
+				reply(sendCtx, msg, false)
+				return
+			}
+		} else {
+			if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
+				mp3Path = cliOut
+			}
+			providerUsed = "vot-cli"
 		}
-		if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
-			mp3Path = cliOut
-		}
-		providerUsed = "vot-cli"
 	}
 	if !pathWithinVoiceTranslateTmpDir(mp3Path) {
 		cacheDst := voiceTranslateCacheMP3Path(cacheKey)
