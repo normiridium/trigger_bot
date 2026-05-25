@@ -1,0 +1,16 @@
+[Unit]
+Description=Trigger Admin Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=faline
+WorkingDirectory=/home/faline/trigger_admin_bot
+EnvironmentFile=/home/faline/trigger_admin_bot/.env
+ExecStart=/home/faline/trigger_admin_bot/trigger_admin_bot
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

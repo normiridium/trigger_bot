@@ -366,9 +366,25 @@ func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 	// m.Text = truncateRunes(m.Text, 4096) // временно отключено
 	sent, err := ctx.Bot.Send(m)
 	if err != nil {
-		log.Printf("send markdown failed: %v", err)
-		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки Markdown-сообщения", err)
-		return false
+		log.Printf("send markdown failed, fallback to plain text: %v", err)
+		plain := tgbotapi.NewMessage(ctx.ChatID, rawText)
+		plain.DisableWebPagePreview = !preview
+		if ctx.ReplyTo > 0 {
+			plain.ReplyToMessageID = ctx.ReplyTo
+			plain.AllowSendingWithoutReply = true
+		}
+		sentPlain, plainErr := ctx.Bot.Send(plain)
+		if plainErr != nil {
+			reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки сообщения", plainErr)
+			return false
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send plain ok after markdown fail chat=%d msg=%d replyTo=%d text=%q",
+				ctx.ChatID, sentPlain.MessageID, ctx.ReplyTo, clipText(rawText, 120))
+		}
+		addOutgoingChatRecentMessage(ctx.ChatID, rawText)
+		observeOutgoingBotPortrait(ctx.ChatID, rawText)
+		return true
 	}
 	if debugTriggerLogEnabled {
 		log.Printf("send markdown ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(m.Text, 120))

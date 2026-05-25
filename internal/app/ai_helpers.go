@@ -23,6 +23,16 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+func sanitizeSecretText(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Reuse existing token redaction for Telegram bot tokens in URLs/text.
+	s = redactTelegramToken(s)
+	return s
+}
+
 func transcribeTelegramVoiceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string, error) {
 	if bot == nil || msg == nil || msg.Voice == nil {
 		return "", errors.New("voice message is required")
@@ -366,17 +376,21 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 
 	userMessage := map[string]interface{}{"role": "user", "content": prompt}
 	if imageURL, ok := resolveMessageImageURL(ctx.Bot, ctx.Msg); ok {
+		openAIImageURL := imageURL
+		if dataURL, err := buildOpenAIImageDataURL(imageURL); err == nil && strings.TrimSpace(dataURL) != "" {
+			openAIImageURL = dataURL
+		}
 		userMessage["content"] = []map[string]interface{}{
 			{"type": "text", "text": prompt},
 			{
 				"type": "image_url",
 				"image_url": map[string]string{
-					"url": imageURL,
+					"url": openAIImageURL,
 				},
 			},
 		}
 		if debugGPTLogEnabled {
-			log.Printf("gpt request multimodal image_url=%q", clipLogText(imageURL, 200))
+			log.Printf("gpt request multimodal image_url=%q", clipLogText(sanitizeSecretText(imageURL), 200))
 		}
 	}
 	payload := map[string]interface{}{
@@ -405,10 +419,10 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 		return "", err
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt response status=%d body=%q", resp.StatusCode, clipLogText(string(bodyBytes), 200))
+		log.Printf("gpt response status=%d body=%q", resp.StatusCode, clipLogText(sanitizeSecretText(string(bodyBytes)), 200))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		return "", fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600))
 	}
 
 	var result struct {
@@ -809,13 +823,27 @@ func reportChatFailure(bot *tgbotapi.BotAPI, chatID int64, context string, err e
 	if !chatErrorLogEnabled || bot == nil || chatID == 0 || err == nil {
 		return
 	}
-	msgText := strings.TrimSpace(err.Error())
-	if len(msgText) > 300 {
-		msgText = msgText[:300] + "..."
-	}
-	text := fmt.Sprintf("⚠️ %s: %s", strings.TrimSpace(context), msgText)
+	// Never expose raw upstream errors to chat (can leak sensitive internals/tokens).
+	text := fmt.Sprintf("⚠️ %s. Подробности в логах.", strings.TrimSpace(context))
 	m := tgbotapi.NewMessage(chatID, text)
 	_, _ = bot.Send(m)
+}
+
+func buildOpenAIImageDataURL(imageURL string) (string, error) {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", errors.New("image url is empty")
+	}
+	imgBytes, err := fetchImageBytes(imageURL)
+	if err != nil {
+		return "", err
+	}
+	ctype := strings.ToLower(strings.TrimSpace(http.DetectContentType(imgBytes)))
+	if !strings.HasPrefix(ctype, "image/") {
+		ctype = "image/jpeg"
+	}
+	enc := base64.StdEncoding.EncodeToString(imgBytes)
+	return "data:" + ctype + ";base64," + enc, nil
 }
 
 func clipText(s string, max int) string {

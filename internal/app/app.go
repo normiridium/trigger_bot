@@ -375,7 +375,7 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
-		log.Printf("gpt prompt failed: %v", err)
+		log.Printf("gpt prompt failed: %s", sanitizeSecretText(err.Error()))
 		if isOpenAIInsufficientQuotaError(err) {
 			if allowOpenAIQuotaWarning(task.Msg.Chat.ID, time.Now(), 30*time.Minute) {
 				if !sendUserLimitLowWarning(task.Bot, task.Msg, task.QuotaLowTrigger, task.TemplateLookup) {
