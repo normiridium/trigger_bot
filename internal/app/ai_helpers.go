@@ -49,7 +49,7 @@ func transcribeTelegramVoiceMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message)
 	if fileID == "" {
 		return "", errors.New("voice file id is empty")
 	}
-	fileURL, err := bot.GetFileDirectURL(fileID)
+	fileURL, err := getTelegramFileDirectURL(bot, fileID)
 	if err != nil {
 		return "", fmt.Errorf("telegram file url: %w", err)
 	}
