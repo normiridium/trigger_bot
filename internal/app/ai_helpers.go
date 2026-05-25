@@ -69,22 +69,27 @@ func downloadTelegramAudioForTranscription(fileURL string) ([]byte, string, erro
 	if fileURL == "" {
 		return nil, "", errors.New("telegram file url is empty")
 	}
-	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
-	if err != nil {
-		return nil, "", err
-	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	bodyBytes, status, err := fetchTelegramFileBytes(client, fileURL)
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
-	if err != nil {
-		return nil, "", err
+	// Local Bot API may return 404 for some forwarded/reposted files.
+	// Retry via public Telegram endpoint to preserve legacy behavior.
+	if status == http.StatusNotFound {
+		if fallbackURL := swapToPublicTelegramFileURL(fileURL); fallbackURL != "" && fallbackURL != fileURL {
+			if debugTriggerLogEnabled {
+				log.Printf("voice transcription file retry via public telegram endpoint")
+			}
+			bodyBytes2, status2, err2 := fetchTelegramFileBytes(client, fallbackURL)
+			if err2 == nil && status2 >= 200 && status2 < 300 && len(bodyBytes2) > 0 {
+				bodyBytes = bodyBytes2
+				status = status2
+			}
+		}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("telegram file status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 300))
+	if status < 200 || status >= 300 {
+		return nil, "", fmt.Errorf("telegram file status=%d body=%s", status, clipText(string(bodyBytes), 300))
 	}
 	if len(bodyBytes) == 0 {
 		return nil, "", errors.New("telegram file is empty")
@@ -98,6 +103,40 @@ func downloadTelegramAudioForTranscription(fileURL string) ([]byte, string, erro
 		}
 	}
 	return bodyBytes, "voice" + ext, nil
+}
+
+func fetchTelegramFileBytes(client *http.Client, fileURL string) ([]byte, int, error) {
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 30<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return bodyBytes, resp.StatusCode, nil
+}
+
+func swapToPublicTelegramFileURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return ""
+	}
+	if host != "127.0.0.1" && host != "localhost" {
+		return ""
+	}
+	u.Scheme = "https"
+	u.Host = "api.telegram.org"
+	return u.String()
 }
 
 func transcribeAudioBytes(apiKey, model, fileName string, audioBytes []byte) (string, error) {
