@@ -32,4 +32,4 @@ static/tmp/
 
 # local proxy runtime/config artifacts
 .singbox/
-bot.service.example
+.env.bak_*
