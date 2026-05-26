@@ -1847,12 +1847,32 @@ func Run() {
 				log.Printf("web admin stopped: %v", err)
 			}
 		}()
+	} else if strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PUBLIC_BASE_URL")) != "" {
+		tmpRoutes := http.NewServeMux()
+		tmpRoutes.HandleFunc("/trigger_bot/tmp/", NewWebAdmin(nil, "").voiceTranslateTempFile)
+		go func() {
+			log.Printf("Voice translate temp file server listening on %s", adminBind)
+			if err := http.ListenAndServe(adminBind, tmpRoutes); err != nil {
+				log.Printf("voice translate temp file server stopped: %v", err)
+			}
+		}()
 	}
 	go runScheduledUnmutes(bot, store)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	u.AllowedUpdates = []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
+	if envBool("TELEGRAM_DROP_PENDING_UPDATES_ON_START", true) {
+		nextOffset, count, err := discardPendingUpdatesWithEmojiMeta(bot, u)
+		if err != nil {
+			log.Printf("drop pending updates on start failed: %v", err)
+		} else if nextOffset > 0 {
+			u.Offset = nextOffset
+			log.Printf("drop pending updates on start ok count=%d next_offset=%d", count, nextOffset)
+		} else {
+			log.Printf("drop pending updates on start ok count=0")
+		}
+	}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
 	templateLookup := buildTemplateLookup(store)

@@ -104,6 +104,23 @@ func getUpdatesChanWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateCon
 	return ch
 }
 
+func discardPendingUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) (int, int, error) {
+	config.Offset = -1
+	config.Limit = 1
+	config.Timeout = 0
+
+	items, err := getUpdatesWithEmojiMeta(bot, config)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(items) == 0 {
+		return 0, 0, nil
+	}
+
+	nextOffset := items[len(items)-1].Update.UpdateID + 1
+	return nextOffset, len(items), nil
+}
+
 func getUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) ([]updateWithEmojiMeta, error) {
 	resp, err := bot.Request(config)
 	if err != nil {
