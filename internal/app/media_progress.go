@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -48,6 +49,8 @@ type mediaProgressHandle struct {
 	lastFrame int
 	stage     string
 	frames    []string
+	lastText  string
+	lastEdit  time.Time
 }
 
 func (h *mediaProgressHandle) SetFrame(frame int) {
@@ -69,11 +72,7 @@ func (h *mediaProgressHandle) SetFrame(frame int) {
 	stage := h.stage
 	h.mu.Unlock()
 
-	edit := tgbotapi.NewEditMessageText(h.chatID, h.messageID, renderMediaProgressText(h.frames, frame, stage))
-	edit.ParseMode = "HTML"
-	if _, e := h.bot.Request(edit); e != nil && debugTriggerLogEnabled {
-		log.Printf("media progress edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
-	}
+	h.edit(frame, stage)
 }
 
 func (h *mediaProgressHandle) SetStage(stage string) {
@@ -90,10 +89,33 @@ func (h *mediaProgressHandle) SetStage(stage string) {
 	frame := h.lastFrame
 	h.mu.Unlock()
 
+	h.edit(frame, stage)
+}
+
+func (h *mediaProgressHandle) edit(frame int, stage string) {
+	if h == nil || h.bot == nil || h.chatID == 0 || h.messageID == 0 {
+		return
+	}
+	text := renderMediaProgressText(h.frames, frame, stage)
+	minInterval := time.Duration(envInt("MEDIA_PROGRESS_MIN_EDIT_INTERVAL_MS", 2000)) * time.Millisecond
+	now := time.Now()
+	h.mu.Lock()
+	if text == h.lastText {
+		h.mu.Unlock()
+		return
+	}
+	if minInterval > 0 && !h.lastEdit.IsZero() && now.Sub(h.lastEdit) < minInterval {
+		h.mu.Unlock()
+		return
+	}
+	h.lastText = text
+	h.lastEdit = now
+	h.mu.Unlock()
+
 	edit := tgbotapi.NewEditMessageText(h.chatID, h.messageID, renderMediaProgressText(h.frames, frame, stage))
 	edit.ParseMode = "HTML"
 	if _, e := h.bot.Request(edit); e != nil && debugTriggerLogEnabled {
-		log.Printf("media progress stage edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
+		log.Printf("media progress edit failed chat=%d msg=%d err=%v", h.chatID, h.messageID, e)
 	}
 }
 
@@ -141,6 +163,8 @@ func startMediaDownloadProgress(task mediaDownloadTask) (*mediaProgressHandle, f
 		lastFrame: 0,
 		stage:     "Подготовка",
 		frames:    frames,
+		lastText:  msg.Text,
+		lastEdit:  time.Now(),
 	}
 
 	var once sync.Once

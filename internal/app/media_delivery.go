@@ -44,6 +44,7 @@ type htmlOpenTag struct {
 }
 
 var telegramHTMLTokenRe = regexp.MustCompile(`(?s)<[^>]+>|[^<]+`)
+var telegramRetryAfterRe = regexp.MustCompile(`(?i)retry after\s+([0-9]+)`)
 
 var outgoingBotPortraitObserverMu sync.RWMutex
 var outgoingBotPortraitObserver func(chatID int64, text string)
@@ -65,6 +66,63 @@ func observeOutgoingBotPortrait(chatID int64, text string) {
 	if fn != nil {
 		fn(chatID, val)
 	}
+}
+
+func telegramRetryAfter(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	m := telegramRetryAfterRe.FindStringSubmatch(err.Error())
+	if len(m) < 2 {
+		return 0, false
+	}
+	sec, parseErr := strconv.Atoi(m[1])
+	if parseErr != nil || sec <= 0 {
+		return 0, false
+	}
+	return time.Duration(sec) * time.Second, true
+}
+
+func sendTelegramWithFloodRetry(ctx sendContext, what string, ch tgbotapi.Chattable) (tgbotapi.Message, error) {
+	attempts := envInt("TELEGRAM_SEND_RETRY_ATTEMPTS", 3)
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > 10 {
+		attempts = 10
+	}
+	maxWait := time.Duration(envInt("TELEGRAM_SEND_RETRY_MAX_SEC", 120)) * time.Second
+	if maxWait <= 0 {
+		maxWait = 120 * time.Second
+	}
+
+	var last tgbotapi.Message
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		sent, err := ctx.Bot.Send(ch)
+		if err == nil {
+			return sent, nil
+		}
+		last = sent
+		lastErr = err
+		wait, ok := telegramRetryAfter(err)
+		if !ok || attempt == attempts {
+			return sent, err
+		}
+		if wait > maxWait {
+			log.Printf("telegram send flood wait too long what=%s chat=%d attempt=%d/%d wait=%s max=%s err=%v",
+				what, ctx.ChatID, attempt, attempts, wait, maxWait, err)
+			return sent, err
+		}
+		sleep := wait + time.Second
+		if sleep > maxWait {
+			sleep = maxWait
+		}
+		log.Printf("telegram send flood wait retry what=%s chat=%d attempt=%d/%d sleep=%s err=%v",
+			what, ctx.ChatID, attempt, attempts, sleep, err)
+		time.Sleep(sleep)
+	}
+	return last, lastErr
 }
 
 func splitTelegramHTMLMessage(input string, maxRunes int) []string {
@@ -516,7 +574,7 @@ func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sour
 		m.Caption = caption
 		m.ParseMode = "HTML"
 	}
-	sent, err := ctx.Bot.Send(m)
+	sent, err := sendTelegramWithFloodRetry(ctx, "audio file", m)
 	if err != nil {
 		return err
 	}
@@ -545,7 +603,7 @@ func sendVideoFromFile(ctx sendContext, filePath, caption string) error {
 		m.Caption = clipText(caption, 1024)
 		m.ParseMode = "HTML"
 	}
-	sent, err := ctx.Bot.Send(m)
+	sent, err := sendTelegramWithFloodRetry(ctx, "video file", m)
 	if err != nil {
 		return err
 	}
@@ -573,7 +631,7 @@ func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
 		m.Caption = clipText(caption, 1024)
 		m.ParseMode = "HTML"
 	}
-	sent, err := ctx.Bot.Send(m)
+	sent, err := sendTelegramWithFloodRetry(ctx, "photo file", m)
 	if err != nil {
 		return err
 	}
@@ -601,7 +659,7 @@ func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
 		m.Caption = clipText(caption, 1024)
 		m.ParseMode = "HTML"
 	}
-	sent, err := ctx.Bot.Send(m)
+	sent, err := sendTelegramWithFloodRetry(ctx, "document file", m)
 	if err != nil {
 		return err
 	}

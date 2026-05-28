@@ -1750,7 +1750,6 @@ func Run() {
 		log.Printf("per-user GPT response limit disabled")
 	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
-	startBotCommandsSyncLoop(bot)
 
 	allowedChats, err := chataccess.ParseAllowedChatIDs(os.Getenv("ALLOWED_CHAT_IDS"))
 	if err != nil {
@@ -1774,7 +1773,6 @@ func Run() {
 	clearChatService := chatclear.NewServiceFromEnv()
 	mtprotoSetup := newMTProtoSetupManager(time.Duration(envInt("MTPROTO_SETUP_TTL_SEC", 1200)) * time.Second)
 	setMTProtoSetupVisible(clearChatService != nil && clearChatService.Available(context.Background()))
-	syncBotCommands(bot)
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	summaryTracker := newChatSummaryTracker(store, envInt("CHAT_SUMMARY_EVERY_MESSAGES", 200), envInt("CHAT_SUMMARY_POOL_MESSAGES", 1000))
 	if summaryTracker != nil {
@@ -1859,6 +1857,7 @@ func Run() {
 	}
 	go runScheduledUnmutes(bot, store)
 
+	startedAtUnix := time.Now().Unix()
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	u.AllowedUpdates = []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
@@ -1901,6 +1900,18 @@ func Run() {
 	}
 
 	for update := range updates {
+		if isStartupBacklogRawMember(update.RawChatMember, startedAtUnix) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip startup backlog chat_member update date=%d", update.RawChatMember.Date)
+			}
+			continue
+		}
+		if isStartupBacklogRawMember(update.RawMyChatMember, startedAtUnix) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip startup backlog my_chat_member update date=%d", update.RawMyChatMember.Date)
+			}
+			continue
+		}
 		if update.RawChatMember != nil {
 			handleNewMemberUpdate(handlerDeps, update.RawChatMember)
 		}
@@ -2032,6 +2043,13 @@ func Run() {
 			}
 		}
 		if update.Update.EditedMessage != nil {
+			if isStartupBacklogMessage(update.Update.EditedMessage, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					log.Printf("skip startup backlog edited message chat=%d msg=%d date=%d",
+						update.Update.EditedMessage.Chat.ID, update.Update.EditedMessage.MessageID, update.Update.EditedMessage.Date)
+				}
+				continue
+			}
 			trackMessageRevision(update.Update.EditedMessage)
 			if debugTriggerLogEnabled {
 				em := update.Update.EditedMessage
@@ -2044,6 +2062,16 @@ func Run() {
 			continue
 		}
 		msg := update.Update.Message
+		if isStartupBacklogMessage(msg, startedAtUnix) {
+			if debugTriggerLogEnabled {
+				chatID := int64(0)
+				if msg.Chat != nil {
+					chatID = msg.Chat.ID
+				}
+				log.Printf("skip startup backlog message chat=%d msg=%d date=%d", chatID, msg.MessageID, msg.Date)
+			}
+			continue
+		}
 		trackMessageRevision(msg)
 		rawMsg := update.RawMessage
 		senderChatPresent := msg != nil && msg.SenderChat != nil
@@ -2418,7 +2446,7 @@ func Run() {
 					media:   mediaInfo,
 				})
 				menu := tgbotapi.NewMessage(msg.Chat.ID, "Действия с переводом:")
-				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token)
+				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo)
 				if replyToID > 0 {
 					menu.ReplyToMessageID = replyToID
 					menu.AllowSendingWithoutReply = true
@@ -2720,6 +2748,28 @@ type triggerHandlerDeps struct {
 	Store       TriggerStorePort
 	AdminCache  *adminStatusCache
 	ChatRecent  *chatRecentStore
+}
+
+func startupBacklogCutoff(startedAtUnix int64) int64 {
+	graceSec := envInt("TELEGRAM_STARTUP_OLD_UPDATE_GRACE_SEC", 0)
+	if graceSec < 0 {
+		graceSec = 0
+	}
+	return startedAtUnix - int64(graceSec)
+}
+
+func isStartupBacklogMessage(msg *tgbotapi.Message, startedAtUnix int64) bool {
+	if msg == nil || msg.Date <= 0 || startedAtUnix <= 0 {
+		return false
+	}
+	return int64(msg.Date) < startupBacklogCutoff(startedAtUnix)
+}
+
+func isStartupBacklogRawMember(upd *rawChatMemberUpdated, startedAtUnix int64) bool {
+	if upd == nil || upd.Date <= 0 || startedAtUnix <= 0 {
+		return false
+	}
+	return upd.Date < startupBacklogCutoff(startedAtUnix)
 }
 
 type musicProviderDeps struct {

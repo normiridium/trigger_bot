@@ -47,6 +47,7 @@ type voiceTranslateAction string
 const (
 	voiceTranslateActionAudio  voiceTranslateAction = "audio"
 	voiceTranslateActionMix    voiceTranslateAction = "mix"
+	voiceTranslateActionVideo  voiceTranslateAction = "video"
 	voiceTranslateActionText   voiceTranslateAction = "text"
 	voiceTranslateActionSubs   voiceTranslateAction = "subs"
 	voiceTranslateActionCancel voiceTranslateAction = "cancel"
@@ -54,6 +55,8 @@ const (
 	voiceTranslateActionNoop   voiceTranslateAction = "noop"
 	voiceTranslateActionLang   voiceTranslateAction = "lang"
 )
+
+const voiceTranslateMixCaption = `<tg-emoji emoji-id="5260512129240276089">📚</tg-emoji> Микшированный перевод`
 
 type votProvider string
 
@@ -984,12 +987,19 @@ func takeVoiceTranslateOption(token string, userID int64) (voiceTranslateOptionE
 	return v, true, ""
 }
 
-func renderVoiceTranslateOptionKeyboard(token string) tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
+func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool) tgbotapi.InlineKeyboardMarkup {
+	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "vtr|"+string(voiceTranslateActionAudio)+"|"+token),
-			tgbotapi.NewInlineKeyboardButtonData("Скачать микс", "vtr|"+string(voiceTranslateActionMix)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData("Аудиомикс", "vtr|"+string(voiceTranslateActionMix)+"|"+token),
 		),
+	}
+	if hasVideo {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Видеомикс", "vtr|"+string(voiceTranslateActionVideo)+"|"+token),
+		))
+	}
+	rows = append(rows,
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|"+string(voiceTranslateActionText)+"|"+token),
 			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|"+string(voiceTranslateActionSubs)+"|"+token),
@@ -998,6 +1008,7 @@ func renderVoiceTranslateOptionKeyboard(token string) tgbotapi.InlineKeyboardMar
 			tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|"+string(voiceTranslateActionCancel)+"|"+token),
 		),
 	)
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 type voiceSourceLang struct {
@@ -1080,6 +1091,7 @@ func parseVoiceTranslateAction(raw string) (voiceTranslateAction, bool) {
 	switch a {
 	case voiceTranslateActionAudio,
 		voiceTranslateActionMix,
+		voiceTranslateActionVideo,
 		voiceTranslateActionText,
 		voiceTranslateActionSubs,
 		voiceTranslateActionCancel,
@@ -1137,7 +1149,11 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 			})
 		}
 		return true
-	case voiceTranslateActionAudio, voiceTranslateActionMix, voiceTranslateActionText, voiceTranslateActionSubs:
+	case voiceTranslateActionAudio, voiceTranslateActionMix, voiceTranslateActionVideo, voiceTranslateActionText, voiceTranslateActionSubs:
+		if action == voiceTranslateActionVideo && !entry.media.HasVideo {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "видеомикс доступен только для видео"))
+			return true
+		}
 		if cb.Message != nil {
 			edit := tgbotapi.NewEditMessageTextAndMarkup(
 				cb.Message.Chat.ID,
@@ -1158,7 +1174,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 				cb.Message.Chat.ID,
 				cb.Message.MessageID,
 				"Действия с переводом:",
-				renderVoiceTranslateOptionKeyboard(token),
+				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo),
 			)
 			_, _ = bot.Send(edit)
 		}
@@ -1173,8 +1189,12 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 			return true
 		}
 		runAction, okRunAction := parseVoiceTranslateAction(parts[2])
-		if !okRunAction || (runAction != voiceTranslateActionAudio && runAction != voiceTranslateActionMix && runAction != voiceTranslateActionText && runAction != voiceTranslateActionSubs) {
+		if !okRunAction || (runAction != voiceTranslateActionAudio && runAction != voiceTranslateActionMix && runAction != voiceTranslateActionVideo && runAction != voiceTranslateActionText && runAction != voiceTranslateActionSubs) {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверное действие"))
+			return true
+		}
+		if runAction == voiceTranslateActionVideo && !entry.media.HasVideo {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "видеомикс доступен только для видео"))
 			return true
 		}
 		srcLang := normalizeVOTLang(strings.TrimSpace(parts[4]))
@@ -1441,6 +1461,10 @@ func sendDocumentFromFileNamed(ctx sendContext, filePath, fileName, caption stri
 }
 
 func sendAudioFromFileNamed(ctx sendContext, filePath, fileName, performer, title string) error {
+	return sendAudioFromFileNamedCaption(ctx, filePath, fileName, performer, title, "")
+}
+
+func sendAudioFromFileNamedCaption(ctx sendContext, filePath, fileName, performer, title, caption string) error {
 	filePath = strings.TrimSpace(filePath)
 	fileName = strings.TrimSpace(fileName)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
@@ -1467,6 +1491,11 @@ func sendAudioFromFileNamed(ctx sendContext, filePath, fileName, performer, titl
 	}
 	if strings.TrimSpace(title) != "" {
 		m.Title = clipText(strings.TrimSpace(title), 64)
+	}
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
 	}
 	_, err = ctx.Bot.Send(m)
 	return err
@@ -2259,12 +2288,17 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		return
 	}
-	// default action is mix
+	// default action is audio mix; video mix is explicit to keep both outputs available for video sources.
 	if progress != nil {
 		progress.SetFrame(7)
-		progress.SetStage("Микширование аудио")
+		if task.Action == voiceTranslateActionVideo {
+			progress.SetStage("Микширование видео")
+		} else {
+			progress.SetStage("Микширование аудио")
+		}
 	}
-	mixedPath, err := mixTranslatedAudioWithSource(sourcePath, mp3Path, mediaInfo.HasVideo)
+	makeVideoMix := task.Action == voiceTranslateActionVideo && mediaInfo.HasVideo
+	mixedPath, err := mixTranslatedAudioWithSource(sourcePath, mp3Path, makeVideoMix)
 	if err != nil {
 		if debugTriggerLogEnabled {
 			log.Printf("voice translate mix failed chat=%d replyTo=%d err=%v source=%s translated=%s", task.ChatID, task.ReplyTo, err, sourcePath, mp3Path)
@@ -2277,13 +2311,13 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		progress.SetFrame(8)
 		progress.SetStage("Отправка результата")
 	}
-	if mediaInfo.HasVideo {
-		if err := sendVideoFromFileNamed(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp4"), ""); err != nil {
-			reply(sendCtx, "Не удалось отправить микс.", false)
+	if makeVideoMix {
+		if err := sendVideoFromFileNamed(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp4"), voiceTranslateMixCaption); err != nil {
+			reply(sendCtx, "Не удалось отправить видеомикс.", false)
 		}
 		return
 	}
-	if err := sendAudioFromFileNamed(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp3"), "", ""); err != nil {
-		reply(sendCtx, "Не удалось отправить микс.", false)
+	if err := sendAudioFromFileNamedCaption(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp3"), "", "", voiceTranslateMixCaption); err != nil {
+		reply(sendCtx, "Не удалось отправить аудиомикс.", false)
 	}
 }

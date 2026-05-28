@@ -81,12 +81,12 @@ func registerVoiceShareFile(localPath string, ttl time.Duration) string {
 		return ""
 	}
 	_ = dst.Close()
-	voiceShareData[token] = voiceShareEntry{
+	voiceShareData[pubName] = voiceShareEntry{
 		path:      dstPath,
-		publicRel: "/trigger_bot/static/tmp/" + pubName,
+		publicRel: "/trigger_bot/tmp/" + pubName,
 		expiresAt: time.Now().Add(ttl),
 	}
-	return token
+	return pubName
 }
 
 func resolveVoiceShareFile(token string) (string, bool) {
@@ -155,8 +155,14 @@ func (w *WebAdmin) voiceTranslateTempFile(rw http.ResponseWriter, r *http.Reques
 	}
 	path, ok := resolveVoiceShareFile(token)
 	if !ok {
-		http.NotFound(rw, r)
-		return
+		staticDir := strings.TrimSpace(envOr("WEB_STATIC_DIR", "./static"))
+		candidate := filepath.Join(staticDir, "tmp", filepath.Base(token))
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			path = candidate
+		} else {
+			http.NotFound(rw, r)
+			return
+		}
 	}
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
