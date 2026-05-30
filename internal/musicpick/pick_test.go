@@ -14,17 +14,17 @@ func resetChoiceRequestsForTest() {
 	choiceMu.Unlock()
 }
 
-func TestBuildChoiceKeyboardStoresFourRequests(t *testing.T) {
+func TestBuildChoiceKeyboardStoresFiveRequests(t *testing.T) {
 	resetChoiceRequestsForTest()
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -100123},
 		From: &tgbotapi.User{ID: 42},
 	}
 	kb := BuildChoiceKeyboard(msg, 11, 22, true, "  my song ")
-	if len(kb.InlineKeyboard) != 2 {
+	if len(kb.InlineKeyboard) != 3 {
 		t.Fatalf("unexpected keyboard rows: %d", len(kb.InlineKeyboard))
 	}
-	if len(kb.InlineKeyboard[0]) != 3 || len(kb.InlineKeyboard[1]) != 1 {
+	if len(kb.InlineKeyboard[0]) != 3 || len(kb.InlineKeyboard[1]) != 1 || len(kb.InlineKeyboard[2]) != 1 {
 		t.Fatalf("unexpected keyboard layout: %+v", kb.InlineKeyboard)
 	}
 	if kb.InlineKeyboard[0][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[0][0].CallbackData, "musicpick_s:") {
@@ -36,15 +36,18 @@ func TestBuildChoiceKeyboardStoresFourRequests(t *testing.T) {
 	if kb.InlineKeyboard[0][2].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[0][2].CallbackData, "musicpick_v:") {
 		t.Fatalf("vk callback mismatch: %v", kb.InlineKeyboard[0][2].CallbackData)
 	}
-	if kb.InlineKeyboard[1][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[1][0].CallbackData, "musicpick_c:") {
-		t.Fatalf("cancel callback mismatch: %v", kb.InlineKeyboard[1][0].CallbackData)
+	if kb.InlineKeyboard[1][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[1][0].CallbackData, "musicpick_sc:") {
+		t.Fatalf("soundcloud callback mismatch: %v", kb.InlineKeyboard[1][0].CallbackData)
+	}
+	if kb.InlineKeyboard[2][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[2][0].CallbackData, "musicpick_c:") {
+		t.Fatalf("cancel callback mismatch: %v", kb.InlineKeyboard[2][0].CallbackData)
 	}
 
 	choiceMu.Lock()
 	count := len(choiceRequests)
 	choiceMu.Unlock()
-	if count != 4 {
-		t.Fatalf("expected 4 stored requests, got %d", count)
+	if count != 5 {
+		t.Fatalf("expected 5 stored requests, got %d", count)
 	}
 }
 

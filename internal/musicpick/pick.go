@@ -16,6 +16,7 @@ const (
 	ProviderSpotify = "spotify"
 	ProviderYandex  = "yandex"
 	ProviderVK      = "vk"
+	ProviderSC      = "soundcloud"
 )
 
 type ChoiceRequest struct {
@@ -61,6 +62,14 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, replyTo, sourceMsgID int, delete
 		UserID:       msg.From.ID,
 		DeleteSource: deleteSource,
 	})
+	scToken := putChoice(ChoiceRequest{
+		Query:        q,
+		ChatID:       msg.Chat.ID,
+		ReplyTo:      replyTo,
+		SourceMsgID:  sourceMsgID,
+		UserID:       msg.From.ID,
+		DeleteSource: deleteSource,
+	})
 	cancelToken := putChoice(ChoiceRequest{
 		Query:        q,
 		ChatID:       msg.Chat.ID,
@@ -74,6 +83,9 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, replyTo, sourceMsgID int, delete
 			tgbotapi.NewInlineKeyboardButtonData("Spotify", "musicpick_s:"+spotifyToken),
 			tgbotapi.NewInlineKeyboardButtonData("Yandex Music", "musicpick_y:"+yandexToken),
 			tgbotapi.NewInlineKeyboardButtonData("VK", "musicpick_v:"+vkToken),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("SoundCloud", "musicpick_sc:"+scToken),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Отменить", "musicpick_c:"+cancelToken),
@@ -103,7 +115,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		_ = req
 		return true
 	}
-	if !strings.HasPrefix(cb.Data, "musicpick_s:") && !strings.HasPrefix(cb.Data, "musicpick_y:") && !strings.HasPrefix(cb.Data, "musicpick_v:") {
+	if !strings.HasPrefix(cb.Data, "musicpick_s:") && !strings.HasPrefix(cb.Data, "musicpick_y:") && !strings.HasPrefix(cb.Data, "musicpick_v:") && !strings.HasPrefix(cb.Data, "musicpick_sc:") {
 		return false
 	}
 	provider := ProviderSpotify
@@ -114,9 +126,12 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 	} else if strings.HasPrefix(cb.Data, "musicpick_y:") {
 		token = strings.TrimPrefix(cb.Data, "musicpick_y:")
 		provider = ProviderYandex
-	} else {
+	} else if strings.HasPrefix(cb.Data, "musicpick_v:") {
 		token = strings.TrimPrefix(cb.Data, "musicpick_v:")
 		provider = ProviderVK
+	} else {
+		token = strings.TrimPrefix(cb.Data, "musicpick_sc:")
+		provider = ProviderSC
 	}
 	req, ok, msg := takeChoice(token, cb.From.ID)
 	if !ok {

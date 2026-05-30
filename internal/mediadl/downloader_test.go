@@ -73,6 +73,20 @@ func TestWithVKProxyArgs(t *testing.T) {
 	}
 }
 
+func TestBuildSoundCloudSearchArgs(t *testing.T) {
+	d := Downloader{CookiesFile: "/tmp/cookies.txt"}
+	args := strings.Join(d.buildSoundCloudSearchArgs("  crystal castles  ", 3), " ")
+	if !strings.Contains(args, "--flat-playlist") || !strings.Contains(args, "--dump-single-json") {
+		t.Fatalf("expected search metadata args, got: %s", args)
+	}
+	if !strings.Contains(args, "--cookies /tmp/cookies.txt") {
+		t.Fatalf("expected cookies args, got: %s", args)
+	}
+	if !strings.Contains(args, "scsearch3:crystal castles") {
+		t.Fatalf("expected scsearch query, got: %s", args)
+	}
+}
+
 func TestAudioFormatSelectorsForRetry(t *testing.T) {
 	d := Downloader{MaxHeight: 480}
 	got := strings.Join(d.audioFormatSelectorsForRetry(), " | ")

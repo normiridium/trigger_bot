@@ -51,6 +51,11 @@ type VKMusicDownloadPort interface {
 	DownloadFirstByQuery(ctx context.Context, query string, limit int) (vkaudio.DownloadResult, error)
 }
 
+// SoundCloudSearchPort describes SoundCloud search operations backed by media downloader.
+type SoundCloudSearchPort interface {
+	SearchSoundCloudTracks(ctx context.Context, query string, limit int) ([]mediadl.SearchTrack, error)
+}
+
 // MediaDownloadPort describes media download operations (audio/video/auto) used by workers.
 type MediaDownloadPort interface {
 	DownloadAudioFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)

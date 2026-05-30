@@ -91,7 +91,7 @@ make build-safe
 - `search_image` — найти изображение по запросу и отправить результат.
 - `spotify_music_audio` — поиск/скачивание/отправка аудио из Spotify-сценария.
 - `vk_music_audio` — поиск/скачивание/отправка аудио из VK Music.
-- `music_audio` — универсальный музыкальный сценарий (Spotify + Yandex Music + VK).
+- `music_audio` — универсальный музыкальный сценарий (Spotify + Yandex Music + VK + SoundCloud).
 - `yandex_music_audio` — обработка ссылок и скачивание треков из Яндекс.Музыки.
 - `media_link_audio` — скачивание/обработка медиа по ссылкам (YouTube/Instagram/Pinterest/SoundCloud и др.).
 - `media_tiktok_download` — скачивание медиа из TikTok.
@@ -117,8 +117,9 @@ make build-safe
 - После выбора скачивает и отправляет аудио в Telegram.
 
 ### Универсальный музыкальный сценарий (`music_audio`)
-- Показывает пользователю выбор сервиса: `Spotify`, `Yandex Music` или `VK`.
+- Показывает пользователю выбор сервиса: `Spotify`, `Yandex Music`, `VK` или `SoundCloud`.
 - Работает как с текстовым запросом, так и с прямыми ссылками сервисов.
+- SoundCloud ищет через `yt-dlp scsearch` и после выбора скачивает найденный трек обычным аудио-пайплайном.
 
 ### Yandex Music (`yandex_music_audio`)
 - Принимает ссылки вида `music.yandex.ru/.../track/...`.

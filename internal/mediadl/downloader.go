@@ -94,6 +94,14 @@ type ProbeResult struct {
 	Restricted  bool
 }
 
+type SearchTrack struct {
+	ID          string
+	SourceURL   string
+	Artist      string
+	Title       string
+	DurationSec float64
+}
+
 type DownloadResult struct {
 	FilePath    string
 	Title       string
@@ -114,12 +122,16 @@ type probeJSON struct {
 	Uploader         string         `json:"uploader"`
 	Channel          string         `json:"channel"`
 	Creator          string         `json:"creator"`
+	ID               string         `json:"id"`
+	WebpageURL       string         `json:"webpage_url"`
+	URL              string         `json:"url"`
 	Duration         float64        `json:"duration"`
 	Thumbnail        string         `json:"thumbnail"`
 	Filesize         *int64         `json:"filesize"`
 	FilesizeApprox   *int64         `json:"filesize_approx"`
 	RequestedFormats []formatRecord `json:"requested_formats"`
 	Formats          []formatRecord `json:"formats"`
+	Entries          []probeJSON    `json:"entries"`
 }
 
 type formatRecord struct {
@@ -170,6 +182,50 @@ func (d Downloader) DownloadAudioFromURL(ctx context.Context, rawURL string) (Do
 		SourceURL:   probe.SourceURL,
 		Restricted:  probe.Restricted,
 	}, nil
+}
+
+func (d Downloader) SearchSoundCloudTracks(ctx context.Context, query string, limit int) ([]SearchTrack, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("empty soundcloud search query")
+	}
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	meta, err := d.runJSON(ctx, d.buildSoundCloudSearchArgs(query, limit))
+	if err != nil {
+		return nil, err
+	}
+	tracks := make([]SearchTrack, 0, len(meta.Entries))
+	seen := make(map[string]struct{}, len(meta.Entries))
+	for _, entry := range meta.Entries {
+		sourceURL := strings.TrimSpace(entry.WebpageURL)
+		if sourceURL == "" && isSoundCloudHTTPURL(entry.URL) {
+			sourceURL = strings.TrimSpace(entry.URL)
+		}
+		if sourceURL == "" {
+			continue
+		}
+		if _, ok := seen[sourceURL]; ok {
+			continue
+		}
+		seen[sourceURL] = struct{}{}
+		artist := firstNonEmpty(strings.TrimSpace(entry.Artist), strings.TrimSpace(entry.Uploader), strings.TrimSpace(entry.Creator), strings.TrimSpace(entry.Channel))
+		tracks = append(tracks, SearchTrack{
+			ID:          strings.TrimSpace(entry.ID),
+			SourceURL:   sourceURL,
+			Artist:      artist,
+			Title:       strings.TrimSpace(entry.Title),
+			DurationSec: entry.Duration,
+		})
+		if len(tracks) >= limit {
+			break
+		}
+	}
+	return tracks, nil
 }
 
 func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (DownloadResult, error) {
@@ -505,6 +561,32 @@ func (d Downloader) buildProbeArgs(service Service, url, formatSelector string) 
 		args = append(args[:len(args)-1], "-f", formatSelector, url)
 	}
 	return args
+}
+
+func (d Downloader) buildSoundCloudSearchArgs(query string, limit int) []string {
+	if limit < 1 {
+		limit = 10
+	}
+	args := []string{
+		"--flat-playlist",
+		"--no-playlist",
+		"--skip-download",
+		"--quiet",
+		"--no-warnings",
+		"--dump-single-json",
+		fmt.Sprintf("scsearch%d:%s", limit, strings.TrimSpace(query)),
+	}
+	args = append(d.ytDLPAuthArgs(), args...)
+	return args
+}
+
+func isSoundCloudHTTPURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	return host == "soundcloud.com" || host == "www.soundcloud.com" || host == "m.soundcloud.com"
 }
 
 func (d Downloader) buildDownloadArgs(service Service, url, outTpl string) []string {

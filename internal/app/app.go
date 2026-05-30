@@ -1921,6 +1921,7 @@ func Run() {
 			YandexQueue:       yandexMusicQueue,
 			VKDownloader:      vkDownloader,
 			VKQueue:           vkMusicQueue,
+			SoundCloudSearch:  mediaDownloader,
 			MediaDownloader:   mediaDownloader,
 			MediaQueue:        mediaQueue,
 			MediaInteractive:  mediaInteractive,
@@ -1992,6 +1993,9 @@ func Run() {
 						YandexQueue:       yandexMusicQueue,
 						VKDownloader:      vkDownloader,
 						VKQueue:           vkMusicQueue,
+						SoundCloudSearch:  mediaDownloader,
+						MediaDownloader:   mediaDownloader,
+						MediaQueue:        mediaQueue,
 						IdleTracker:       idleTracker,
 					}, req, provider)
 				},
@@ -2039,6 +2043,23 @@ func Run() {
 						}
 						if vkMusicQueue == nil || !vkMusicQueue.enqueue(task) {
 							return errors.New("vk music queue is full")
+						}
+						return nil
+					}
+					if strings.EqualFold(strings.TrimSpace(req.Provider), "soundcloud") {
+						targetURL := strings.TrimSpace(req.SourceURL)
+						if targetURL == "" {
+							return errors.New("empty soundcloud track url")
+						}
+						task := mediaDownloadTask{
+							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+							URL:      targetURL,
+							Mode:     mediadl.ModeAudio,
+							DL:       mediaDownloader,
+							ReportTo: req.ChatID,
+						}
+						if mediaQueue == nil || !mediaQueue.enqueue(task) {
+							return errors.New("media download queue is full")
 						}
 						return nil
 					}
@@ -2305,7 +2326,7 @@ func Run() {
 						}
 						featureLines := []string{"Что умею:"}
 						if hasUnifiedMusic {
-							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify, Яндекс.Музыка или VK")
+							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify, Яндекс.Музыка, VK или SoundCloud")
 						} else if hasSpotify {
 							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
 						}
@@ -2791,6 +2812,7 @@ type triggerActionDeps struct {
 	YandexQueue       *yandexMusicQueue
 	VKDownloader      VKMusicDownloadPort
 	VKQueue           *vkMusicQueue
+	SoundCloudSearch  SoundCloudSearchPort
 	MediaDownloader   MediaDownloadPort
 	MediaQueue        *mediaDownloadQueue
 	MediaInteractive  bool
@@ -2838,6 +2860,9 @@ type musicProviderDeps struct {
 	YandexQueue       *yandexMusicQueue
 	VKDownloader      VKMusicDownloadPort
 	VKQueue           *vkMusicQueue
+	SoundCloudSearch  SoundCloudSearchPort
+	MediaDownloader   MediaDownloadPort
+	MediaQueue        *mediaDownloadQueue
 	IdleTracker       *trigger.IdleTracker
 }
 
@@ -3140,6 +3165,48 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 			From: &tgbotapi.User{ID: req.UserID},
 		}
 		m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (VK):")
+		m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
+		if replyTo > 0 {
+			m.ReplyToMessageID = replyTo
+			m.AllowSendingWithoutReply = true
+		}
+		_, err = deps.Bot.Send(m)
+		if err != nil {
+			return err
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(req.ChatID, time.Now())
+		}
+		return nil
+	case musicpick.ProviderSC:
+		if deps.SoundCloudSearch == nil {
+			return errors.New("SoundCloud search is not configured")
+		}
+		searchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		tracks, err := deps.SoundCloudSearch.SearchSoundCloudTracks(searchCtx, query, 10)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if len(tracks) == 0 {
+			return errors.New("ничего не найдено в SoundCloud")
+		}
+		pickTracks := make([]pick.PickTrack, 0, len(tracks))
+		for _, track := range tracks {
+			pickTracks = append(pickTracks, pick.PickTrack{
+				ID:          track.ID,
+				Provider:    "soundcloud",
+				SourceURL:   strings.TrimSpace(track.SourceURL),
+				Artist:      track.Artist,
+				Title:       track.Title,
+				DurationSec: track.DurationSec,
+			})
+		}
+		msg := &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: req.ChatID},
+			From: &tgbotapi.User{ID: req.UserID},
+		}
+		m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (SoundCloud):")
 		m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
 		if replyTo > 0 {
 			m.ReplyToMessageID = replyTo
@@ -3795,6 +3862,26 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			if deps.VKQueue == nil || !deps.VKQueue.enqueue(task) {
 				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания VK Music", errors.New("vk music queue is full"))
 				return
+			}
+			return
+		}
+		if targetURL := extractSupportedMediaURLByService(query, "soundcloud"); targetURL != "" {
+			task := mediaDownloadTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				URL:      targetURL,
+				Mode:     mediadl.ModeAudio,
+				DL:       deps.MediaDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.MediaQueue == nil || !deps.MediaQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания SoundCloud", errors.New("media download queue is full"))
+				return
+			}
+			if debugTriggerLogEnabled {
+				log.Printf("send soundcloud/audio queued trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 			}
 			return
 		}
