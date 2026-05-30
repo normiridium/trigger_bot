@@ -360,6 +360,9 @@ func TestMediaServiceEmoji(t *testing.T) {
 	if got := mediaServiceEmoji(mediadl.ServiceInstagram, mediadl.ModeVideo); !strings.Contains(got, "5463238270693416950") {
 		t.Fatalf("unexpected instagram video emoji: %q", got)
 	}
+	if got := mediaServiceEmoji(mediadl.ServiceX, mediadl.ModeVideo); got != `<tg-emoji emoji-id="5465453979896913711">💬</tg-emoji>` {
+		t.Fatalf("unexpected x video emoji: %q", got)
+	}
 	if got := mediaServiceEmoji(mediadl.ServiceSoundCloud, mediadl.ModeAudio); !strings.Contains(got, "5359614685664523140") {
 		t.Fatalf("unexpected soundcloud emoji: %q", got)
 	}
