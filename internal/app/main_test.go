@@ -198,6 +198,23 @@ func TestExtractYandexMusicURL(t *testing.T) {
 	}
 }
 
+func TestExtractVKAudioTrackID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{in: "https://vk.com/audio-2000703018_12703018", want: "-2000703018_12703018"},
+		{in: "https://m.vk.com/audio123_456", want: "123_456"},
+		{in: "audio-1_2", want: "-1_2"},
+		{in: "https://vk.com/video-1_2", want: ""},
+	}
+	for _, tc := range cases {
+		if got := extractVKAudioTrackID(tc.in); got != tc.want {
+			t.Fatalf("extractVKAudioTrackID(%q)=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestVideoFallbackHeights(t *testing.T) {
 	cases := []struct {
 		in   int
@@ -449,8 +466,8 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 		t.Fatalf("x must force video/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceVK, true)
-	if mode != "audio" || interactive {
-		t.Fatalf("vk must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)
+	if mode != "auto" || interactive {
+		t.Fatalf("vk must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceYouTube, true)
 	if mode != "audio" || !interactive {

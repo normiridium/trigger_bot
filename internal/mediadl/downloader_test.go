@@ -41,7 +41,7 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 		MaxHeight:          480,
 		ProxySocks:         "127.0.0.1:1234",
 	}
-	args := d.buildDownloadArgs(ServiceVK, "https://vk.com/audio-2000703018_12703018", "/tmp/%(title)s.%(ext)s")
+	args := d.buildDownloadArgs(ServiceVK, "https://vk.com/video-1_456239017", "/tmp/%(title)s.%(ext)s")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--audio-format m4a") || !strings.Contains(joined, "--audio-quality 192K") {
 		t.Fatalf("expected audio args, got: %s", joined)
@@ -62,7 +62,7 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 
 func TestWithVKProxyArgs(t *testing.T) {
 	d := Downloader{ProxySocks: "127.0.0.1:1234"}
-	base := []string{"--quiet", "https://vk.com/audio-1_2"}
+	base := []string{"--quiet", "https://vk.com/video-1_2"}
 	vk := d.withVKProxyArgs(ServiceVK, append([]string{}, base...))
 	if got := strings.Join(vk, " "); !strings.Contains(got, "--proxy socks5://127.0.0.1:1234") {
 		t.Fatalf("expected vk proxy args, got: %s", got)

@@ -6,6 +6,7 @@ import (
 	"trigger-admin-bot/internal/mediadl"
 	"trigger-admin-bot/internal/model"
 	"trigger-admin-bot/internal/spotifymusic"
+	"trigger-admin-bot/internal/vkaudio"
 	"trigger-admin-bot/internal/yandexmusic"
 )
 
@@ -41,6 +42,13 @@ type SpotifyDownloadPort interface {
 type YandexMusicDownloadPort interface {
 	DownloadByURL(ctx context.Context, rawURL string) (string, error)
 	SearchTracks(ctx context.Context, query string, limit int) ([]yandexmusic.SearchTrack, error)
+}
+
+// VKMusicDownloadPort describes VK music search and download operations used by workers.
+type VKMusicDownloadPort interface {
+	SearchTracks(ctx context.Context, query string, limit int) ([]vkaudio.Track, error)
+	DownloadTrack(ctx context.Context, trackID string) (vkaudio.DownloadResult, error)
+	DownloadFirstByQuery(ctx context.Context, query string, limit int) (vkaudio.DownloadResult, error)
 }
 
 // MediaDownloadPort describes media download operations (audio/video/auto) used by workers.

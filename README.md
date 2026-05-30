@@ -90,7 +90,8 @@ make build-safe
 - `gpt_image` — сгенерировать изображение через GPT/Images API.
 - `search_image` — найти изображение по запросу и отправить результат.
 - `spotify_music_audio` — поиск/скачивание/отправка аудио из Spotify-сценария.
-- `music_audio` — универсальный музыкальный сценарий (Spotify + Yandex Music).
+- `vk_music_audio` — поиск/скачивание/отправка аудио из VK Music.
+- `music_audio` — универсальный музыкальный сценарий (Spotify + Yandex Music + VK).
 - `yandex_music_audio` — обработка ссылок и скачивание треков из Яндекс.Музыки.
 - `media_link_audio` — скачивание/обработка медиа по ссылкам (YouTube/Instagram/Pinterest/SoundCloud и др.).
 - `media_tiktok_download` — скачивание медиа из TikTok.
@@ -116,12 +117,65 @@ make build-safe
 - После выбора скачивает и отправляет аудио в Telegram.
 
 ### Универсальный музыкальный сценарий (`music_audio`)
-- Показывает пользователю выбор сервиса: `Spotify` или `Yandex Music`.
+- Показывает пользователю выбор сервиса: `Spotify`, `Yandex Music` или `VK`.
 - Работает как с текстовым запросом, так и с прямыми ссылками сервисов.
 
 ### Yandex Music (`yandex_music_audio`)
 - Принимает ссылки вида `music.yandex.ru/.../track/...`.
 - Использует встроенный загрузчик, без отдельного внешнего CLI.
+
+### VK Music (`vk_music_audio`)
+- Ищет треки через VK API по `VK_TOKEN` или через web-cookies (`VK_COOKIES_FILE`), если API-токен не даёт доступ к `audio.*`.
+- Для выбранного трека получает direct/m3u8 URL и скачивает его через `ffmpeg`.
+- Поддерживает прямые ссылки вида `vk.com/audio..._...` в универсальном музыкальном сценарии.
+- Для web-режима VK-запросы можно принудительно вести через `VK_PROXY_URL`; если он не задан, используется `FIXIE_SOCKS_HOST`.
+
+#### Как получить и проверить `VK_TOKEN`
+- Нужен пользовательский VK access token, у которого реально доступны методы `audio.search` и `audio.getById`.
+- Обычный сервисный токен или токен приложения может не подойти: VK часто отвечает `Unknown method`, `invalid access_token` или `Application is blocked`.
+- `VK_USER_AGENT` лучше оставить Android-похожим, например:
+  `VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)`
+- Не вставляйте токен в чат, коммиты, логи и Codex-сессии. Хранить только в локальном `.env`.
+
+Мини-проверка токена без вывода секрета:
+
+```bash
+cd /home/faline/trigger_admin_bot
+python3 - <<'PY'
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+import json
+
+env = {}
+for raw in Path(".env").read_text(errors="ignore").splitlines():
+    raw = raw.strip()
+    if not raw or raw.startswith("#") or "=" not in raw:
+        continue
+    k, v = raw.split("=", 1)
+    env[k.strip()] = v.strip().strip('"').strip("'")
+
+token = env.get("VK_TOKEN", "")
+ua = env.get("VK_USER_AGENT") or "VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)"
+if not token:
+    raise SystemExit("VK_TOKEN is empty")
+
+qs = urlencode({
+    "access_token": token,
+    "v": "5.131",
+    "q": "Кино группа крови",
+    "count": "1",
+    "sort": "2",
+    "auto_complete": "1",
+})
+req = Request("https://api.vk.com/method/audio.search?" + qs, headers={"User-Agent": ua})
+data = json.loads(urlopen(req, timeout=15).read().decode("utf-8", "replace"))
+if "error" in data:
+    err = data["error"]
+    raise SystemExit(f"VK token check failed: {err.get('error_code')} {err.get('error_msg')}")
+print("VK token check ok")
+PY
+```
 
 ### Медиа по ссылкам (`media_link_audio`)
 - Поддерживает YouTube, Instagram, Pinterest, SoundCloud и другие источники, обрабатываемые через `yt-dlp`.
@@ -175,6 +229,16 @@ make build-safe
 - `YANDEX_MUSIC_RETRY_DELAY_SEC` — задержка между повторами.
 - `YANDEX_MUSIC_WORKERS` — число воркеров Яндекс.Музыки.
 - `YANDEX_MUSIC_QUEUE` — размер очереди задач Яндекс.Музыки.
+- `VK_TOKEN` — токен VK API для поиска и получения audio URL.
+- `VK_COOKIES_FILE` — Netscape cookies-файл VK для web-режима, когда `audio.*` API недоступен.
+- `VK_PROXY_URL` — прокси для VK web-запросов; можно оставить пустым и использовать `FIXIE_SOCKS_HOST`.
+- `VK_WEB_USER_ID` — опциональный VK user id, чтобы не определять его по странице автоматически.
+- `VK_USER_AGENT` — User-Agent для VK API/web и `ffmpeg`-запросов.
+- `VK_AUDIO_INTERACTIVE` — показывать выбор найденных VK-треков.
+- `VK_AUDIO_MAX_MB` — лимит размера VK-аудио.
+- `VK_AUDIO_FFMPEG_BIN` — путь к `ffmpeg` для VK-аудио.
+- `VK_AUDIO_WORKERS` — число воркеров VK Music.
+- `VK_AUDIO_QUEUE` — размер очереди задач VK Music.
 
 ### Медиа / yt-dlp
 - `MEDIA_DOWNLOAD_INTERACTIVE` — интерактивный выбор формата (где поддерживается).

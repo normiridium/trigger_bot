@@ -36,6 +36,7 @@ import (
 	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/spotifymusic"
 	"trigger-admin-bot/internal/trigger"
+	"trigger-admin-bot/internal/vkaudio"
 	"trigger-admin-bot/internal/yandexmusic"
 )
 
@@ -1712,6 +1713,29 @@ func Run() {
 		ForceMP3:      envBool("YANDEX_MUSIC_FORCE_MP3", true),
 		EmbedLyrics:   envBool("YANDEX_MUSIC_EMBED_LYRICS", true),
 	}
+	var vkDownloader VKMusicDownloadPort
+	vkUserAgent := strings.TrimSpace(os.Getenv("VK_USER_AGENT"))
+	vkToken := strings.TrimSpace(os.Getenv("VK_TOKEN"))
+	vkCookiesFile := strings.TrimSpace(firstNonEmptyEnv("VK_COOKIES_FILE", "YTDLP_COOKIES_FILE"))
+	if vkToken != "" || vkCookiesFile != "" {
+		vkDL, err := vkaudio.NewDownloader(vkToken, vkUserAgent)
+		if err != nil {
+			log.Printf("vk music client init failed: %v", err)
+		} else {
+			vkDL.CookiesFile = vkCookiesFile
+			vkDL.ProxyURL = strings.TrimSpace(firstNonEmptyEnv("VK_PROXY_URL", "FIXIE_SOCKS_HOST"))
+			vkDL.WebUserID = envInt("VK_WEB_USER_ID", 0)
+			vkDL.FFmpegBin = strings.TrimSpace(firstNonEmptyEnv("VK_AUDIO_FFMPEG_BIN", "FFMPEG_BIN"))
+			vkDL.MaxSizeMB = envInt("VK_AUDIO_MAX_MB", 60)
+			vkDL.TimeoutSec = envInt("VK_AUDIO_FFMPEG_TIMEOUT_SEC", 120)
+			vkDL.RetryCount = envInt("VK_AUDIO_RETRY_COUNT", 3)
+			vkDL.RetryDelayMs = envInt("VK_AUDIO_RETRY_DELAY_MS", 500)
+			vkDownloader = vkDL
+			log.Printf("vk music client enabled api=%t web=%t", vkToken != "", vkCookiesFile != "")
+		}
+	} else {
+		log.Printf("vk music client disabled: set VK_TOKEN or VK_COOKIES_FILE")
+	}
 	telegramUploadMaxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
 	if telegramUploadMaxMB <= 0 {
 		telegramUploadMaxMB = 50
@@ -1738,6 +1762,7 @@ func Run() {
 	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
 	yandexMusicQueue := newYandexMusicQueue(envInt("YANDEX_MUSIC_WORKERS", 1), envInt("YANDEX_MUSIC_QUEUE", 4))
+	vkMusicQueue := newVKMusicQueue(envInt("VK_AUDIO_WORKERS", 1), envInt("VK_AUDIO_QUEUE", 4))
 	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
 	voiceTranslateQueue := newVoiceTranslateQueue(envInt("VOICE_TRANSLATE_WORKERS", 1), envInt("VOICE_TRANSLATE_QUEUE", 4))
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
@@ -1894,6 +1919,8 @@ func Run() {
 			SpotifyQueue:      spotifyQueue,
 			YandexDownloader:  yandexDownloader,
 			YandexQueue:       yandexMusicQueue,
+			VKDownloader:      vkDownloader,
+			VKQueue:           vkMusicQueue,
 			MediaDownloader:   mediaDownloader,
 			MediaQueue:        mediaQueue,
 			MediaInteractive:  mediaInteractive,
@@ -1963,6 +1990,8 @@ func Run() {
 						SpotifyQueue:      spotifyQueue,
 						YandexDownloader:  yandexDownloader,
 						YandexQueue:       yandexMusicQueue,
+						VKDownloader:      vkDownloader,
+						VKQueue:           vkMusicQueue,
 						IdleTracker:       idleTracker,
 					}, req, provider)
 				},
@@ -1998,6 +2027,18 @@ func Run() {
 						}
 						if yandexMusicQueue == nil || !yandexMusicQueue.enqueue(task) {
 							return errors.New("yandex music queue is full")
+						}
+						return nil
+					}
+					if strings.EqualFold(strings.TrimSpace(req.Provider), "vk") {
+						task := vkMusicTask{
+							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+							TrackID:  strings.TrimSpace(req.TrackID),
+							DL:       vkDownloader,
+							ReportTo: req.ChatID,
+						}
+						if vkMusicQueue == nil || !vkMusicQueue.enqueue(task) {
+							return errors.New("vk music queue is full")
 						}
 						return nil
 					}
@@ -2211,6 +2252,7 @@ func Run() {
 						hasSpotify := false
 						hasUnifiedMusic := false
 						hasYandexMusic := false
+						hasVKMusic := false
 						hasYouTube := false
 						hasInstagram := false
 						hasTikTok := false
@@ -2241,6 +2283,9 @@ func Run() {
 							if it.ActionType == ActionTypeYandexMusic {
 								hasYandexMusic = true
 							}
+							if it.ActionType == ActionTypeVKMusic {
+								hasVKMusic = true
+							}
 							if it.ActionType == ActionTypeMediaX {
 								hasX = true
 							}
@@ -2260,12 +2305,15 @@ func Run() {
 						}
 						featureLines := []string{"Что умею:"}
 						if hasUnifiedMusic {
-							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify или Яндекс.Музыка")
+							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify, Яндекс.Музыка или VK")
 						} else if hasSpotify {
 							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
 						}
 						if hasYandexMusic {
 							featureLines = append(featureLines, "— скачивать музыку из Яндекс.Музыки по ссылке")
+						}
+						if hasVKMusic {
+							featureLines = append(featureLines, "— искать и скачивать музыку VK")
 						}
 						mediaServices := make([]string, 0, 3)
 						if hasYouTube {
@@ -2741,6 +2789,8 @@ type triggerActionDeps struct {
 	SpotifyQueue      *spotifyPickQueue
 	YandexDownloader  YandexMusicDownloadPort
 	YandexQueue       *yandexMusicQueue
+	VKDownloader      VKMusicDownloadPort
+	VKQueue           *vkMusicQueue
 	MediaDownloader   MediaDownloadPort
 	MediaQueue        *mediaDownloadQueue
 	MediaInteractive  bool
@@ -2786,6 +2836,8 @@ type musicProviderDeps struct {
 	SpotifyQueue      *spotifyPickQueue
 	YandexDownloader  YandexMusicDownloadPort
 	YandexQueue       *yandexMusicQueue
+	VKDownloader      VKMusicDownloadPort
+	VKQueue           *vkMusicQueue
 	IdleTracker       *trigger.IdleTracker
 }
 
@@ -3037,6 +3089,58 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 			tgbotapi.NewInlineKeyboardButtonData("Скачать топ-10", "ymtop10:"+topToken),
 		))
 		m.ReplyMarkup = kb
+		if replyTo > 0 {
+			m.ReplyToMessageID = replyTo
+			m.AllowSendingWithoutReply = true
+		}
+		_, err = deps.Bot.Send(m)
+		if err != nil {
+			return err
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(req.ChatID, time.Now())
+		}
+		return nil
+	case musicpick.ProviderVK:
+		if deps.VKDownloader == nil {
+			return errors.New("VK_TOKEN не настроен")
+		}
+		if trackID := extractVKAudioTrackID(query); trackID != "" {
+			if deps.VKQueue == nil || !deps.VKQueue.enqueue(vkMusicTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: req.ChatID, ReplyTo: replyTo},
+				TrackID:  trackID,
+				DL:       deps.VKDownloader,
+				ReportTo: req.ChatID,
+			}) {
+				return errors.New("vk music queue is full")
+			}
+			return nil
+		}
+		searchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		tracks, err := deps.VKDownloader.SearchTracks(searchCtx, query, 10)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if len(tracks) == 0 {
+			return errors.New("ничего не найдено в VK Music")
+		}
+		pickTracks := make([]pick.PickTrack, 0, len(tracks))
+		for _, track := range tracks {
+			pickTracks = append(pickTracks, pick.PickTrack{
+				ID:          track.ID,
+				Provider:    "vk",
+				Artist:      track.Artist,
+				Title:       track.Title,
+				DurationSec: track.DurationSec,
+			})
+		}
+		msg := &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: req.ChatID},
+			From: &tgbotapi.User{ID: req.UserID},
+		}
+		m := tgbotapi.NewMessage(req.ChatID, "🎵 Результаты поиска (VK):")
+		m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, req.SourceMsgID, req.DeleteSource, pickTracks)
 		if replyTo > 0 {
 			m.ReplyToMessageID = replyTo
 			m.AllowSendingWithoutReply = true
@@ -3518,6 +3622,100 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			log.Printf("send spotify/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
 		}
 		return
+	case ActionTypeVKMusic:
+		if deps.VKDownloader == nil {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+			return
+		}
+		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
+		if query == "" {
+			query = strings.TrimSpace(firstNonEmptyUserText(msg))
+		}
+		query = strings.TrimSpace(query)
+		if query == "" {
+			return
+		}
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+			replyTo = msg.MessageID
+		}
+		if trackID := extractVKAudioTrackID(query); trackID != "" {
+			task := vkMusicTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				TrackID:  trackID,
+				DL:       deps.VKDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.VKQueue == nil || !deps.VKQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио VK", errors.New("vk music queue is full"))
+				return
+			}
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		tracks, err := deps.VKDownloader.SearchTracks(ctx, query, 10)
+		cancel()
+		if err != nil {
+			log.Printf("vk music search failed: %v", err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка поиска музыки VK", err)
+			return
+		}
+		if len(tracks) == 0 {
+			if debugTriggerLogEnabled {
+				log.Printf("vk music search empty trigger=%d query=%q", tr.ID, clipText(query, 220))
+			}
+			return
+		}
+		if envBool("VK_AUDIO_INTERACTIVE", true) {
+			maxResults := 10
+			if len(tracks) > maxResults {
+				tracks = tracks[:maxResults]
+			}
+			pickTracks := make([]pick.PickTrack, 0, len(tracks))
+			for _, track := range tracks {
+				pickTracks = append(pickTracks, pick.PickTrack{
+					ID:          track.ID,
+					Provider:    "vk",
+					Artist:      track.Artist,
+					Title:       track.Title,
+					DurationSec: track.DurationSec,
+				})
+			}
+			m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Результаты поиска (VK):")
+			m.ReplyMarkup = pick.BuildPickKeyboard(msg, replyTo, msg.MessageID, tr.DeleteSource, pickTracks)
+			if replyTo > 0 {
+				m.ReplyToMessageID = replyTo
+				m.AllowSendingWithoutReply = true
+			}
+			if _, err := deps.Bot.Send(m); err != nil {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки списка VK", err)
+				return
+			}
+			if deps.IdleTracker != nil {
+				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			}
+			return
+		}
+		task := vkMusicTask{
+			SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+			TrackID:  tracks[0].ID,
+			DL:       deps.VKDownloader,
+			Msg:      msg,
+			Trigger:  tr,
+			Idle:     deps.IdleTracker,
+			ReportTo: msg.Chat.ID,
+		}
+		if deps.VKQueue == nil || !deps.VKQueue.enqueue(task) {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио VK", errors.New("vk music queue is full"))
+			return
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send vk/audio queued trigger=%d replyTo=%d query=%q", tr.ID, replyTo, clipText(query, 160))
+		}
+		return
 	case ActionTypeMusic:
 		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)
 		if query == "" {
@@ -3584,6 +3782,22 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			}
 			return
 		}
+		if trackID := extractVKAudioTrackID(query); trackID != "" {
+			task := vkMusicTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				TrackID:  trackID,
+				DL:       deps.VKDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.VKQueue == nil || !deps.VKQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания VK Music", errors.New("vk music queue is full"))
+				return
+			}
+			return
+		}
 		m := tgbotapi.NewMessage(msg.Chat.ID, "🎵 Где искать трек?")
 		m.ReplyMarkup = musicpick.BuildChoiceKeyboard(msg, replyTo, msg.MessageID, tr.DeleteSource, query)
 		if replyTo > 0 {
@@ -3631,11 +3845,34 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if targetURL == "" {
 			return
 		}
-		_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
 		replyTo := 0
 		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
 			replyTo = msg.MessageID
 		}
+		if trackID := extractVKAudioTrackID(targetURL); trackID != "" {
+			if deps.VKDownloader == nil {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания VK Music", errors.New("VK Music downloader is not configured"))
+				return
+			}
+			task := vkMusicTask{
+				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
+				TrackID:  trackID,
+				DL:       deps.VKDownloader,
+				Msg:      msg,
+				Trigger:  tr,
+				Idle:     deps.IdleTracker,
+				ReportTo: msg.Chat.ID,
+			}
+			if deps.VKQueue == nil || !deps.VKQueue.enqueue(task) {
+				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка скачивания VK Music", errors.New("vk music queue is full"))
+				return
+			}
+			if debugTriggerLogEnabled {
+				log.Printf("send vk/audio queued from media trigger=%d replyTo=%d track=%q", tr.ID, replyTo, trackID)
+			}
+			return
+		}
+		_, mediaService, _ := mediadl.NormalizeSupportedURL(targetURL)
 		mode, useInteractive := mediaModeAndInteractivity(mediaService, deps.MediaInteractive)
 		if useInteractive {
 			req := mediadl.ChoiceRequest{

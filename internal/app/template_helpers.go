@@ -1878,8 +1878,9 @@ func mediaModeAndInteractivity(service mediadl.Service, interactive bool) (mode 
 	case mediadl.ServiceSoundCloud:
 		return mediadl.ModeAudio, false
 	case mediadl.ServiceVK:
-		// VK music links should go straight to audio download.
-		return mediadl.ModeAudio, false
+		// VK audio links are intercepted by VK Music before generic media.
+		// Remaining VK links are usually videos/posts, so keep audio+video.
+		return mediadl.ModeAuto, false
 	case mediadl.ServiceCoub:
 		return mediadl.ModeAuto, interactive
 	case mediadl.ServicePinterest:
@@ -2234,6 +2235,30 @@ func extractYandexMusicURL(input string) string {
 		}
 	}
 	return ""
+}
+
+var vkAudioIDRe = regexp.MustCompile(`(?i)(?:^|/)audio(-?\d+)_(\d+)`)
+
+func extractVKAudioTrackID(input string) string {
+	matches := supportedMediaURLRe.FindAllString(input, 8)
+	for _, raw := range matches {
+		if id := extractVKAudioTrackIDFromURL(raw); id != "" {
+			return id
+		}
+	}
+	return extractVKAudioTrackIDFromURL(input)
+}
+
+func extractVKAudioTrackIDFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	m := vkAudioIDRe.FindStringSubmatch(raw)
+	if len(m) < 3 {
+		return ""
+	}
+	return strings.TrimSpace(m[1] + "_" + m[2])
 }
 
 func firstNonEmptyEnv(keys ...string) string {

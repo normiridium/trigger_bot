@@ -14,7 +14,7 @@ func resetChoiceRequestsForTest() {
 	choiceMu.Unlock()
 }
 
-func TestBuildChoiceKeyboardStoresThreeRequests(t *testing.T) {
+func TestBuildChoiceKeyboardStoresFourRequests(t *testing.T) {
 	resetChoiceRequestsForTest()
 	msg := &tgbotapi.Message{
 		Chat: &tgbotapi.Chat{ID: -100123},
@@ -24,7 +24,7 @@ func TestBuildChoiceKeyboardStoresThreeRequests(t *testing.T) {
 	if len(kb.InlineKeyboard) != 2 {
 		t.Fatalf("unexpected keyboard rows: %d", len(kb.InlineKeyboard))
 	}
-	if len(kb.InlineKeyboard[0]) != 2 || len(kb.InlineKeyboard[1]) != 1 {
+	if len(kb.InlineKeyboard[0]) != 3 || len(kb.InlineKeyboard[1]) != 1 {
 		t.Fatalf("unexpected keyboard layout: %+v", kb.InlineKeyboard)
 	}
 	if kb.InlineKeyboard[0][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[0][0].CallbackData, "musicpick_s:") {
@@ -33,6 +33,9 @@ func TestBuildChoiceKeyboardStoresThreeRequests(t *testing.T) {
 	if kb.InlineKeyboard[0][1].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[0][1].CallbackData, "musicpick_y:") {
 		t.Fatalf("yandex callback mismatch: %v", kb.InlineKeyboard[0][1].CallbackData)
 	}
+	if kb.InlineKeyboard[0][2].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[0][2].CallbackData, "musicpick_v:") {
+		t.Fatalf("vk callback mismatch: %v", kb.InlineKeyboard[0][2].CallbackData)
+	}
 	if kb.InlineKeyboard[1][0].CallbackData == nil || !strings.HasPrefix(*kb.InlineKeyboard[1][0].CallbackData, "musicpick_c:") {
 		t.Fatalf("cancel callback mismatch: %v", kb.InlineKeyboard[1][0].CallbackData)
 	}
@@ -40,8 +43,8 @@ func TestBuildChoiceKeyboardStoresThreeRequests(t *testing.T) {
 	choiceMu.Lock()
 	count := len(choiceRequests)
 	choiceMu.Unlock()
-	if count != 3 {
-		t.Fatalf("expected 3 stored requests, got %d", count)
+	if count != 4 {
+		t.Fatalf("expected 4 stored requests, got %d", count)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"trigger-admin-bot/internal/mediadl"
 	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/trigger"
+	"trigger-admin-bot/internal/vkaudio"
 )
 
 func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heights []int, progress *mediaProgressHandle) (string, error) {
@@ -519,8 +520,23 @@ type yandexMusicTask struct {
 	ReportTo int64
 }
 
+type vkMusicTask struct {
+	SendCtx  sendContext
+	TrackID  string
+	Query    string
+	DL       VKMusicDownloadPort
+	Msg      *tgbotapi.Message
+	Trigger  *Trigger
+	Idle     *trigger.IdleTracker
+	ReportTo int64
+}
+
 type yandexMusicQueue struct {
 	ch chan yandexMusicTask
+}
+
+type vkMusicQueue struct {
+	ch chan vkMusicTask
 }
 
 func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
@@ -600,6 +616,83 @@ func (q *yandexMusicQueue) enqueue(task yandexMusicTask) bool {
 	}
 }
 
+func newVKMusicQueue(workers, size int) *vkMusicQueue {
+	if workers < 1 {
+		workers = 1
+	}
+	if size < 1 {
+		size = workers * 2
+	}
+	q := &vkMusicQueue{ch: make(chan vkMusicTask, size)}
+	for i := 0; i < workers; i++ {
+		workerID := i + 1
+		go func(id int) {
+			for task := range q.ch {
+				func() {
+					progressTask := mediaDownloadTask{SendCtx: task.SendCtx, Mode: mediadl.ModeAudio}
+					progress, stopProgress := startMediaDownloadProgress(progressTask)
+					defer stopProgress()
+					if progress != nil {
+						progress.SetFrame(0)
+						progress.SetStage("Скачивание музыки")
+					}
+					defer func() {
+						if r := recover(); r != nil {
+							chatID := task.ReportTo
+							if chatID == 0 {
+								chatID = task.SendCtx.ChatID
+							}
+							log.Printf("vk music worker=%d panic chat=%d recover=%v", id, chatID, r)
+							reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания VK Music", fmt.Errorf("panic: %v", r))
+						}
+					}()
+					if debugTriggerLogEnabled {
+						log.Printf("vk music worker=%d start chat=%d replyTo=%d track=%q query=%q", id, task.SendCtx.ChatID, task.SendCtx.ReplyTo, clipText(task.TrackID, 80), clipText(task.Query, 120))
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					err := processVKMusic(ctx, task.SendCtx, task.DL, task.TrackID, task.Query)
+					cancel()
+					if err != nil {
+						chatID := task.ReportTo
+						if chatID == 0 {
+							chatID = task.SendCtx.ChatID
+						}
+						log.Printf("vk music queue send failed chat=%d err=%v", chatID, err)
+						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания VK Music", err)
+						return
+					}
+					if progress != nil {
+						progress.SetFrame(8)
+						progress.SetStage("Отправка аудио")
+					}
+					if debugTriggerLogEnabled {
+						log.Printf("vk music worker=%d done chat=%d", id, task.SendCtx.ChatID)
+					}
+					if task.Idle != nil {
+						task.Idle.MarkActivity(task.SendCtx.ChatID, time.Now())
+					}
+					if task.Msg != nil && task.Trigger != nil {
+						deleteTriggerSourceMessage(task.SendCtx.Bot, task.Msg, task.Trigger)
+					}
+				}()
+			}
+		}(workerID)
+	}
+	return q
+}
+
+func (q *vkMusicQueue) enqueue(task vkMusicTask) bool {
+	if q == nil {
+		return false
+	}
+	select {
+	case q.ch <- task:
+		return true
+	default:
+		return false
+	}
+}
+
 func processYandexMusic(ctx context.Context, sendCtx sendContext, dl YandexMusicDownloadPort, rawURL string) error {
 	if dl == nil {
 		return errors.New("yandex downloader is not configured")
@@ -619,6 +712,35 @@ func processYandexMusic(ctx context.Context, sendCtx sendContext, dl YandexMusic
 	}()
 	performer, title := yandexPerformerTitleFromPath(path)
 	return sendAudioFromFileWithMeta(sendCtx, path, performer, title, rawURL, "yandex_music")
+}
+
+func processVKMusic(ctx context.Context, sendCtx sendContext, dl VKMusicDownloadPort, trackID, query string) error {
+	if dl == nil {
+		return errors.New("VK_TOKEN не настроен")
+	}
+	trackID = strings.TrimSpace(trackID)
+	query = strings.TrimSpace(query)
+	var (
+		res vkaudio.DownloadResult
+		err error
+	)
+	if trackID != "" {
+		res, err = dl.DownloadTrack(ctx, trackID)
+	} else {
+		if query == "" {
+			return errors.New("empty vk music query")
+		}
+		res, err = dl.DownloadFirstByQuery(ctx, query, 5)
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rmErr := os.RemoveAll(filepath.Dir(res.FilePath)); rmErr != nil && debugTriggerLogEnabled {
+			log.Printf("vk music temp cleanup failed path=%q err=%v", res.FilePath, rmErr)
+		}
+	}()
+	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, res.Artist, res.Title, "", "vk_music")
 }
 
 func yandexPerformerTitleFromPath(path string) (string, string) {

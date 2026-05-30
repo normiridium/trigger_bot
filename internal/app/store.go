@@ -379,6 +379,8 @@ func parseActionType(v string) (ActionType, bool) {
 		return ActionTypeSearchImage, true
 	case "spotify_music_audio":
 		return ActionTypeSpotifyMusic, true
+	case "vk_music_audio":
+		return ActionTypeVKMusic, true
 	case "music_audio":
 		return ActionTypeMusic, true
 	case "yandex_music_audio":

@@ -1551,6 +1551,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-search"
 	case model.ActionTypeSpotifyMusic:
 		return "bi-music-note-beamed"
+	case model.ActionTypeVKMusic:
+		return "bi-music-note-list"
 	case model.ActionTypeMusic:
 		return "bi-music-player"
 	case model.ActionTypeYandexMusic:
