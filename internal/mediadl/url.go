@@ -12,6 +12,7 @@ const (
 	ServiceYouTube    Service = "youtube"
 	ServiceVK         Service = "vk"
 	ServiceInstagram  Service = "instagram"
+	ServicePinterest  Service = "pinterest"
 	ServiceTikTok     Service = "tiktok"
 	ServiceSoundCloud Service = "soundcloud"
 	ServiceCoub       Service = "coub"
@@ -29,10 +30,12 @@ func NormalizeSupportedURL(raw string) (normalized string, service Service, ok b
 	}
 	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
 	switch {
-	case host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" || host == "youtu.be":
+	case host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" || host == "music.youtube.com" || host == "media.youtube.com" || host == "youtu.be":
 		return raw, ServiceYouTube, true
 	case host == "vk.com" || host == "www.vk.com" || host == "m.vk.com" || host == "vk.ru" || host == "www.vk.ru":
 		return raw, ServiceVK, true
+	case isPinterestHost(host):
+		return raw, ServicePinterest, true
 	case host == "instagram.com" || host == "www.instagram.com":
 		return raw, ServiceInstagram, true
 	case host == "tiktok.com" || host == "www.tiktok.com" || host == "m.tiktok.com" || host == "vm.tiktok.com" || host == "vt.tiktok.com":
@@ -46,4 +49,9 @@ func NormalizeSupportedURL(raw string) (normalized string, service Service, ok b
 	default:
 		return "", ServiceUnknown, false
 	}
+}
+
+func isPinterestHost(host string) bool {
+	host = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(host)), "www.")
+	return host == "pin.it" || host == "pinterest.com" || strings.HasSuffix(host, ".pinterest.com")
 }

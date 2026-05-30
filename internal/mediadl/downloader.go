@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,34 +83,39 @@ func (d Downloader) ConfiguredMaxHeight() int {
 }
 
 type ProbeResult struct {
-	Title      string
-	Artist     string
-	SizeBytes  int64
-	Duration   float64
-	Service    Service
-	SourceURL  string
-	Restricted bool
+	Title       string
+	Description string
+	Artist      string
+	SizeBytes   int64
+	Duration    float64
+	Thumbnail   string
+	Service     Service
+	SourceURL   string
+	Restricted  bool
 }
 
 type DownloadResult struct {
-	FilePath   string
-	Title      string
-	Artist     string
-	MediaKind  MediaKind
-	SizeBytes  int64
-	Duration   float64
-	Service    Service
-	SourceURL  string
-	Restricted bool
+	FilePath    string
+	Title       string
+	Description string
+	Artist      string
+	MediaKind   MediaKind
+	SizeBytes   int64
+	Duration    float64
+	Service     Service
+	SourceURL   string
+	Restricted  bool
 }
 
 type probeJSON struct {
 	Title            string         `json:"title"`
+	Description      string         `json:"description"`
 	Artist           string         `json:"artist"`
 	Uploader         string         `json:"uploader"`
 	Channel          string         `json:"channel"`
 	Creator          string         `json:"creator"`
 	Duration         float64        `json:"duration"`
+	Thumbnail        string         `json:"thumbnail"`
 	Filesize         *int64         `json:"filesize"`
 	FilesizeApprox   *int64         `json:"filesize_approx"`
 	RequestedFormats []formatRecord `json:"requested_formats"`
@@ -152,15 +159,16 @@ func (d Downloader) DownloadAudioFromURL(ctx context.Context, rawURL string) (Do
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, st.Size(), limit)
 	}
 	return DownloadResult{
-		FilePath:   path,
-		Title:      probe.Title,
-		Artist:     probe.Artist,
-		MediaKind:  MediaKindAudio,
-		SizeBytes:  st.Size(),
-		Duration:   probe.Duration,
-		Service:    probe.Service,
-		SourceURL:  probe.SourceURL,
-		Restricted: probe.Restricted,
+		FilePath:    path,
+		Title:       displayTitleForService(probe.Service, MediaKindAudio, probe.Title, probe.Description),
+		Description: probe.Description,
+		Artist:      probe.Artist,
+		MediaKind:   MediaKindAudio,
+		SizeBytes:   st.Size(),
+		Duration:    probe.Duration,
+		Service:     probe.Service,
+		SourceURL:   probe.SourceURL,
+		Restricted:  probe.Restricted,
 	}, nil
 }
 
@@ -190,15 +198,16 @@ func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (Do
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, st.Size(), limit)
 	}
 	return DownloadResult{
-		FilePath:   path,
-		Title:      probe.Title,
-		Artist:     probe.Artist,
-		MediaKind:  MediaKindVideo,
-		SizeBytes:  st.Size(),
-		Duration:   probe.Duration,
-		Service:    probe.Service,
-		SourceURL:  probe.SourceURL,
-		Restricted: probe.Restricted,
+		FilePath:    path,
+		Title:       displayTitleForService(probe.Service, MediaKindVideo, probe.Title, probe.Description),
+		Description: probe.Description,
+		Artist:      probe.Artist,
+		MediaKind:   MediaKindVideo,
+		SizeBytes:   st.Size(),
+		Duration:    probe.Duration,
+		Service:     probe.Service,
+		SourceURL:   probe.SourceURL,
+		Restricted:  probe.Restricted,
 	}, nil
 }
 
@@ -217,6 +226,9 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
 	args := d.buildGenericDownloadArgsForService(probe.Service, probe.SourceURL, outTpl)
 	path, err := d.runDownload(ctx, args)
+	if err != nil && probe.Service == ServicePinterest && isYTDLPNoVideoFormats(err) && strings.TrimSpace(probe.Thumbnail) != "" {
+		path, err = d.downloadPinterestThumbnail(ctx, probe.Thumbnail, tmpDir)
+	}
 	if err != nil && probe.Service == ServiceTikTok && isYTDLPFormatUnavailable(err) {
 		// Fallback to generic auto-selection only when explicit AV merge is unavailable.
 		path, err = d.runDownload(ctx, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl))
@@ -240,16 +252,18 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		_ = os.Remove(path)
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, st.Size(), limit)
 	}
+	mediaKind := inferMediaKindByPath(path)
 	return DownloadResult{
-		FilePath:   path,
-		Title:      probe.Title,
-		Artist:     probe.Artist,
-		MediaKind:  inferMediaKindByPath(path),
-		SizeBytes:  st.Size(),
-		Duration:   probe.Duration,
-		Service:    probe.Service,
-		SourceURL:  probe.SourceURL,
-		Restricted: probe.Restricted,
+		FilePath:    path,
+		Title:       displayTitleForService(probe.Service, mediaKind, probe.Title, probe.Description),
+		Description: probe.Description,
+		Artist:      probe.Artist,
+		MediaKind:   mediaKind,
+		SizeBytes:   st.Size(),
+		Duration:    probe.Duration,
+		Service:     probe.Service,
+		SourceURL:   probe.SourceURL,
+		Restricted:  probe.Restricted,
 	}, nil
 }
 
@@ -319,13 +333,15 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 	}
 	artist := firstNonEmpty(strings.TrimSpace(out.Artist), strings.TrimSpace(out.Uploader), strings.TrimSpace(out.Channel), strings.TrimSpace(out.Creator))
 	return ProbeResult{
-		Title:      strings.TrimSpace(out.Title),
-		Artist:     artist,
-		SizeBytes:  pickSize(out),
-		Duration:   out.Duration,
-		Service:    service,
-		SourceURL:  normURL,
-		Restricted: false,
+		Title:       strings.TrimSpace(out.Title),
+		Description: cleanProbeDescription(out.Description),
+		Artist:      artist,
+		SizeBytes:   pickSize(out),
+		Duration:    out.Duration,
+		Thumbnail:   strings.TrimSpace(out.Thumbnail),
+		Service:     service,
+		SourceURL:   normURL,
+		Restricted:  false,
 	}, nil
 }
 
@@ -645,6 +661,14 @@ func (d Downloader) ytDLPAuthArgs() []string {
 func isYTDLPFormatUnavailable(err error) bool {
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "requested format is not available")
+}
+
+func isYTDLPNoVideoFormats(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "no video formats found")
 }
 
 func isYTDLPTikTokNoDataBlocks(err error) bool {
@@ -1069,6 +1093,99 @@ func (d Downloader) audioFormatSelector() string {
 
 func (d Downloader) videoFormatSelector() string {
 	return fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best[height<=%d]/best", d.maxHeight(), d.maxHeight())
+}
+
+func (d Downloader) downloadPinterestThumbnail(ctx context.Context, rawURL, dir string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", errors.New("empty pinterest thumbnail url")
+	}
+	ext := mediaExtensionFromURL(rawURL, ".jpg")
+	path := filepath.Join(dir, "pinterest-image"+ext)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("pinterest thumbnail download status=%d", resp.StatusCode)
+	}
+	out, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	limit := int64(d.maxSizeMB())*1024*1024 + 1
+	written, copyErr := io.Copy(out, io.LimitReader(resp.Body, limit))
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(path)
+		return "", copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return "", closeErr
+	}
+	if written <= 0 {
+		_ = os.Remove(path)
+		return "", errors.New("pinterest thumbnail download is empty")
+	}
+	if max := int64(d.maxSizeMB()) * 1024 * 1024; max > 0 && written > max {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("%w: %d > %d MB", ErrTooLarge, written, d.maxSizeMB())
+	}
+	return path, nil
+}
+
+func mediaExtensionFromURL(rawURL, fallback string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fallback
+	}
+	ext := strings.ToLower(filepath.Ext(u.Path))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif":
+		return ext
+	default:
+		return fallback
+	}
+}
+
+func displayTitleForService(service Service, mediaKind MediaKind, title, description string) string {
+	title = strings.TrimSpace(title)
+	_ = description
+	if service != ServicePinterest || !isPinterestGeneratedTitle(title) {
+		return title
+	}
+	switch mediaKind {
+	case MediaKindPhoto:
+		return "Pinterest photo"
+	case MediaKindVideo:
+		return "Pinterest video"
+	case MediaKindAudio:
+		return "Pinterest audio"
+	default:
+		return "Pinterest"
+	}
+}
+
+func isPinterestGeneratedTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	lower := strings.ToLower(title)
+	if !strings.HasPrefix(lower, "pinterest") {
+		return false
+	}
+	return strings.Contains(lower, "#") ||
+		strings.Contains(lower, "video") ||
+		strings.Contains(lower, "pin") ||
+		strings.Contains(lower, "image")
+}
+
+func cleanProbeDescription(description string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(description)), " ")
 }
 
 func firstNonEmpty(values ...string) string {

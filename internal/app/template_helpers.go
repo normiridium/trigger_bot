@@ -1882,6 +1882,8 @@ func mediaModeAndInteractivity(service mediadl.Service, interactive bool) (mode 
 		return mediadl.ModeAudio, false
 	case mediadl.ServiceCoub:
 		return mediadl.ModeAuto, interactive
+	case mediadl.ServicePinterest:
+		return mediadl.ModeAuto, false
 	case mediadl.ServiceInstagram:
 		return mediadl.ModeAuto, false
 	case mediadl.ServiceTikTok:

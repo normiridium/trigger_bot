@@ -14,11 +14,13 @@ import (
 )
 
 type Downloader struct {
-	YTDLPBin      string
-	ProxySocks    string
-	AudioFormat   string
-	AudioQuality  string
-	ExtractorArgs string
+	YTDLPBin           string
+	ProxySocks         string
+	AudioFormat        string
+	AudioQuality       string
+	ExtractorArgs      string
+	CookiesFile        string
+	CookiesFromBrowser string
 }
 
 func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, error) {
@@ -31,6 +33,22 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 		return "", err
 	}
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
+	var lastErr error
+	for _, extractorArgs := range d.extractorArgCandidates() {
+		path, err := d.downloadByQueryWithExtractor(ctx, query, outTpl, extractorArgs)
+		if err == nil {
+			return path, nil
+		}
+		lastErr = err
+	}
+	_ = os.RemoveAll(tmpDir)
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", errors.New("yt-dlp candidates were not attempted")
+}
+
+func (d Downloader) downloadByQueryWithExtractor(ctx context.Context, query, outTpl, extractorArgs string) (string, error) {
 	args := []string{
 		"-f", "bestaudio[ext=m4a]/bestaudio/best",
 		"-x",
@@ -39,11 +57,12 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 		"--no-playlist",
 		"--quiet",
 		"--no-warnings",
-		"--extractor-args", d.extractorArgs(),
+		"--extractor-args", extractorArgs,
 		"--print", "after_move:filepath",
 		"-o", outTpl,
 		"ytsearch1:" + query,
 	}
+	args = append(d.ytDLPAuthArgs(), args...)
 	if proxy := strings.TrimSpace(d.ProxySocks); proxy != "" {
 		args = append([]string{"--proxy", "socks5://" + proxy}, args...)
 	}
@@ -112,4 +131,34 @@ func (d Downloader) extractorArgs() string {
 		return v
 	}
 	return "youtube:player_client=android,web"
+}
+
+func (d Downloader) extractorArgCandidates() []string {
+	seen := make(map[string]bool)
+	candidates := []string{
+		d.extractorArgs(),
+		"youtube:player_client=android",
+		"youtube:player_client=android,ios,web",
+		"youtube:player_client=web",
+	}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func (d Downloader) ytDLPAuthArgs() []string {
+	if v := strings.TrimSpace(d.CookiesFromBrowser); v != "" {
+		return []string{"--cookies-from-browser", v}
+	}
+	if v := strings.TrimSpace(d.CookiesFile); v != "" {
+		return []string{"--cookies", v}
+	}
+	return nil
 }

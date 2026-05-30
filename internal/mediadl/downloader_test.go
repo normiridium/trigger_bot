@@ -132,10 +132,15 @@ func TestNormalizeSupportedURL(t *testing.T) {
 		ok      bool
 	}{
 		{in: "https://www.youtube.com/watch?v=abc", service: ServiceYouTube, ok: true},
+		{in: "https://music.youtube.com/watch?v=abc", service: ServiceYouTube, ok: true},
+		{in: "https://media.youtube.com/watch?v=abc", service: ServiceYouTube, ok: true},
 		{in: "https://youtu.be/abc", service: ServiceYouTube, ok: true},
 		{in: "https://vk.com/audio-2000703018_12703018", service: ServiceVK, ok: true},
 		{in: "https://m.vk.com/video-1_456239017", service: ServiceVK, ok: true},
 		{in: "https://www.instagram.com/reel/abc/", service: ServiceInstagram, ok: true},
+		{in: "https://www.pinterest.com/pin/1234567890/", service: ServicePinterest, ok: true},
+		{in: "https://ru.pinterest.com/pin/1234567890/", service: ServicePinterest, ok: true},
+		{in: "https://pin.it/abc123", service: ServicePinterest, ok: true},
 		{in: "https://www.tiktok.com/@artist/video/123456789", service: ServiceTikTok, ok: true},
 		{in: "https://vm.tiktok.com/ZM123abc/", service: ServiceTikTok, ok: true},
 		{in: "https://soundcloud.com/artist/track", service: ServiceSoundCloud, ok: true},
@@ -174,6 +179,53 @@ func TestInferMediaKindByPath(t *testing.T) {
 	}
 	if got := inferMediaKindByPath("/tmp/a.mp3"); got != MediaKindAudio {
 		t.Fatalf("mp3 should be audio, got %q", got)
+	}
+}
+
+func TestPinterestImageHelpers(t *testing.T) {
+	if !isYTDLPNoVideoFormats(errors.New("ERROR: [Pinterest] 123: No video formats found!")) {
+		t.Fatal("expected no-video-formats error to be detected")
+	}
+	if got := mediaExtensionFromURL("https://i.pinimg.com/originals/a/b/c/demo.webp?x=1", ".jpg"); got != ".webp" {
+		t.Fatalf("unexpected extension: %q", got)
+	}
+	if got := mediaExtensionFromURL("https://example.org/noext", ".jpg"); got != ".jpg" {
+		t.Fatalf("unexpected fallback extension: %q", got)
+	}
+}
+
+func TestPinterestGeneratedTitleUsesCleanServiceTitle(t *testing.T) {
+	got := displayTitleForService(
+		ServicePinterest,
+		MediaKindPhoto,
+		"Pinterest video #1136314549752326534",
+		"Mar 27, 2026 — A figure with antler-like headgear and long, flowing hair, standing among mushrooms in a cave-like setting.",
+	)
+	want := "Pinterest photo"
+	if got != want {
+		t.Fatalf("unexpected pinterest title: %q", got)
+	}
+}
+
+func TestPinterestGeneratedTitleFallback(t *testing.T) {
+	cases := []struct {
+		kind MediaKind
+		want string
+	}{
+		{kind: MediaKindPhoto, want: "Pinterest photo"},
+		{kind: MediaKindVideo, want: "Pinterest video"},
+		{kind: MediaKindAudio, want: "Pinterest audio"},
+	}
+	for _, tc := range cases {
+		if got := displayTitleForService(ServicePinterest, tc.kind, "Pinterest video #123", ""); got != tc.want {
+			t.Fatalf("unexpected pinterest fallback title for %s: %q", tc.kind, got)
+		}
+	}
+	if got := displayTitleForService(ServiceYouTube, MediaKindPhoto, "Pinterest video #123", "better"); got != "Pinterest video #123" {
+		t.Fatalf("non-pinterest title should stay unchanged: %q", got)
+	}
+	if got := displayTitleForService(ServicePinterest, MediaKindPhoto, "Actual pin title", "better"); got != "Actual pin title" {
+		t.Fatalf("human pinterest title should stay unchanged: %q", got)
 	}
 }
 

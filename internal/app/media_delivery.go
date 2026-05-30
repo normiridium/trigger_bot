@@ -683,6 +683,8 @@ func mediaServiceEmoji(service mediadl.Service, mode mediadl.Mode) string {
 			return `<tg-emoji emoji-id="5197233100463039550">🤘</tg-emoji>`
 		case mediadl.ServiceInstagram:
 			return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+		case mediadl.ServicePinterest:
+			return `<tg-emoji emoji-id="5463065561468510637">🖼</tg-emoji>`
 		case mediadl.ServiceTikTok:
 			return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 		case mediadl.ServiceX:
@@ -702,6 +704,8 @@ func mediaServiceEmoji(service mediadl.Service, mode mediadl.Mode) string {
 		return `<tg-emoji emoji-id="5463206079913533096">📹</tg-emoji>`
 	case mediadl.ServiceInstagram:
 		return `<tg-emoji emoji-id="5463238270693416950">📹</tg-emoji>`
+	case mediadl.ServicePinterest:
+		return `<tg-emoji emoji-id="5463065561468510637">🖼</tg-emoji>`
 	case mediadl.ServiceTikTok:
 		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 	case mediadl.ServiceX:

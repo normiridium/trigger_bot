@@ -263,7 +263,7 @@
       "response_text": [
         {
           "text": "Я уже подустал от этой темы, солнце. Давай продолжим позже."
-        },
+        }
       ],
       "send_as_reply": true,
       "preview_first_link": false,
@@ -430,7 +430,7 @@
       "enabled": true,
       "trigger_mode": "all",
       "admin_mode": "anybody",
-      "match_text": "^\\s*https?://(?:www\\.|m\\.)?(?:youtube\\.com/(?:watch\\?v=|shorts/|live/)[^\\s]+|youtu\\.be/[^\\s]+)",
+      "match_text": "^\\s*https?://(?:www\\.|m\\.|music\\.|media\\.)?(?:youtube\\.com/(?:watch\\?v=|shorts/|live/)[^\\s]+|youtu\\.be/[^\\s]+)",
       "match_type": "regex",
       "case_sensitive": false,
       "action_type": "media_link_audio",
@@ -454,6 +454,29 @@
       "trigger_mode": "all",
       "admin_mode": "anybody",
       "match_text": "^\\s*https?://(?:www\\.)?instagram\\.com/(?:reel|p|tv)/[^\\s/?#]+(?:[^\\s]*)",
+      "match_type": "regex",
+      "case_sensitive": false,
+      "action_type": "media_link_audio",
+      "response_text": [
+        {
+          "text": "{{capturing_text}}"
+        }
+      ],
+      "send_as_reply": false,
+      "preview_first_link": false,
+      "delete_source_message": true,
+      "pass_through": false,
+      "chance": 100
+    },
+    {
+      "uid": "sample-pinterest",
+      "priority": 18,
+      "regex_bench_us": 197,
+      "title": "Pinterest ссылка",
+      "enabled": true,
+      "trigger_mode": "all",
+      "admin_mode": "anybody",
+      "match_text": "^\\s*https?://(?:(?:[a-z]{2}\\.)?pinterest\\.com|pin\\.it)/(?:pin/)?[^\\s/?#]+(?:[^\\s]*)",
       "match_type": "regex",
       "case_sensitive": false,
       "action_type": "media_link_audio",

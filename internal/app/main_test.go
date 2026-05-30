@@ -142,7 +142,11 @@ func TestExtractSupportedMediaURL(t *testing.T) {
 		want string
 	}{
 		{in: "скачай https://www.youtube.com/watch?v=abc123", want: "https://www.youtube.com/watch?v=abc123"},
+		{in: "музыка https://music.youtube.com/watch?v=abc123", want: "https://music.youtube.com/watch?v=abc123"},
+		{in: "медиа https://media.youtube.com/watch?v=abc123", want: "https://media.youtube.com/watch?v=abc123"},
 		{in: "линк https://instagram.com/reel/ABCDEF/?igsh=123", want: "https://instagram.com/reel/ABCDEF/?igsh=123"},
+		{in: "пин https://www.pinterest.com/pin/1234567890/", want: "https://www.pinterest.com/pin/1234567890/"},
+		{in: "короткий пин https://pin.it/abc123", want: "https://pin.it/abc123"},
 		{in: "вот https://www.tiktok.com/@artist/video/123456789", want: "https://www.tiktok.com/@artist/video/123456789"},
 		{in: "вк https://vk.com/audio-2000703018_12703018", want: "https://vk.com/audio-2000703018_12703018"},
 		{in: "https://soundcloud.com/artist/track", want: "https://soundcloud.com/artist/track"},
@@ -428,6 +432,10 @@ func TestMediaModeAndInteractivity(t *testing.T) {
 	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceInstagram, true)
 	if mode != "auto" || interactive {
 		t.Fatalf("instagram must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
+	}
+	mode, interactive = mediaModeAndInteractivity(mediadl.ServicePinterest, true)
+	if mode != "auto" || interactive {
+		t.Fatalf("pinterest must force auto/no interactive, got mode=%q interactive=%v", mode, interactive)
 	}
 	mode, interactive = mediaModeAndInteractivity(mediadl.ServiceTikTok, true)
 	if mode != "auto" || interactive {

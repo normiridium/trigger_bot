@@ -1689,11 +1689,18 @@ func Run() {
 	} else {
 		log.Printf("spotify music client disabled: set SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET")
 	}
+	spotifyCookiesFile := strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FILE"))
+	if spotifyCookiesFile == "" {
+		spotifyCookiesFile = resolveDefaultCookiesFile()
+	}
 	spotifyDownloader := spotifymusic.Downloader{
-		YTDLPBin:     strings.TrimSpace(os.Getenv("YTDLP_BIN")),
-		ProxySocks:   "",
-		AudioFormat:  strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
-		AudioQuality: strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
+		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		ProxySocks:         "",
+		AudioFormat:        strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
+		AudioQuality:       strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
+		ExtractorArgs:      strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
+		CookiesFile:        spotifyCookiesFile,
+		CookiesFromBrowser: strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
 	}
 	yandexDownloader := yandexmusic.Downloader{
 		Token:         strings.TrimSpace(firstNonEmptyEnv("YA_MUSIC_TOKEN", "YANDEX_MUSIC_TOKEN")),
