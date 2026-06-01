@@ -39,8 +39,8 @@ type WebAdmin struct {
 const adminSessionCookieName = "trigger_admin_session"
 const adminCSRFCookieName = "trigger_admin_csrf"
 const adminSessionTTL = 30 * 24 * time.Hour
-const webStaticCacheTTL = 7 * 24 * time.Hour
-const webProxyCacheTTL = 7 * 24 * time.Hour
+const webStaticCacheTTL = 0
+const webProxyCacheTTL = 0
 const adminAuthStateSetupRequired = "setup_required"
 const adminAuthStateLoginRequired = "login_required"
 const adminAuthStateAuthenticated = "authenticated"
@@ -971,6 +971,9 @@ func (w *WebAdmin) emojiPreviewProxy(rw http.ResponseWriter, r *http.Request) {
 }
 
 func cacheControlValue(ttl time.Duration) string {
+	if ttl <= 0 {
+		return "no-store, no-cache, must-revalidate, max-age=0"
+	}
 	secs := int(ttl / time.Second)
 	if secs < 0 {
 		secs = 0
