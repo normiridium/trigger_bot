@@ -1734,7 +1734,7 @@ func Run() {
 			log.Printf("vk music client enabled api=%t web=%t", vkToken != "", vkCookiesFile != "")
 		}
 	} else {
-		log.Printf("vk music client disabled: set VK_TOKEN or VK_COOKIES_FILE")
+		log.Printf("vk music client disabled: set VK_COOKIES_FILE")
 	}
 	telegramUploadMaxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
 	if telegramUploadMaxMB <= 0 {
@@ -3131,7 +3131,7 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 		return nil
 	case musicpick.ProviderVK:
 		if deps.VKDownloader == nil {
-			return errors.New("VK_TOKEN не настроен")
+			return errors.New("VK Music не настроен: нужен VK_COOKIES_FILE")
 		}
 		if trackID := extractVKAudioTrackID(query); trackID != "" {
 			if deps.VKQueue == nil || !deps.VKQueue.enqueue(vkMusicTask{
@@ -3694,7 +3694,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		return
 	case ActionTypeVKMusic:
 		if deps.VKDownloader == nil {
-			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK_TOKEN не настроен"))
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка VK-музыки", errors.New("VK Music не настроен: нужен VK_COOKIES_FILE"))
 			return
 		}
 		query := buildSpotifyMusicQueryFromMessage(newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup), resolvedTemplate)

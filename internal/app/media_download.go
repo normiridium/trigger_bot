@@ -732,7 +732,7 @@ func processYandexMusic(ctx context.Context, sendCtx sendContext, dl YandexMusic
 
 func processVKMusic(ctx context.Context, sendCtx sendContext, dl VKMusicDownloadPort, trackID, query string) error {
 	if dl == nil {
-		return errors.New("VK_TOKEN не настроен")
+		return errors.New("VK Music не настроен: нужен VK_COOKIES_FILE")
 	}
 	trackID = strings.TrimSpace(trackID)
 	query = strings.TrimSpace(query)

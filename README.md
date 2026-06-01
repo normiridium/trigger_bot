@@ -2,7 +2,7 @@
 
 Подробная документация (Wiki): https://github.com/normiridium/trigger_bot/wiki
 
-Telegram-бот с web-админкой триггеров, GPT-интеграцией, музыкальными и медиа-сценариями.
+Telegram-бот с web-админкой триггеров, GPT-интеграцией, модерацией, музыкальными сценариями, скачиванием медиа, quote-стикерами и голосовым переводом.
 
 ## 🚀 Быстрый старт
 
@@ -15,9 +15,10 @@ cd /home/appuser/trigger_admin_bot
 Базовые зависимости:
 - `ffmpeg`, `ffprobe` — обработка аудио/видео (конвертация, извлечение дорожек, проверка параметров медиафайлов).
 - `webp` (`img2webp`) — подготовка `.webp`-файлов, в том числе для стикеров и превью.
-- `yt-dlp` — скачивание медиа по ссылкам (YouTube, Instagram, Pinterest, SoundCloud и др.).
-- `nodejs` + `npm` — нужны `yt-dlp` для части YouTube-ссылок и корректной работы зависимых экстракторов.
-- `MongoDB` — основное хранилище триггеров, шаблонов, настроек и служебных данных бота.
+- `yt-dlp` — скачивание медиа по ссылкам (YouTube, Instagram, Pinterest, SoundCloud, VK video и др.).
+- `nodejs` + `npm` — нужны `yt-dlp` для части YouTube-ссылок и для VOT/voice-translate CLI, если используется голосовой перевод.
+- `MongoDB` — основное хранилище триггеров, шаблонов, настроек, кешей и служебных данных бота.
+- `curl`/`ca-certificates` — сетевые проверки и загрузка внешних ресурсов.
 
 Дополнительно для превью `.tgs` в админке:
 - Установите `lottie_to_webp` или `lottie_to_webp.sh` в `PATH`, чтобы админка могла строить превью анимированных стикеров (`.tgs`).
@@ -34,9 +35,13 @@ cp .env.example .env
 - `MONGO_URI` — строка подключения к MongoDB.
 - `OPENAI_API_KEY` — ключ OpenAI API (нужен только для GPT-функций).
 
-Для Spotify:
-- `SPOTIPY_CLIENT_ID` — client id Spotify-приложения.
-- `SPOTIPY_CLIENT_SECRET` — client secret Spotify-приложения.
+Для опциональных сценариев:
+- `SPOTIPY_CLIENT_ID` / `SPOTIPY_CLIENT_SECRET` — поиск и метаданные Spotify.
+- `YA_MUSIC_TOKEN` — Яндекс.Музыка.
+- `VK_COOKIES_FILE` — VK Music через web-cookies.
+- `SERPAPI_KEY` — `search_image`.
+- `ADMIN_TOKEN` — web-админка, если `ADMIN_ENABLED=true`.
+- `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — голосовой перевод через VOT CLI.
 
 ### 3) Собрать и запустить
 ```bash
@@ -50,6 +55,19 @@ set -a && source .env && set +a
 make build-safe
 ```
 По умолчанию это запускает сборку с `GOMAXPROCS=1` и `go build -p 1`.
+
+### 4) Запустить через systemd
+В репозитории есть пример unit-файла `bot.service.example`. Его нужно скопировать в systemd под реальным именем сервиса и заменить placeholders:
+
+```bash
+sudo cp bot.service.example /etc/systemd/system/trigger-admin-bot.service
+sudoedit /etc/systemd/system/trigger-admin-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now trigger-admin-bot.service
+systemctl status trigger-admin-bot.service --no-pager
+```
+
+На рабочем сервере обычно используется service name `trigger-admin-bot.service`.
 
 ## 🧩 Что умеет бот
 
@@ -93,10 +111,12 @@ make build-safe
 - `vk_music_audio` — поиск/скачивание/отправка аудио из VK Music.
 - `music_audio` — универсальный музыкальный сценарий (Spotify + Yandex Music + VK + SoundCloud).
 - `yandex_music_audio` — обработка ссылок и скачивание треков из Яндекс.Музыки.
-- `media_link_audio` — скачивание/обработка медиа по ссылкам (YouTube/Instagram/Pinterest/SoundCloud и др.).
+- `media_link_audio` — скачивание/обработка медиа по ссылкам (YouTube/Instagram/Pinterest/SoundCloud/VK video и др.).
 - `media_tiktok_download` — скачивание медиа из TikTok.
+- `media_coub_download` — скачивание/сборка Coub.
 - `media_x_download` — скачивание медиа из X (Twitter).
 - `user_limit_low_warning` — системное предупреждение о лимитах пользователя.
+- `openai_insufficient_quota_warning` — системное предупреждение о проблемах OpenAI quota.
 
 ### Web-админка
 - URL: `/trigger_bot` — основной вход в панель управления.
@@ -117,7 +137,7 @@ make build-safe
 - После выбора скачивает и отправляет аудио в Telegram.
 
 ### Универсальный музыкальный сценарий (`music_audio`)
-- Показывает пользователю выбор сервиса: `Spotify`, `Yandex Music`, `VK` или `SoundCloud`.
+- Показывает пользователю выбор сервиса: Spotify, Yandex Music, VK или SoundCloud.
 - Работает как с текстовым запросом, так и с прямыми ссылками сервисов.
 - SoundCloud ищет через `yt-dlp scsearch` и после выбора скачивает найденный трек обычным аудио-пайплайном.
 
@@ -126,68 +146,44 @@ make build-safe
 - Использует встроенный загрузчик, без отдельного внешнего CLI.
 
 ### VK Music (`vk_music_audio`)
-- Ищет треки через VK API по `VK_TOKEN` или через web-cookies (`VK_COOKIES_FILE`), если API-токен не даёт доступ к `audio.*`.
+- Ищет треки через web-cookies (`VK_COOKIES_FILE`). Это основной и поддерживаемый путь для VK Music.
 - Для выбранного трека получает direct/m3u8 URL и скачивает его через `ffmpeg`.
 - Поддерживает прямые ссылки вида `vk.com/audio..._...` в универсальном музыкальном сценарии.
 - Для web-режима VK-запросы можно принудительно вести через `VK_PROXY_URL`; если он не задан, используется `FIXIE_SOCKS_HOST`.
 
-#### Как получить и проверить `VK_TOKEN`
-- Нужен пользовательский VK access token, у которого реально доступны методы `audio.search` и `audio.getById`.
-- Обычный сервисный токен или токен приложения может не подойти: VK часто отвечает `Unknown method`, `invalid access_token` или `Application is blocked`.
-- `VK_USER_AGENT` лучше оставить Android-похожим, например:
-  `VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)`
-- Не вставляйте токен в чат, коммиты, логи и Codex-сессии. Хранить только в локальном `.env`.
+#### Как настроить `VK_COOKIES_FILE`
+- Экспортируйте cookies авторизованного VK-профиля в Netscape cookies format.
+- Положите файл вне git, например `cookies.txt`, и укажите путь в `.env`: `VK_COOKIES_FILE=/path/to/cookies.txt`.
+- Убедитесь, что файл попадает в `.gitignore` и имеет права только для пользователя сервиса (`chmod 600 cookies.txt`).
+- `VK_USER_AGENT` опционален: cookies-файл обычно не содержит User-Agent, поэтому бот сам ставит браузерный UA по умолчанию. Заполняйте только если VK начинает капризничать или cookies были сняты с заметно другого клиента.
+- Не вставляйте cookies в чат, коммиты, логи и Codex-сессии. Это полноценный доступ к аккаунту.
 
-Мини-проверка токена без вывода секрета:
+Мини-проверка без вывода cookies:
 
 ```bash
 cd /home/faline/trigger_admin_bot
-python3 - <<'PY'
-from pathlib import Path
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-import json
-
-env = {}
-for raw in Path(".env").read_text(errors="ignore").splitlines():
-    raw = raw.strip()
-    if not raw or raw.startswith("#") or "=" not in raw:
-        continue
-    k, v = raw.split("=", 1)
-    env[k.strip()] = v.strip().strip('"').strip("'")
-
-token = env.get("VK_TOKEN", "")
-ua = env.get("VK_USER_AGENT") or "VKAndroidApp/8.120-13180 (Android 13; SDK 33; arm64-v8a; Google Pixel 6 Pro; ru; 320dpi)"
-if not token:
-    raise SystemExit("VK_TOKEN is empty")
-
-qs = urlencode({
-    "access_token": token,
-    "v": "5.131",
-    "q": "Кино группа крови",
-    "count": "1",
-    "sort": "2",
-    "auto_complete": "1",
-})
-req = Request("https://api.vk.com/method/audio.search?" + qs, headers={"User-Agent": ua})
-data = json.loads(urlopen(req, timeout=15).read().decode("utf-8", "replace"))
-if "error" in data:
-    err = data["error"]
-    raise SystemExit(f"VK token check failed: {err.get('error_code')} {err.get('error_msg')}")
-print("VK token check ok")
-PY
+test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies file exists"
 ```
 
 ### Медиа по ссылкам (`media_link_audio`)
-- Поддерживает YouTube, Instagram, Pinterest, SoundCloud и другие источники, обрабатываемые через `yt-dlp`.
-- Для YouTube может показывать выбор: отправить `аудио` или `видео` (если включён интерактивный режим).
-- Для Instagram и Pinterest автоматически определяет тип вложения (фото/видео).
+- Поддерживает YouTube, Instagram, Pinterest, SoundCloud, VK video и другие источники, обрабатываемые через `yt-dlp`.
+- Для YouTube и похожих источников может показывать выбор: отправить `аудио` или `видео` (если включён интерактивный режим).
+- Для Instagram и Pinterest автоматически определяет тип вложения (фото/видео); Pinterest-фото отправляются как фото, а не как “video”.
 - Для SoundCloud сразу запускает аудиосценарий.
-- Применяет ограничения по размеру/высоте и при необходимости автоматически транскодирует видео под лимиты Telegram.
+- Применяет ограничения по размеру/высоте/длительности и при необходимости автоматически транскодирует видео под лимиты Telegram.
+- После рестарта pending updates по умолчанию сбрасываются, чтобы бот не досылал старую очередь в чат.
 
-### TikTok / X
+### TikTok / Coub / X
 - `media_tiktok_download` — скачивание и отправка медиа из TikTok-ссылок.
-- `media_x_download` — скачивание и отправка медиа из X (Twitter)-ссылок.
+- `media_coub_download` — интерактивный Coub flow: видео, аудио, loop/сборка.
+- `media_x_download` — скачивание и отправка медиа из X (Twitter)-ссылок с отдельной иконкой в подписи.
+
+### Голосовой перевод (`/translate_voice`)
+- Работает reply-командой на `voice`, `audio`, `video` и часть media-сообщений.
+- Умеет отдавать перевод текстом, аудио, субтитрами, аудиомиксом и видеомиксом.
+- Кеширует результаты в MongoDB и `VOICE_TRANSLATE_TMP_DIR`, чтобы повторные действия не гоняли один и тот же файл заново.
+- Для share-ссылок нужен публичный base URL (`VOICE_TRANSLATE_PUBLIC_BASE_URL`) и корректный `WEB_STATIC_DIR`.
+- Для VOT-режима нужны `VOT_CLI_BIN` и при необходимости `VOICE_TRANSLATE_NODE_BIN`.
 
 ## ⚙️ Важные переменные окружения
 
@@ -195,9 +191,13 @@ PY
 
 ### Основные
 - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота.
+- `PATH` — путь поиска бинарников для systemd/ручного запуска; особенно важен для `go`, `ffmpeg`, `yt-dlp`, `node`.
 - `MONGO_URI` — URI подключения к MongoDB.
 - `OPENAI_API_KEY` — ключ OpenAI API.
 - `OPENAI_MODEL` — модель OpenAI для текстовых GPT-сценариев.
+- `TELEGRAM_BOT_API_ENDPOINT` — кастомный endpoint Bot API, если используется локальный telegram-bot-api.
+- `TELEGRAM_BOT_FILE_ENDPOINT` — кастомный endpoint файлов Telegram; для OpenAI image/audio лучше использовать публичный Telegram API, а не локальный `127.0.0.1`.
+- `SERPAPI_KEY` / `SERPAPI_ENGINE` — поиск картинок для `search_image`.
 
 ### Админка
 - `ADMIN_ENABLED` — включает/выключает web-админку.
@@ -208,15 +208,22 @@ PY
 - `ALLOWED_CHAT_IDS` — список chat ID, где боту разрешено отвечать в группах/супергруппах.
 
 ### GPT
-- `GPT_PROMPT_DEBOUNCE_SEC` — антиспам-задержка перед повторной GPT-обработкой.
 - `USER_DAILY_BOT_MESSAGES_LIMIT` — суточный лимит ответов бота на одного пользователя.
+- `GPT_REPLY_REACTION_CHANCE_PERCENT` — шанс реакции на GPT-ответ.
+- `GPT_EDIT_WAIT_SEC` / `GPT_EDIT_WAIT_MAX_SEC` — ожидание стабилизации edited messages перед ответом.
+- `GPT_HUMAN_PAUSE` и `GPT_HUMAN_PAUSE_*` — человекоподобная пауза перед GPT-ответом.
+- `GPT_LINK_CONTEXT_ENABLED`, `GPT_LINK_CONTEXT_MAX_URLS`, `GPT_LINK_CONTEXT_MAX_CHARS` — добавление содержимого ссылок в GPT-контекст.
+- `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_ORIENTATION_MODEL`, `AUDIO_TRANSCRIPTION_MODEL` — отдельные модели для web-search/orientation/transcription, если нужно переопределить `OPENAI_MODEL`.
 
-### Очистка чата через tg-ops-service
+### Очистка чата и MTProto через tg-ops-service
 - `CLEAR_CHAT_OPS_URL` — базовый URL сервиса (например, `http://127.0.0.1:8089`).
 - `CLEAR_CHAT_OPS_TOKEN` — токен для заголовка `X-TG-Ops-Token` (если включен в tg-ops-service).
 - `CLEAR_CHAT_OPS_TIMEOUT_SEC` — таймаут HTTP-запроса к tg-ops-service.
 - `CLEAR_CHAT_CONFIRM_TTL_SEC` — TTL подтверждения кнопок `/clear_chat`.
 - `CLEAR_CHAT_TIMEOUT_SEC` — общий таймаут операции `/clear_chat` в trigger-боте.
+- `MTPROTO_SETUP_TTL_SEC` — TTL пошаговой привязки MTProto через `/set_mtproto`.
+
+`tg_ops_service` должен слушать локально или за закрытым reverse-proxy; наружу его открывать нельзя.
 
 ### Музыка
 - `SPOTIPY_CLIENT_ID` / `SPOTIPY_CLIENT_SECRET` — авторизация в Spotify API.
@@ -228,16 +235,28 @@ PY
 - `YANDEX_MUSIC_TIMEOUT_SEC` — таймаут запроса к Яндекс.Музыке.
 - `YANDEX_MUSIC_TRIES` — число попыток при ошибках скачивания.
 - `YANDEX_MUSIC_RETRY_DELAY_SEC` — задержка между повторами.
+- `YANDEX_MUSIC_FORCE_MP3` — принудительно приводить результат к MP3.
+- `YANDEX_MUSIC_EMBED_LYRICS` — встраивать текстовую лирику в теги, если она найдена.
+- `YANDEX_MUSIC_LYRICS_LANG` — язык lyrics frame для ID3.
+- `YANDEX_MUSIC_FFMPEG_BIN` — путь к `ffmpeg` для Яндекс.Музыки.
 - `YANDEX_MUSIC_WORKERS` — число воркеров Яндекс.Музыки.
 - `YANDEX_MUSIC_QUEUE` — размер очереди задач Яндекс.Музыки.
-- `VK_TOKEN` — токен VK API для поиска и получения audio URL.
-- `VK_COOKIES_FILE` — Netscape cookies-файл VK для web-режима, когда `audio.*` API недоступен.
+- `SPOTIFY_AUDIO_EMBED_TAGS` — встраивать теги в скачанное Spotify-аудио.
+- `SPOTIFY_AUDIO_FORCE_MP3` — принудительно приводить Spotify-аудио к MP3.
+- `SPOTIFY_AUDIO_FFMPEG_BIN` — путь к `ffmpeg` для Spotify-аудио.
+- `SPOTIFY_AUDIO_EMBED_TEXT_LYRICS` — пытаться добавить текстовую лирику в теги.
+- `SPOTIFY_AUDIO_LYRICS_LANG` — язык lyrics frame для Spotify ID3.
+- `SPOTIFY_AUDIO_LYRICS_API` — endpoint поиска lyrics.
+- `AUDIO_FORMAT` / `AUDIO_QUALITY` — общий формат и качество аудио для media/yt-dlp пайплайнов.
+- `VK_COOKIES_FILE` — Netscape cookies-файл VK; основной способ поиска и скачивания VK Music.
 - `VK_PROXY_URL` — прокси для VK web-запросов; можно оставить пустым и использовать `FIXIE_SOCKS_HOST`.
 - `VK_WEB_USER_ID` — опциональный VK user id, чтобы не определять его по странице автоматически.
-- `VK_USER_AGENT` — User-Agent для VK API/web и `ffmpeg`-запросов.
+- `VK_USER_AGENT` — опциональный User-Agent для VK web и `ffmpeg`-запросов; в Netscape cookies-файле UA не хранится.
 - `VK_AUDIO_INTERACTIVE` — показывать выбор найденных VK-треков.
 - `VK_AUDIO_MAX_MB` — лимит размера VK-аудио.
 - `VK_AUDIO_FFMPEG_BIN` — путь к `ffmpeg` для VK-аудио.
+- `VK_AUDIO_FFMPEG_TIMEOUT_SEC` — таймаут `ffmpeg` для VK-аудио.
+- `VK_AUDIO_RETRY_COUNT` / `VK_AUDIO_RETRY_DELAY_MS` — повторы при временных ошибках VK/web.
 - `VK_AUDIO_WORKERS` — число воркеров VK Music.
 - `VK_AUDIO_QUEUE` — размер очереди задач VK Music.
 
@@ -249,12 +268,54 @@ PY
 - `MEDIA_DOWNLOAD_MAX_HEIGHT` — ограничение высоты видео перед отправкой.
 - `MEDIA_VIDEO_MAX_DURATION_SEC` — максимум длительности видео для скачивания/конвертации; `0` отключает лимит.
 - `MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC` — таймаут на транскодирование видео.
+- `MEDIA_DOWNLOAD_TIMEOUT_SEC` — общий таймаут скачивания медиа.
+- `COUB_MEDIA_DOWNLOAD_TIMEOUT_SEC` — отдельный таймаут для Coub.
+- `COUB_LOOP_SECONDS` — длительность итогового Coub loop; `0` означает брать длительность исходника.
+- `MEDIA_PROGRESS_MIN_EDIT_INTERVAL_MS` — минимальный интервал между edit-сообщениями прогресса.
+- `MEDIA_PROGRESS_BAR_LEFT`, `MEDIA_PROGRESS_BAR_RUN`, `MEDIA_PROGRESS_BAR_FILL`, `MEDIA_PROGRESS_BAR_IDLE`, `MEDIA_PROGRESS_BAR_END_IDLE`, `MEDIA_PROGRESS_BAR_END_DONE` — кастомные сегменты progress bar.
 - `TELEGRAM_UPLOAD_MAX_MB` — лимит размера отправки в Telegram.
+- `TELEGRAM_SEND_RETRY_ATTEMPTS` / `TELEGRAM_SEND_RETRY_MAX_SEC` — повторы отправки в Telegram при временных ошибках.
 - `YTDLP_BIN` — путь к бинарнику `yt-dlp`.
 - `YTDLP_EXTRACTOR_ARGS` — дополнительные аргументы экстракторов `yt-dlp`.
 - `YTDLP_COOKIES_FILE` — путь к cookies-файлу для источников, где нужна авторизация.
 - `YTDLP_COOKIES_FROM_BROWSER` — импорт cookies из браузера.
 - `FIXIE_SOCKS_HOST` — SOCKS-прокси-хост для сетевых запросов (если используется).
+
+### Голосовая транскрибация и перевод
+- `VOICE_TRANSCRIPTION_ENABLED` — включает авто-транскрибацию voice-сообщений для чата и trigger matching.
+- `AUDIO_TRANSCRIPTION_MODEL` — модель для расшифровки аудио.
+- `VOICE_TRANSLATE_PROVIDER` — провайдер голосового перевода (`vot`/fallback-логика зависит от сборки).
+- `VOICE_TRANSLATE_SRCLANG` / `VOICE_TRANSLATE_RESLANG` — языки исходной речи и результата для VOT.
+- `VOICE_TRANSLATE_TMP_DIR` — директория временных и кеш-файлов voice translate.
+- `VOICE_TRANSLATE_CACHE_TTL_SEC` / `VOICE_TRANSLATE_TMP_MAX_AGE_SEC` — TTL кеша и очистки tmp.
+- `VOICE_TRANSLATE_TIMEOUT_SEC` — общий таймаут операции голосового перевода.
+- `VOICE_TRANSLATE_WORKERS` / `VOICE_TRANSLATE_QUEUE` — воркеры и очередь voice translate.
+- `VOICE_TRANSLATE_MAX_MB` — лимит результата для отправки.
+- `VOICE_TRANSLATE_PUBLIC_BASE_URL` / `VOICE_TRANSLATE_SHARE_TTL_SEC` — публичные ссылки на результаты, если включён share-flow.
+- `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к VOT CLI и Node.js.
+
+### Quote sticker
+- `QUOTE_API_URI` — endpoint внешнего quote-render API; если пусто, quote-sticker flow использует доступные fallback-и.
+
+### Очереди, updates и наблюдаемость
+- `TRIGGER_ACTION_WORKERS` / `TRIGGER_ACTION_QUEUE` — async-очередь тяжёлых trigger action.
+- `TELEGRAM_DROP_PENDING_UPDATES_ON_START` — сбрасывать старые pending updates при старте; по умолчанию включено.
+- `TELEGRAM_STARTUP_OLD_UPDATE_GRACE_SEC` — дополнительная защита от старых update после рестарта.
+- `ADMIN_CACHE_TTL_SEC` — TTL кеша админов чата.
+- `USER_INDEX_MAX` — максимальный размер индекса пользователей чата.
+- `CHAT_RECENT_MAX_MESSAGES` / `CHAT_RECENT_MAX_AGE_SEC` — окно недавних сообщений для контекста.
+- `QS_HISTORY_MAX_MESSAGES` / `QS_SESSION_TTL_SEC` — история и TTL сессий quote-sticker.
+- `OLENYAM_CONTEXT_MESSAGES` — сколько последних сообщений давать в контекст Оле-ням.
+- `CHAT_SUMMARY_EVERY_MESSAGES` / `CHAT_SUMMARY_POOL_MESSAGES` — частота и глубина авто-сводки чата.
+- `MOD_CONFIRM_TTL_SEC` — TTL inline-подтверждений модерации.
+- `DISALLOWED_CHAT_NOTICE_TTL_SEC` — TTL уведомления о запрещённом чате.
+- `LOG_TEXT_CLIP_CHARS` — длина обрезки текста в логах.
+- `REPLY_AUDIO_FETCH_TAGS` — подтягивать метаданные аудио из reply в GPT/контекст.
+- `DEBUG_TRIGGER_LOG`, `DEBUG_GPT_LOG`, `DEBUG_WEB_SEARCH_LOG`, `GPT_HUMAN_PAUSE_LOG`, `CHAT_ERROR_LOG` — debug/error-логи.
+- `WEB_TEMPLATE_DIR` / `WEB_STATIC_DIR` — директории шаблонов и статики web-админки.
+- `GPT_HUMAN_PAUSE_MIN_MS` / `GPT_HUMAN_PAUSE_MAX_MS` — границы задержки human-pause.
+- `GPT_MARKDOWN_DIVIDER_EMOJI` — разделитель для Markdown/GPT-ответов.
+- `BOT_COMMANDS_SYNC_ON_START`, `BOT_COMMANDS_SYNC_INTERVAL_MIN`, `BOT_COMMANDS_LANGS` — синхронизация меню команд Telegram.
 
 ## 🧪 Пример импорта (обезличенный)
 
@@ -280,21 +341,24 @@ PY
 - `/start` — коротко о боте и доступных возможностях.
 - `/help` — справка по командам и подсказки по использованию.
 - `/clear_chat` — отправляет команду очистки в `tg_ops_service` (с подтверждением; для админов).
-- `/emojiid` — показывает ID кастомного emoji.
+- `/set_mtproto` — пошагово привязывает чат к MTProto в `tg_ops_service` (показывается только когда включено).
+- `/anon <текст>` — отправляет анонимное сообщение со стабильным псевдонимом.
+- `/translate_voice` — переводит voice/audio/video из reply: текст, аудио, субтитры, микс или видеомикс.
+- `/emojiid` (`/emoji_id`) — показывает ID кастомного emoji.
   Использование: отправьте команду или кастомный emoji (лучше в личку боту).
-- `/stickerid` — показывает file ID стикера из сообщения.
+- `/stickerid` (`/sticker_id`) — показывает file ID стикера из сообщения.
   Использование: обычно в reply на сообщение со стикером.
-- `/gifid` — показывает ID GIF/анимации и подпись (если есть).
+- `/gifid` (`/gif_id`) — показывает ID GIF/анимации и подпись (если есть).
   Использование: в reply на сообщение с GIF.
-- `/q [N]` — делает quote-стикер из реплая.
+- `/q [N]` (`/qs`) — делает quote-стикер из реплая.
   Использование: `/q` или `/q 3` (взять несколько последних сообщений).
-- `/qdel` — удаляет стикер из стикерпака бота.
+- `/qd` — удаляет стикер из стикерпака бота.
   Использование: в reply на сообщение со стикером, который нужно удалить.
-- `/spsearch <запрос>` — поиск трека в Spotify.
+- `/spsearch <запрос>` (`/spfind`) — поиск трека в Spotify.
   Пример: `/spsearch daft punk harder better faster stronger`.
-- `/summary` — делает краткую сводку по переписке (если функция включена).
-- `/myportrait` — показывает ваш сохранённый портрет/персону для GPT-сценариев.
-- `/delmyportrait` — удаляет ваш сохранённый портрет/персону.
+- `/summary` (`/sum`) — делает краткую сводку по переписке (если функция включена).
+- `/my_portrait` (`/portrait`) — показывает ваш сохранённый портрет/персону для GPT-сценариев.
+- `/delete_my_portrait` (`/clear_my_portrait`) — удаляет ваш сохранённый портрет/персону.
 
 ### Админские команды (модерация)
 - `/ban <@user|id|reply> [30m|2h|1d|1w] [причина]` — банит пользователя в чате (срок опционален, без срока — бессрочно).
@@ -338,14 +402,19 @@ make preflight
 
 Если сервис работает через systemd:
 ```bash
-sudo journalctl -u bot.service.example -f -l
+sudo journalctl -u trigger-admin-bot.service -f -l
 ```
 Показывает поток логов сервиса в реальном времени.
 
+Последние ошибки без full-stream:
+```bash
+sudo journalctl -u trigger-admin-bot.service --since '30 minutes ago' --no-pager | tail -n 220
+```
+
 ## 🔄 Перезапуск systemd
 ```bash
-sudo systemctl restart bot.service.example
-sudo systemctl status bot.service.example --no-pager
+sudo systemctl restart trigger-admin-bot.service
+systemctl status trigger-admin-bot.service --no-pager -n 50
 ```
 Первая команда перезапускает сервис, вторая сразу показывает его текущее состояние.
 
