@@ -2,8 +2,11 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"trigger-admin-bot/internal/mediadl"
 )
 
 func TestSanitizeMetaValue(t *testing.T) {
@@ -56,6 +59,23 @@ func TestUserFacingMediaDownloadErrorVKBadbrowser(t *testing.T) {
 	got := userFacingMediaDownloadError(err)
 	if !strings.Contains(got, "VK временно не выдал медиа-поток") {
 		t.Fatalf("unexpected message: %q", got)
+	}
+}
+
+func TestUserFacingMediaDownloadErrorTooLong(t *testing.T) {
+	got := userFacingMediaDownloadError(fmt.Errorf("%w: 4410s > 1800s", mediadl.ErrTooLong))
+	if !strings.Contains(got, "слишком длинное") {
+		t.Fatalf("unexpected message: %q", got)
+	}
+}
+
+func TestCanFitVideoWithMinimumBitrate(t *testing.T) {
+	limit50MB := int64(50 * 1024 * 1024)
+	if canFitVideoWithMinimumBitrate(limit50MB, 4410) {
+		t.Fatal("73 minute video must not be considered fit for 50 MB")
+	}
+	if !canFitVideoWithMinimumBitrate(limit50MB, 300) {
+		t.Fatal("short video should be considered fit for 50 MB")
 	}
 }
 

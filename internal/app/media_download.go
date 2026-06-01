@@ -46,6 +46,9 @@ func fitVideoToTelegram(ctx context.Context, sourcePath string, maxMB int, heigh
 		heights = []int{720, 480, 360}
 	}
 	maxBytes := int64(maxMB) * 1024 * 1024
+	if !canFitVideoWithMinimumBitrate(maxBytes, durationSec) {
+		return "", fmt.Errorf("%w: video duration %.0fs cannot fit into %d MB without destructive bitrate", errTelegramUploadTooLarge, durationSec, maxMB)
+	}
 	dir := filepath.Dir(sourcePath)
 	log.Printf("media transcode ladder start source=%q max_mb=%d duration=%.2fs heights=%v", sourcePath, maxMB, durationSec, heights)
 	for _, h := range heights {
@@ -211,6 +214,19 @@ func targetVideoBitrateKbps(limitBytes int64, durationSec float64) int {
 		return 220
 	}
 	return videoKbps
+}
+
+func canFitVideoWithMinimumBitrate(limitBytes int64, durationSec float64) bool {
+	if limitBytes <= 0 || durationSec <= 1 {
+		return false
+	}
+	const (
+		minVideoKbps = 220
+		audioKbps    = 96
+		muxReserve   = 0.94
+	)
+	requiredBytes := (float64(minVideoKbps+audioKbps) * durationSec * 1000.0 / 8.0) / muxReserve
+	return requiredBytes <= float64(limitBytes)
 }
 
 func envFloat(key string, fallback float64) float64 {
@@ -800,6 +816,15 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 					err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode, progress)
 					cancel()
 					if err != nil {
+						if errors.Is(err, mediadl.ErrTooLong) {
+							chatID := task.ReportTo
+							if chatID == 0 {
+								chatID = task.SendCtx.ChatID
+							}
+							log.Printf("media download skipped by duration limit url=%q err=%v", clipText(task.URL, 180), err)
+							reportChatFailure(task.SendCtx.Bot, chatID, "видео слишком длинное", errors.New(userFacingMediaDownloadError(err)))
+							return
+						}
 						if errors.Is(err, mediadl.ErrTooLarge) {
 							if debugTriggerLogEnabled {
 								log.Printf("media download skipped by size limit url=%q err=%v", clipText(task.URL, 180), err)
@@ -876,6 +901,8 @@ func userFacingMediaDownloadError(err error) string {
 	compact := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
 	msg := strings.ToLower(compact)
 	switch {
+	case errors.Is(err, mediadl.ErrTooLong):
+		return "видео слишком длинное для скачивания на сервер"
 	case strings.Contains(msg, "request entity too large"):
 		return "файл слишком большой для отправки в Telegram"
 	case strings.Contains(msg, "sign in to confirm your age"):

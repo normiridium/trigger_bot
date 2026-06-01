@@ -42,6 +42,7 @@ func progressCallbackFromContext(ctx context.Context) func(float64) {
 
 var ErrUnsupportedURL = errors.New("unsupported media url")
 var ErrTooLarge = errors.New("media file is too large")
+var ErrTooLong = errors.New("media duration is too long")
 
 const (
 	MediaKindAudio MediaKind = "audio"
@@ -52,15 +53,16 @@ const (
 type MediaKind string
 
 type Downloader struct {
-	YTDLPBin           string
-	ProxySocks         string
-	AudioFormat        string
-	AudioQuality       string
-	ExtractorArgs      string
-	CookiesFile        string
-	CookiesFromBrowser string
-	MaxSizeMB          int
-	MaxHeight          int
+	YTDLPBin            string
+	ProxySocks          string
+	AudioFormat         string
+	AudioQuality        string
+	ExtractorArgs       string
+	CookiesFile         string
+	CookiesFromBrowser  string
+	MaxSizeMB           int
+	MaxHeight           int
+	MaxVideoDurationSec int
 }
 
 func (d Downloader) withVKProxyArgs(service Service, args []string) []string {
@@ -233,6 +235,9 @@ func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (Do
 	if err != nil {
 		return DownloadResult{}, err
 	}
+	if limit := d.maxVideoDurationSec(); limit > 0 && probe.Duration > float64(limit) {
+		return DownloadResult{}, fmt.Errorf("%w: %.0fs > %ds", ErrTooLong, probe.Duration, limit)
+	}
 	if limit := d.maxSizeMB(); limit > 0 && probe.SizeBytes > int64(limit)*1024*1024 {
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
 	}
@@ -271,6 +276,9 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	probe, err := d.probeWithFormat(ctx, rawURL, "")
 	if err != nil {
 		return DownloadResult{}, err
+	}
+	if limit := d.maxVideoDurationSec(); limit > 0 && probe.Duration > float64(limit) && probe.Service != ServiceSoundCloud {
+		return DownloadResult{}, fmt.Errorf("%w: %.0fs > %ds", ErrTooLong, probe.Duration, limit)
 	}
 	if limit := d.maxSizeMB(); limit > 0 && probe.SizeBytes > int64(limit)*1024*1024 {
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
@@ -1166,6 +1174,10 @@ func (d Downloader) maxHeight() int {
 		return d.MaxHeight
 	}
 	return 720
+}
+
+func (d Downloader) maxVideoDurationSec() int {
+	return d.MaxVideoDurationSec
 }
 
 func (d Downloader) audioFormatSelector() string {

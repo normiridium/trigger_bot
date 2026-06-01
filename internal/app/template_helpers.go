@@ -1906,6 +1906,19 @@ func firstNonEmptyUserText(msg *tgbotapi.Message) string {
 	return strings.TrimSpace(msg.Caption)
 }
 
+func messageWithEffectiveUserText(msg *tgbotapi.Message, text string) *tgbotapi.Message {
+	text = strings.TrimSpace(text)
+	if msg == nil || text == "" {
+		return msg
+	}
+	if strings.TrimSpace(msg.Text) == text {
+		return msg
+	}
+	cp := *msg
+	cp.Text = text
+	return &cp
+}
+
 func firstNonEmptyMessageContent(msg *tgbotapi.Message) string {
 	if msg == nil {
 		return ""

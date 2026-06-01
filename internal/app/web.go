@@ -1379,6 +1379,7 @@ func settingsSchema() []settingField {
 		{Key: "MEDIA_DOWNLOAD_MAX_MB", Label: "Ссылки: лимит файла (МБ)", Type: "int", Description: "50"},
 		{Key: "TELEGRAM_UPLOAD_MAX_MB", Label: "Telegram: лимит отправки файла (МБ)", Type: "int", Description: "50"},
 		{Key: "MEDIA_DOWNLOAD_MAX_HEIGHT", Label: "Ссылки: максимум качества (высота)", Type: "int", Description: "720", Options: []string{"360", "480", "720"}},
+		{Key: "MEDIA_VIDEO_MAX_DURATION_SEC", Label: "Видео: максимум длительности (сек)", Type: "int", Description: "1800"},
 		{Key: "MEDIA_DOWNLOAD_INTERACTIVE", Label: "Ссылки: выбор аудио/видео", Type: "bool", Description: "true"},
 		{Key: "MEDIA_DOWNLOAD_WORKERS", Label: "Ссылки: воркеры скачивания", Type: "int", Description: "1"},
 		{Key: "MEDIA_DOWNLOAD_QUEUE", Label: "Ссылки: размер очереди", Type: "int", Description: "8"},

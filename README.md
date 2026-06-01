@@ -247,6 +247,7 @@ PY
 - `MEDIA_DOWNLOAD_QUEUE` — размер очереди задач скачивания.
 - `MEDIA_DOWNLOAD_MAX_MB` — верхний лимит размера скачиваемого файла.
 - `MEDIA_DOWNLOAD_MAX_HEIGHT` — ограничение высоты видео перед отправкой.
+- `MEDIA_VIDEO_MAX_DURATION_SEC` — максимум длительности видео для скачивания/конвертации; `0` отключает лимит.
 - `MEDIA_VIDEO_TRANSCODE_TIMEOUT_SEC` — таймаут на транскодирование видео.
 - `TELEGRAM_UPLOAD_MAX_MB` — лимит размера отправки в Telegram.
 - `YTDLP_BIN` — путь к бинарнику `yt-dlp`.

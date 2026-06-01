@@ -1749,15 +1749,16 @@ func Run() {
 		mediaCookiesFile = resolveDefaultCookiesFile()
 	}
 	mediaDownloader := mediadl.Downloader{
-		YTDLPBin:           strings.TrimSpace(os.Getenv("YTDLP_BIN")),
-		ProxySocks:         strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
-		AudioFormat:        strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
-		AudioQuality:       strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
-		ExtractorArgs:      strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
-		CookiesFile:        mediaCookiesFile,
-		CookiesFromBrowser: strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
-		MaxSizeMB:          mediaMaxMB,
-		MaxHeight:          envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
+		YTDLPBin:            strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		ProxySocks:          strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		AudioFormat:         strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
+		AudioQuality:        strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
+		ExtractorArgs:       strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
+		CookiesFile:         mediaCookiesFile,
+		CookiesFromBrowser:  strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
+		MaxSizeMB:           mediaMaxMB,
+		MaxHeight:           envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
+		MaxVideoDurationSec: envInt("MEDIA_VIDEO_MAX_DURATION_SEC", 1800),
 	}
 	mediaInteractive := envBool("MEDIA_DOWNLOAD_INTERACTIVE", true)
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
@@ -2635,12 +2636,13 @@ func Run() {
 				if err != nil {
 					log.Printf("voice transcription failed chat=%d msg=%d err=%v", msg.Chat.ID, msg.MessageID, err)
 				} else if strings.TrimSpace(transcribed) != "" {
-					transcribedText := voiceTranscriptionPrefix + strings.TrimSpace(transcribed)
+					transcribedPlain := strings.TrimSpace(transcribed)
+					transcribedText := voiceTranscriptionPrefix + transcribedPlain
 					sendHTML(cmdSendCtx.WithReply(msg.MessageID), transcribedText, false)
 					if text == "" {
-						text = transcribedText
+						text = transcribedPlain
 					} else {
-						text = text + "\n" + transcribedText
+						text = text + "\n" + transcribedPlain
 					}
 				}
 			} else {
@@ -2650,6 +2652,7 @@ func Run() {
 		if text == "" {
 			continue
 		}
+		msg = messageWithEffectiveUserText(msg, text)
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
 		quotaConsumed := false

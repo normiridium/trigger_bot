@@ -534,6 +534,32 @@ func TestBuildPromptFromMessageTemplateAndFallback(t *testing.T) {
 	}
 }
 
+func TestMessageWithEffectiveUserTextForVoiceTranscription(t *testing.T) {
+	msg := &tgbotapi.Message{
+		MessageID: 42,
+		Chat:      &tgbotapi.Chat{ID: -1001},
+		From:      &tgbotapi.User{ID: 7, FirstName: "Аня"},
+		Voice:     &tgbotapi.Voice{FileID: "voice-file", Duration: 19},
+	}
+
+	got := messageWithEffectiveUserText(msg, "Оленям, ответь на голосовое")
+	if got == nil {
+		t.Fatal("expected effective message")
+	}
+	if got == msg {
+		t.Fatal("voice message with synthetic text must be copied")
+	}
+	if got.Text != "Оленям, ответь на голосовое" {
+		t.Fatalf("unexpected effective text: %q", got.Text)
+	}
+	if firstNonEmptyUserText(got) != "Оленям, ответь на голосовое" {
+		t.Fatalf("effective text must be visible to template/trigger helpers, got %q", firstNonEmptyUserText(got))
+	}
+	if got.MessageID != msg.MessageID || got.Voice == nil {
+		t.Fatalf("effective message must preserve original metadata: %#v", got)
+	}
+}
+
 func TestBuildResponseFromMessageCapturingChoice(t *testing.T) {
 	pattern := `^\\s*((?:уби|обня|поцелова))ть\\s*$`
 	ctx := templateContext{
