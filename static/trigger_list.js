@@ -198,14 +198,6 @@ async function initAuthenticatedApp(){
   __triggerAppInitialized = true;
   showAdminApp();
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
-  await Promise.allSettled([
-    loadEnums(),
-    loadTemplateTags(),
-    loadTemplates(),
-    loadSettings(),
-    loadMTProtoChatOptions(),
-    loadRecentSetsHistory(),
-  ]);
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
@@ -246,8 +238,15 @@ async function initAuthenticatedApp(){
     mtprotoCompleteBtn.dataset.boundClick = '1';
   }
   renderVariantControls();
-  await loadTriggerList();
-  initTriggerDragAndDrop();
+  void loadTriggerList().then(() => initTriggerDragAndDrop()).catch(() => {});
+  void Promise.allSettled([
+    loadEnums(),
+    loadTemplateTags(),
+    loadTemplates(),
+    loadSettings(),
+    loadMTProtoChatOptions(),
+    loadRecentSetsHistory(),
+  ]);
 }
 
 async function startMTProtoChallenge(){
