@@ -1,4 +1,4 @@
-# 🤖 Trigger Admin Bot (Go)
+# 🦌 Trigger Admin Bot (Go)
 
 Подробная документация (Wiki): https://github.com/normiridium/trigger_bot/wiki
 
