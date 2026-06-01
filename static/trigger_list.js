@@ -48,7 +48,7 @@ let recentStickerSets = [];
 const emojiSetCache = {};
 const stickerSetCache = {};
 const RECENT_SETS_LIMIT = 300;
-const ADMIN_FETCH_TIMEOUT_MS = 8000;
+const ADMIN_FETCH_TIMEOUT_MS = 20000;
 let authState = 'login_required';
 let csrfToken = '';
 
@@ -209,7 +209,6 @@ async function initAuthenticatedApp(){
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
-  ensureResponseEditor();
   bindEmojiHelperListeners();
   const form = document.getElementById('trigger_form');
   if(form && !form.dataset.boundSubmit){
@@ -2461,9 +2460,6 @@ function cloneCurrentTrigger(){
 }
 
 document.getElementById('f_match_type')?.addEventListener('change', applyMatchTypeUI);
-window.addEventListener('codemirror-ready', () => {
-  ensureResponseEditor();
-});
 if(!window.Alpine){
   initTriggerPage();
 }
