@@ -19,12 +19,23 @@ const CDN = {
 
 let responseEditor = null;
 let cm = null;
+const CDN_IMPORT_TIMEOUT_MS = 5000;
+
+function importModule(url){
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`module import timeout: ${url}`)), CDN_IMPORT_TIMEOUT_MS);
+  });
+  return Promise.race([import(url), timeout]).finally(() => {
+    if(timer){ clearTimeout(timer); }
+  });
+}
 
 async function importWithFallback(urls){
   let lastErr = null;
   for(const url of urls){
     try{
-      return await import(url);
+      return await importModule(url);
     } catch(err){
       lastErr = err;
     }

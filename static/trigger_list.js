@@ -48,8 +48,21 @@ let recentStickerSets = [];
 const emojiSetCache = {};
 const stickerSetCache = {};
 const RECENT_SETS_LIMIT = 300;
+const ADMIN_FETCH_TIMEOUT_MS = 8000;
 let authState = 'login_required';
 let csrfToken = '';
+
+function fetchAdmin(path, options, timeoutMs){
+  const opts = Object.assign({credentials: 'same-origin'}, options || {});
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : ADMIN_FETCH_TIMEOUT_MS;
+  if(typeof AbortController === 'undefined'){
+    return fetch(path, opts);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  opts.signal = controller.signal;
+  return fetch(path, opts).finally(() => clearTimeout(timer));
+}
 
 function getCookieValue(name){
   const key = String(name || '').trim();
@@ -128,7 +141,7 @@ function bindAuthUI(){
 
 async function refreshAuthState(){
   try{
-    const r = await fetch('/trigger_bot/auth_state', {credentials: 'same-origin'});
+    const r = await fetchAdmin('/trigger_bot/auth_state');
     if(!r.ok){
       authState = 'login_required';
       return authState;
@@ -277,7 +290,7 @@ async function loadMTProtoChatOptions(){
   const sel = document.getElementById('mtproto_chat_id');
   if(!sel){ return; }
   try{
-    const r = await fetch(withToken('/trigger_bot/mtproto_chat_options'));
+    const r = await fetchAdmin(withToken('/trigger_bot/mtproto_chat_options'));
     if(!r.ok){ return; }
     const data = await r.json();
     const items = Array.isArray(data?.items) ? data.items : [];
@@ -433,7 +446,7 @@ async function handleChangePassword(ev){
 
 async function loadEnums(){
   try{
-    const r = await fetch(withToken('/trigger_bot/enums'));
+    const r = await fetchAdmin(withToken('/trigger_bot/enums'));
     if(!r.ok){
       return;
     }
@@ -456,7 +469,7 @@ async function loadTemplateTags(){
     return;
   }
   try{
-    const r = await fetch(withToken('/trigger_bot/template_tags'));
+    const r = await fetchAdmin(withToken('/trigger_bot/template_tags'));
     if(!r.ok){
       return;
     }
@@ -491,7 +504,7 @@ async function loadTemplates(){
   try{
     if(templatesLoadInFlight){ return; }
     templatesLoadInFlight = true;
-    const r = await fetch(withToken('/trigger_bot/templates'));
+    const r = await fetchAdmin(withToken('/trigger_bot/templates'));
     if(!r.ok){
       renderTemplatesError('Не удалось загрузить шаблоны');
       return;
@@ -574,7 +587,7 @@ async function loadSettings(){
   if(settingsLoadInFlight){ return; }
   settingsLoadInFlight = true;
   try{
-    const r = await fetch(withToken('/trigger_bot/settings_get'));
+    const r = await fetchAdmin(withToken('/trigger_bot/settings_get'));
     if(!r.ok){ throw new Error('HTTP ' + r.status); }
     const data = await r.json();
     settingsCache.fields = Array.isArray(data?.fields) ? data.fields : [];
@@ -989,7 +1002,7 @@ async function loadRecentSetsHistory(){
       (local.emoji_sets || []).forEach((it) => upsertRecentEmojiSet(it, 'server'));
       (local.sticker_sets || []).forEach((it) => upsertRecentStickerSet(it, 'server'));
     }
-    const r = await fetch(withToken('/trigger_bot/recent_sets_get'));
+    const r = await fetchAdmin(withToken('/trigger_bot/recent_sets_get'));
     if(r.ok){
       const data = await r.json();
       const fromServerEmoji = Array.isArray(data?.emoji_sets) ? data.emoji_sets : [];
@@ -1740,7 +1753,7 @@ async function loadTriggerList(){
     body.innerHTML = '<tr><td colspan="5" class="text-secondary text-center py-4"><span class="spinner-border spinner-border-sm me-2"></span>Загрузка…</td></tr>';
   }
   try {
-    const r = await fetch(withToken('/trigger_bot/list'), {credentials: 'same-origin'});
+    const r = await fetchAdmin(withToken('/trigger_bot/list'));
     if(!r.ok){ throw new Error('HTTP ' + r.status); }
     const payload = await r.json();
     renderTriggerRows(payload && payload.items ? payload.items : []);
