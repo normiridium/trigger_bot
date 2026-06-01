@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"trigger-admin-bot/internal/bottmp"
 )
 
 type progressCallbackKey struct{}
@@ -155,7 +157,7 @@ func (d Downloader) DownloadAudioFromURL(ctx context.Context, rawURL string) (Do
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "media-audio-*")
+	tmpDir, err := bottmp.MkdirTemp("media-audio-*")
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -241,7 +243,7 @@ func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (Do
 	if limit := d.maxSizeMB(); limit > 0 && probe.SizeBytes > int64(limit)*1024*1024 {
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
 	}
-	tmpDir, err := os.MkdirTemp("", "media-video-*")
+	tmpDir, err := bottmp.MkdirTemp("media-video-*")
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -283,7 +285,7 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	if limit := d.maxSizeMB(); limit > 0 && probe.SizeBytes > int64(limit)*1024*1024 {
 		return DownloadResult{}, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, probe.SizeBytes, limit)
 	}
-	tmpDir, err := os.MkdirTemp("", "media-auto-*")
+	tmpDir, err := bottmp.MkdirTemp("media-auto-*")
 	if err != nil {
 		return DownloadResult{}, err
 	}

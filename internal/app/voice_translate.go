@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"trigger-admin-bot/internal/bottmp"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -153,6 +155,9 @@ var (
 func voiceTranslateTmpDir() string {
 	if v := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_TMP_DIR")); v != "" {
 		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("TRIGGER_BOT_TMP_DIR")); v != "" {
+		return filepath.Join(v, "voice")
 	}
 	return filepath.Join("static", "tmp")
 }
@@ -1709,14 +1714,14 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 	if hasVideo {
 		ext = ".mp4"
 	}
-	outFile, err := os.CreateTemp("", "translate_mix_*"+ext)
+	outFile, err := bottmp.CreateTemp("translate_mix_*" + ext)
 	if err != nil {
 		return "", err
 	}
 	outPath := outFile.Name()
 	_ = outFile.Close()
 
-	origWav, err := os.CreateTemp("", "voice_src_*.wav")
+	origWav, err := bottmp.CreateTemp("voice_src_*.wav")
 	if err != nil {
 		return "", err
 	}
@@ -1724,7 +1729,7 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 	_ = origWav.Close()
 	defer os.Remove(origWavPath)
 
-	trWav, err := os.CreateTemp("", "voice_tr_*.wav")
+	trWav, err := bottmp.CreateTemp("voice_tr_*.wav")
 	if err != nil {
 		return "", err
 	}
@@ -1759,7 +1764,7 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 	staticFilter := "[0:a]volume=0.28[a0];[1:a]volume=1.7[a1];[a0][a1]amix=inputs=2:normalize=0:duration=first:dropout_transition=2,alimiter=limit=0.94[mix]"
 	filter := dynamicFilter
 	if hasVideo {
-		mixWav, err := os.CreateTemp("", "voice_mix_*.wav")
+		mixWav, err := bottmp.CreateTemp("voice_mix_*.wav")
 		if err != nil {
 			return "", err
 		}
@@ -1947,7 +1952,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		return
 	}
 
-	workDir, err := os.MkdirTemp("", "vot_backend_*")
+	workDir, err := bottmp.MkdirTemp("vot_backend_*")
 	if err != nil {
 		reply(sendCtx, "Не удалось подготовить задачу перевода. Попробуйте позже.", false)
 		return
@@ -1966,7 +1971,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if !strings.HasPrefix(srcExt, ".") {
 		srcExt = "." + srcExt
 	}
-	srcTmp, err := os.CreateTemp("", "vot_source_*"+srcExt)
+	srcTmp, err := bottmp.CreateTemp("vot_source_*" + srcExt)
 	if err != nil {
 		reply(sendCtx, "Не удалось подготовить исходный файл для перевода.", false)
 		return
@@ -1995,7 +2000,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			progress.SetFrame(2)
 			progress.SetStage("Подготовка перевода")
 		}
-		mp4Tmp, e := os.CreateTemp("", "vot_src_audio_only_*.mp4")
+		mp4Tmp, e := bottmp.CreateTemp("vot_src_audio_only_*.mp4")
 		if e != nil {
 			reply(sendCtx, "Не удалось подготовить источник для перевода.", false)
 			return
@@ -2159,7 +2164,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			}
 			if strings.HasSuffix(strings.ToLower(strings.TrimSpace(subsPath)), ".json") {
 				if srt, convErr := subtitlesJSONToSRT(subsPath); convErr == nil && strings.TrimSpace(srt) != "" {
-					tmp, e := os.CreateTemp("", "translate_subs_*.srt")
+					tmp, e := bottmp.CreateTemp("translate_subs_*.srt")
 					if e == nil {
 						_ = os.WriteFile(tmp.Name(), []byte(srt), 0o644)
 						_ = tmp.Close()
@@ -2184,7 +2189,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		subsForCachePath := subsPath
 		if strings.HasSuffix(strings.ToLower(strings.TrimSpace(subsForCachePath)), ".json") {
 			if srt, convErr := subtitlesJSONToSRT(subsForCachePath); convErr == nil && strings.TrimSpace(srt) != "" {
-				tmpSubs, e := os.CreateTemp("", "translate_subs_cache_*.srt")
+				tmpSubs, e := bottmp.CreateTemp("translate_subs_cache_*.srt")
 				if e == nil {
 					_ = os.WriteFile(tmpSubs.Name(), []byte(srt), 0o644)
 					_ = tmpSubs.Close()
@@ -2195,7 +2200,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		}
 		saveCacheFile(voiceSubtitlesCachePath(cacheKey), subsForCachePath)
 
-		tmp, e := os.CreateTemp("", "translate_text_*.txt")
+		tmp, e := bottmp.CreateTemp("translate_text_*.txt")
 		if e != nil {
 			reply(sendCtx, "Не удалось подготовить текстовый файл перевода.", false)
 			return

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"trigger-admin-bot/internal/bottmp"
+
 	vkmusic "github.com/normiridium/vk-music-bot-api/vkmusic"
 )
 
@@ -152,7 +154,7 @@ func (d Downloader) downloadAudioURL(ctx context.Context, audioURL string) (stri
 	if audioURL == "" {
 		return "", errors.New("empty vk audio url")
 	}
-	dir, err := os.MkdirTemp("", "vk-audio-*")
+	dir, err := bottmp.MkdirTemp("vk-audio-*")
 	if err != nil {
 		return "", err
 	}

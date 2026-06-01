@@ -27,6 +27,7 @@ import (
 	"github.com/yuin/goldmark/parser"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 
+	"trigger-admin-bot/internal/bottmp"
 	"trigger-admin-bot/internal/chataccess"
 	"trigger-admin-bot/internal/chatclear"
 	"trigger-admin-bot/internal/engine"
@@ -1649,11 +1650,31 @@ func humanModerationDurationRU(d time.Duration, raw string) string {
 	return fmt.Sprintf("%d %s", n, ruPlural(n, "секунда", "секунды", "секунд"))
 }
 
+func cleanupTriggerBotTmpStartup() {
+	if !envBool("TRIGGER_BOT_TMP_CLEAN_ON_START", true) {
+		return
+	}
+	maxAgeSec := envInt("TRIGGER_BOT_TMP_MAX_AGE_SEC", 24*60*60)
+	if maxAgeSec < 3600 {
+		maxAgeSec = 3600
+	}
+	maxAge := time.Duration(maxAgeSec) * time.Second
+	removed, err := bottmp.CleanupStale(maxAge)
+	if err != nil {
+		log.Printf("tmp startup cleanup failed dir=%s max_age=%s err=%v", bottmp.BaseDir(), maxAge, err)
+		return
+	}
+	if removed > 0 || debugTriggerLogEnabled {
+		log.Printf("tmp startup cleanup ok removed=%d max_age=%s dir=%s", removed, maxAge, bottmp.BaseDir())
+	}
+}
+
 func Run() {
 	token := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN is required")
 	}
+	cleanupTriggerBotTmpStartup()
 
 	dbTarget := strings.TrimSpace(os.Getenv("MONGO_URI"))
 	if dbTarget == "" {

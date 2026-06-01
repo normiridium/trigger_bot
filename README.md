@@ -20,6 +20,18 @@ cd /home/appuser/trigger_admin_bot
 - `MongoDB` — основное хранилище триггеров, шаблонов, настроек, кешей и служебных данных бота.
 - `curl`/`ca-certificates` — сетевые проверки и загрузка внешних ресурсов.
 
+`install_deps.sh` по умолчанию ставит системные пакеты из `apt` и обновляет `yt-dlp` из официального GitHub release. Опциональные режимы:
+
+```bash
+INSTALL_MONGODB=1 ./scripts/install_deps.sh
+INSTALL_NODESOURCE=1 NODE_MAJOR=22 ./scripts/install_deps.sh
+INSTALL_VOT_CLI=1 ./scripts/install_deps.sh
+```
+
+- `INSTALL_MONGODB=1` добавляет официальный MongoDB apt repository и запускает `mongod`.
+- `INSTALL_NODESOURCE=1` нужен, если distro Node.js слишком старый для VOT CLI.
+- `INSTALL_VOT_CLI=1` ставит `vot-cli` глобально через npm; нужен Node.js 18+.
+
 Дополнительно для превью `.tgs` в админке:
 - Установите `lottie_to_webp` или `lottie_to_webp.sh` в `PATH`, чтобы админка могла строить превью анимированных стикеров (`.tgs`).
 - Готовые бинарники: https://github.com/ed-asriyan/lottie-converter/releases
@@ -280,13 +292,15 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `YTDLP_COOKIES_FILE` — путь к cookies-файлу для источников, где нужна авторизация.
 - `YTDLP_COOKIES_FROM_BROWSER` — импорт cookies из браузера.
 - `FIXIE_SOCKS_HOST` — SOCKS-прокси-хост для сетевых запросов (если используется).
+- `TRIGGER_BOT_TMP_DIR` — общий runtime tmp/cache корень бота; если не задан, Go будет использовать системный tmp. Рекомендуется держать внутри проекта или `/var/lib`, например `/home/appuser/trigger_admin_bot/var/tmp`.
+- `TRIGGER_BOT_TMP_CLEAN_ON_START` / `TRIGGER_BOT_TMP_MAX_AGE_SEC` — безопасная очистка старых bot-tmp файлов при старте. Чистятся только известные префиксы бота и только файлы старше TTL; минимум TTL — 1 час.
 
 ### Голосовая транскрибация и перевод
 - `VOICE_TRANSCRIPTION_ENABLED` — включает авто-транскрибацию voice-сообщений для чата и trigger matching.
 - `AUDIO_TRANSCRIPTION_MODEL` — модель для расшифровки аудио.
 - `VOICE_TRANSLATE_PROVIDER` — провайдер голосового перевода (`vot`/fallback-логика зависит от сборки).
 - `VOICE_TRANSLATE_SRCLANG` / `VOICE_TRANSLATE_RESLANG` — языки исходной речи и результата для VOT.
-- `VOICE_TRANSLATE_TMP_DIR` — директория временных и кеш-файлов voice translate.
+- `VOICE_TRANSLATE_TMP_DIR` — директория временных и кеш-файлов voice translate. Если пусто, используется `TRIGGER_BOT_TMP_DIR/voice`.
 - `VOICE_TRANSLATE_CACHE_TTL_SEC` / `VOICE_TRANSLATE_TMP_MAX_AGE_SEC` — TTL кеша и очистки tmp.
 - `VOICE_TRANSLATE_TIMEOUT_SEC` — общий таймаут операции голосового перевода.
 - `VOICE_TRANSLATE_WORKERS` / `VOICE_TRANSLATE_QUEUE` — воркеры и очередь voice translate.

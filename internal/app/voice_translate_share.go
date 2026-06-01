@@ -55,8 +55,7 @@ func registerVoiceShareFile(localPath string, ttl time.Duration) string {
 	defer voiceShareMu.Unlock()
 	cleanupVoiceShareLocked(time.Now())
 
-	staticDir := strings.TrimSpace(envOr("WEB_STATIC_DIR", "./static"))
-	tmpDir := filepath.Join(staticDir, "tmp")
+	tmpDir := voiceTranslateTmpDir()
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		return ""
 	}
@@ -155,11 +154,17 @@ func (w *WebAdmin) voiceTranslateTempFile(rw http.ResponseWriter, r *http.Reques
 	}
 	path, ok := resolveVoiceShareFile(token)
 	if !ok {
-		staticDir := strings.TrimSpace(envOr("WEB_STATIC_DIR", "./static"))
-		candidate := filepath.Join(staticDir, "tmp", filepath.Base(token))
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			path = candidate
-		} else {
+		candidates := []string{
+			filepath.Join(voiceTranslateTmpDir(), filepath.Base(token)),
+			filepath.Join(strings.TrimSpace(envOr("WEB_STATIC_DIR", "./static")), "tmp", filepath.Base(token)),
+		}
+		for _, candidate := range candidates {
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				path = candidate
+				break
+			}
+		}
+		if strings.TrimSpace(path) == "" {
 			http.NotFound(rw, r)
 			return
 		}

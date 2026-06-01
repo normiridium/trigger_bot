@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"trigger-admin-bot/internal/bottmp"
 )
 
 type emojiProxyService struct {
@@ -310,7 +312,7 @@ func (s emojiProxyService) convertTGSToWEBP(ctx context.Context, fileID string) 
 	if err != nil {
 		return nil, "", err
 	}
-	inFile, err := os.CreateTemp("", "emoji-*.tgs")
+	inFile, err := bottmp.CreateTemp("emoji-*.tgs")
 	if err != nil {
 		return nil, "", err
 	}
@@ -321,7 +323,7 @@ func (s emojiProxyService) convertTGSToWEBP(ctx context.Context, fileID string) 
 		return nil, "", err
 	}
 
-	outFile, err := os.CreateTemp("", "emoji-*.webp")
+	outFile, err := bottmp.CreateTemp("emoji-*.webp")
 	if err != nil {
 		return nil, "", err
 	}

@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"trigger-admin-bot/internal/bottmp"
 )
 
 type Downloader struct {
@@ -101,7 +103,7 @@ func (d Downloader) DownloadByURL(ctx context.Context, rawURL string) (string, e
 		return "", err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "yandex-music-*")
+	tmpDir, err := bottmp.MkdirTemp("yandex-music-*")
 	if err != nil {
 		return "", err
 	}

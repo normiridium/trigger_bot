@@ -28,6 +28,7 @@ docs/
 backups/
 
 # runtime temp/cache artifacts
+var/tmp/
 static/tmp/
 
 # local proxy runtime/config artifacts

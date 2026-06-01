@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"trigger-admin-bot/internal/bottmp"
 )
 
 type Downloader struct {
@@ -28,7 +30,7 @@ func (d Downloader) DownloadByQuery(ctx context.Context, query string) (string, 
 	if query == "" {
 		return "", errors.New("empty query")
 	}
-	tmpDir, err := os.MkdirTemp("", "spotify-audio-*")
+	tmpDir, err := bottmp.MkdirTemp("spotify-audio-*")
 	if err != nil {
 		return "", err
 	}
