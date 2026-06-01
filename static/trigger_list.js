@@ -198,12 +198,14 @@ async function initAuthenticatedApp(){
   __triggerAppInitialized = true;
   showAdminApp();
   window.__trgModal = new bootstrap.Modal(document.getElementById('triggerModal'));
-  await loadEnums();
-  await loadTemplateTags();
-  await loadTemplates();
-  await loadSettings();
-  await loadMTProtoChatOptions();
-  await loadRecentSetsHistory();
+  await Promise.allSettled([
+    loadEnums(),
+    loadTemplateTags(),
+    loadTemplates(),
+    loadSettings(),
+    loadMTProtoChatOptions(),
+    loadRecentSetsHistory(),
+  ]);
   applyMatchTypeUI();
   bindMatchTextToggle();
   bindMiniToolbarFallback();
