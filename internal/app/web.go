@@ -303,7 +303,7 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/change_password", w.withAuth(w.changePasswordPost))
 	mux.HandleFunc("/trigger_bot/list", w.withAuth(w.listJSON))
 	mux.HandleFunc("/trigger_bot/get", w.withAuth(w.getJSON))
-	mux.HandleFunc("/trigger_bot/enums", w.withAuth(w.enumsJSON))
+	mux.HandleFunc("/trigger_bot/enums", w.enumsJSON)
 	mux.HandleFunc("/trigger_bot/template_tags", w.withAuth(w.templateTagsJSON))
 	mux.HandleFunc("/trigger_bot/emoji_set", w.withAuth(w.emojiSetJSON))
 	mux.HandleFunc("/trigger_bot/sticker_set", w.withAuth(w.stickerSetJSON))

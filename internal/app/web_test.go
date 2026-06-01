@@ -154,6 +154,23 @@ func TestAuthStateResponseShape(t *testing.T) {
 	}
 }
 
+func TestEnumsRouteIsPublic(t *testing.T) {
+	w := NewWebAdmin(nil, "")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/trigger_bot/enums", nil)
+	w.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected public enums route to return 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string][]map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("invalid enums json: %v", err)
+	}
+	if len(out["trigger_modes"]) == 0 || len(out["action_types"]) == 0 {
+		t.Fatalf("expected enum payload, got %#v", out)
+	}
+}
+
 func TestWriteJSONHelper(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeJSON(rec, 200, map[string]string{"ok": "yes"})
