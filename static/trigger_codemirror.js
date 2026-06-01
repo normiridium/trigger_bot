@@ -12,8 +12,8 @@ const CDN = {
     "https://unpkg.com/@codemirror/commands@6.5.0?module",
   ],
   langHtml: [
-    "https://cdn.jsdelivr.net/npm/@codemirror/lang-html@6.10.2/+esm",
-    "https://unpkg.com/@codemirror/lang-html@6.10.2?module",
+    "https://cdn.jsdelivr.net/npm/@codemirror/lang-html@6.4.11/+esm",
+    "https://unpkg.com/@codemirror/lang-html@6.4.11?module",
   ],
 };
 
