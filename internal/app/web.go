@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -331,7 +332,74 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/edit", func(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/trigger_bot", http.StatusFound)
 	})
-	return mux
+	return webAdminLoggingMiddleware(mux)
+}
+
+type webAdminResponseRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *webAdminResponseRecorder) WriteHeader(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *webAdminResponseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	n, err := r.ResponseWriter.Write(body)
+	r.bytes += n
+	return n, err
+}
+
+func webAdminLoggingMiddleware(next http.Handler) http.Handler {
+	if next == nil {
+		return http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			http.Error(rw, "handler is not configured", http.StatusInternalServerError)
+		})
+	}
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		rec := &webAdminResponseRecorder{ResponseWriter: rw}
+		next.ServeHTTP(rec, r)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log.Printf("web admin request method=%s path=%q status=%d bytes=%d dur=%s remote=%s ua=%q",
+			r.Method,
+			r.URL.RequestURI(),
+			status,
+			rec.bytes,
+			time.Since(started).Truncate(time.Millisecond),
+			webAdminClientIP(r),
+			r.UserAgent(),
+		)
+	})
+}
+
+func webAdminClientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (w *WebAdmin) listPage(rw http.ResponseWriter, r *http.Request) {

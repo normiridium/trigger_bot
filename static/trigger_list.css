@@ -1,4 +1,5 @@
 body { background: #111827; }
+.d-none { display: none !important; }
 .app { max-width: 1280px; }
 .table code { font-size: .9rem; }
 .mini-toolbar .btn,

@@ -18,6 +18,7 @@ function triggerApp(){
     completeMTProtoChallenge,
   };
 }
+window.triggerApp = triggerApp;
 
 let __triggerPageInitialized = false;
 let __triggerAppInitialized = false;
@@ -108,11 +109,16 @@ async function initTriggerPage(){
   if(__triggerPageInitialized){ return; }
   __triggerPageInitialized = true;
   bindAuthUI();
-  await refreshAuthState();
-  if(authState === 'authenticated'){
-    await initAuthenticatedApp();
-  } else {
-    showAuthGate(authState);
+  try{
+    await refreshAuthState();
+    if(authState === 'authenticated'){
+      await initAuthenticatedApp();
+    } else {
+      showAuthGate(authState);
+    }
+  }catch(err){
+    console.error('trigger admin init failed', err);
+    showAuthGate('login_required', 'Админка не смогла загрузиться. Подробности записаны в консоль браузера и серверные логи.');
   }
 }
 
@@ -2462,3 +2468,13 @@ document.getElementById('f_match_type')?.addEventListener('change', applyMatchTy
 if(!window.Alpine){
   initTriggerPage();
 }
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => {
+    const gate = document.getElementById('auth_gate');
+    const app = document.getElementById('admin_app_shell');
+    if(gate?.classList.contains('d-none') && app?.classList.contains('d-none')){
+      console.warn('trigger admin init watchdog fired');
+      initTriggerPage();
+    }
+  }, 500);
+});
