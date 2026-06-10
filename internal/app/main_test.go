@@ -665,8 +665,14 @@ func TestResolveGenderVariant(t *testing.T) {
 	if got := resolveGenderVariant("he", variants); got != "он" {
 		t.Fatalf("male mismatch: %q", got)
 	}
+	if got := resolveGenderVariant("божий сын ОН/ЕГО", variants); got != "он" {
+		t.Fatalf("male title+pronouns mismatch: %q", got)
+	}
 	if got := resolveGenderVariant("she", variants); got != "она" {
 		t.Fatalf("female mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("прозвище она/её", variants); got != "она" {
+		t.Fatalf("female title+pronouns mismatch: %q", got)
 	}
 	if got := resolveGenderVariant("it", variants); got != "оно" {
 		t.Fatalf("neuter mismatch: %q", got)
@@ -676,6 +682,9 @@ func TestResolveGenderVariant(t *testing.T) {
 	}
 	if got := resolveGenderVariant("они", variants); got != "они" {
 		t.Fatalf("plural mismatch: %q", got)
+	}
+	if got := resolveGenderVariant("ник они/их", variants); got != "они" {
+		t.Fatalf("plural title+pronouns mismatch: %q", got)
 	}
 	if got := resolveGenderVariant("unknown", variants); got != "кто-то" {
 		t.Fatalf("unknown mismatch: %q", got)
