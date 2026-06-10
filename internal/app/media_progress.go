@@ -97,7 +97,7 @@ func (h *mediaProgressHandle) edit(frame int, stage string) {
 		return
 	}
 	text := renderMediaProgressText(h.frames, frame, stage)
-	minInterval := time.Duration(envInt("MEDIA_PROGRESS_MIN_EDIT_INTERVAL_MS", 2000)) * time.Millisecond
+	minInterval := time.Duration(envInt("MEDIA_PROGRESS_MIN_EDIT_INTERVAL_MS", 1000)) * time.Millisecond
 	now := time.Now()
 	h.mu.Lock()
 	if text == h.lastText {

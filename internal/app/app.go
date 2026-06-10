@@ -1910,11 +1910,12 @@ func Run() {
 		}()
 	}
 	go runScheduledUnmutes(bot, store)
+	startBotCommandsSyncLoop(bot)
 
 	startedAtUnix := time.Now().Unix()
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "edited_message", "callback_query", "chat_member", "my_chat_member"}
+	u.AllowedUpdates = []string{"message", "edited_message", "inline_query", "callback_query", "chat_member", "my_chat_member"}
 	if envBool("TELEGRAM_DROP_PENDING_UPDATES_ON_START", true) {
 		nextOffset, count, err := discardPendingUpdatesWithEmojiMeta(bot, u)
 		if err != nil {
@@ -1975,6 +1976,10 @@ func Run() {
 		if update.RawMyChatMember != nil {
 			handleDisallowedMyChatMemberNotice(bot, allowedChats, disallowedNotifier, update.RawMyChatMember)
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
+		}
+		if update.Update.InlineQuery != nil {
+			handleRoleplayInlineQuery(bot, update.Update.InlineQuery)
+			continue
 		}
 		if update.Update.CallbackQuery != nil {
 			if handleSetMTProtoCallback(bot, mtprotoSetup, update.Update.CallbackQuery) {
@@ -2132,6 +2137,9 @@ func Run() {
 			if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
 				continue
 			}
+			if handleRoleplayCallback(bot, update.Update.CallbackQuery) {
+				continue
+			}
 		}
 		if update.Update.EditedMessage != nil {
 			if isStartupBacklogMessage(update.Update.EditedMessage, startedAtUnix) {
@@ -2243,6 +2251,10 @@ func Run() {
 			}
 		}
 
+		if handleRoleplayInlineSentMessage(bot, msg) {
+			continue
+		}
+
 		if handleModerationCommand(moderationContext{
 			Bot:        bot,
 			AdminCache: adminCache,
@@ -2261,11 +2273,15 @@ func Run() {
 			case cmdStart, cmdHelp:
 				s := ""
 				if isPrivateChat {
+					commands := []string{
+						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
+						cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait, cmdSummary, cmdAnon,
+						cmdTranslateVoice, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
+						cmdReadonly, cmdReloadAdmins,
+					}
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
-						fmt.Sprintf("Команды: /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s /%s\n",
-							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete, cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait,
-							cmdSummary, cmdAnon, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick, cmdReadonly, cmdReloadAdmins) +
+						"Команды: /" + strings.Join(commands, " /") + "\n" +
 						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
 						"Теги для ChatGPT-промпта:\n" +
 						"{{message}} / {{user_text}} — текст сообщения\n" +
@@ -2399,6 +2415,7 @@ func Run() {
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
 						usageLines = append(usageLines, fmt.Sprintf("— /%s [N] — сделать quote-стикер (по reply или сообщению выше)", cmdQuoteSticker))
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить стикер из стикерпака (по reply или сообщению выше)", cmdQuoteDelete))
+						usageLines = append(usageLines, fmt.Sprintf("— /%s — roleplay-действие по reply", cmdRoleplay))
 						usageInfo = strings.Join(usageLines, "\n")
 					}
 					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
@@ -2550,6 +2567,9 @@ func Run() {
 					menu.AllowSendingWithoutReply = true
 				}
 				_, _ = bot.Send(menu)
+				continue
+			case cmdRoleplay:
+				handleRoleplayCommand(bot, msg, msg.CommandArguments())
 				continue
 			case cmdSummary, cmdSummaryAlias:
 				rec, err := store.GetChatSummary(msg.Chat.ID)

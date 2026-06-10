@@ -8,6 +8,7 @@ require (
 	github.com/normiridium/vk-music-bot-api v0.0.0-20260408213305-334de31d2621
 	github.com/yuin/goldmark v1.7.13
 	go.mongodb.org/mongo-driver v1.17.6
+	golang.org/x/net v0.55.0
 )
 
 require (
@@ -15,7 +16,6 @@ require (
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
-	golang.org/x/net v0.55.0 // indirect
 )
 
 require (
@@ -28,5 +28,7 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.51.0
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.37.0
 )
+
+replace github.com/go-telegram-bot-api/telegram-bot-api/v5 => github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260607220541-19e2afc5dd8e

@@ -34,3 +34,6 @@ static/tmp/
 # local proxy runtime/config artifacts
 .singbox/
 .env.bak_*
+
+# local manual DB/profile backups
+var/manual_profile_backups/

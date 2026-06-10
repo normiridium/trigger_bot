@@ -671,6 +671,9 @@ func TestResolveGenderVariant(t *testing.T) {
 	if got := resolveGenderVariant("it", variants); got != "оно" {
 		t.Fatalf("neuter mismatch: %q", got)
 	}
+	if got := resolveGenderVariant("оно", variants); got != "оно" {
+		t.Fatalf("neutral pronoun mismatch: %q", got)
+	}
 	if got := resolveGenderVariant("они", variants); got != "они" {
 		t.Fatalf("plural mismatch: %q", got)
 	}

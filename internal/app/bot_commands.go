@@ -32,6 +32,7 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
 		{Command: cmdAnon, Description: "Анонимное сообщение: /anon текст"},
 		{Command: cmdTranslateVoice, Description: "Голосовой перевод (реплай на аудио/видео)"},
+		{Command: cmdRoleplay, Description: "Roleplay-действие по реплаю"},
 	}
 	if mtprotoSetupVisible.Load() {
 		out = append(out, tgbotapi.BotCommand{Command: cmdSetMTProto, Description: "Привязать чат к MTProto"})

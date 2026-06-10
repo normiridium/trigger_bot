@@ -24,6 +24,7 @@ const (
 	cmdSetMTProto        = "set_mtproto"
 	cmdAnon              = "anon"
 	cmdTranslateVoice    = "translate_voice"
+	cmdRoleplay          = "roleplay"
 
 	cmdBan          = "ban"
 	cmdUnban        = "unban"

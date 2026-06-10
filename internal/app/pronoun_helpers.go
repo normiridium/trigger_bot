@@ -6,13 +6,12 @@ import (
 )
 
 type pronounFlags struct {
-	any     bool
-	none    bool
-	he      bool
-	she     bool
-	it      bool
-	neutral bool
-	they    bool
+	any  bool
+	none bool
+	he   bool
+	she  bool
+	it   bool
+	they bool
 }
 
 type genderVariants struct {
@@ -63,11 +62,8 @@ func detectPronounFlags(raw string) pronounFlags {
 		if isPronounSheToken(tok) {
 			flags.she = true
 		}
-		if isPronounItToken(tok) {
+		if isPronounItToken(tok) || isPronounNeutralToken(tok) {
 			flags.it = true
-		}
-		if isPronounNeutralToken(tok) {
-			flags.neutral = true
 		}
 		if isPronounTheyToken(tok) {
 			flags.they = true

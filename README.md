@@ -308,6 +308,10 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `VOICE_TRANSLATE_PUBLIC_BASE_URL` / `VOICE_TRANSLATE_SHARE_TTL_SEC` — публичные ссылки на результаты, если включён share-flow.
 - `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к VOT CLI и Node.js.
 
+### Roleplay inline
+- `ROLEPLAY_INLINE_THUMB_BASE_URL` — публичный base URL для картинок-превью inline-меню `/roleplay`; если пусто, используется `VOICE_TRANSLATE_PUBLIC_BASE_URL`.
+- Превью генерируются командой `./scripts/generate_roleplay_previews.py` в `static/roleplay/` из Telegram custom emoji.
+
 ### Quote sticker
 - `QUOTE_API_URI` — endpoint внешнего quote-render API; если пусто, quote-sticker flow использует доступные fallback-и.
 
