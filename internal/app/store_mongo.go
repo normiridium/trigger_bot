@@ -111,6 +111,7 @@ type mongoDailyUserQuotaDoc struct {
 	UserID    int64  `bson:"user_id"`
 	DayUTC    string `bson:"day_utc"`
 	Count     int    `bson:"count"`
+	Tokens    int    `bson:"tokens"`
 	UpdatedAt int64  `bson:"updated_at"`
 }
 
@@ -498,57 +499,7 @@ func (m *mongoBackend) ensureTriggerCollectionValidator(ctx context.Context) err
 	return nil
 }
 
-func (m *mongoBackend) tryConsumeDailyUserBotMessage(userID int64, now time.Time, limit int) (bool, error) {
-	if userID == 0 || limit <= 0 {
-		return true, nil
-	}
-	ctx, cancel := mongoCtx()
-	defer cancel()
-	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
-	nowUnix := now.Unix()
-
-	res, err := m.quotas.UpdateOne(
-		ctx,
-		bson.M{
-			"user_id": userID,
-			"day_utc": window,
-			"count":   bson.M{"$lt": limit},
-		},
-		bson.M{
-			"$inc": bson.M{"count": 1},
-			"$set": bson.M{"updated_at": nowUnix},
-		},
-	)
-	if err != nil {
-		return false, err
-	}
-	if res.ModifiedCount > 0 {
-		return true, nil
-	}
-
-	res, err = m.quotas.UpdateOne(
-		ctx,
-		bson.M{"user_id": userID, "day_utc": window},
-		bson.M{
-			"$setOnInsert": bson.M{
-				"user_id":    userID,
-				"day_utc":    window,
-				"count":      1,
-				"updated_at": nowUnix,
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		return false, err
-	}
-	if res.UpsertedCount > 0 {
-		return true, nil
-	}
-	return false, nil
-}
-
-func (m *mongoBackend) dailyUserBotMessagesRemaining(userID int64, now time.Time, limit int) (int, error) {
+func (m *mongoBackend) userGPTTokensRemaining(userID int64, now time.Time, limit int) (int, error) {
 	if userID == 0 || limit <= 0 {
 		return 0, nil
 	}
@@ -563,11 +514,77 @@ func (m *mongoBackend) dailyUserBotMessagesRemaining(userID int64, now time.Time
 		}
 		return 0, err
 	}
-	remaining := limit - doc.Count
+	remaining := limit - doc.Tokens
 	if remaining < 0 {
 		return 0, nil
 	}
 	return remaining, nil
+}
+
+func (m *mongoBackend) addUserGPTTokens(userID int64, now time.Time, tokens int, limit int) (int, error) {
+	if userID == 0 || tokens <= 0 {
+		return 0, nil
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
+	nowUnix := now.Unix()
+	_, err := m.quotas.UpdateOne(
+		ctx,
+		bson.M{"user_id": userID, "day_utc": window},
+		bson.M{
+			"$inc": bson.M{"tokens": tokens},
+			"$set": bson.M{"updated_at": nowUnix},
+			"$setOnInsert": bson.M{
+				"user_id": userID,
+				"day_utc": window,
+				"count":   0,
+			},
+		},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return m.userGPTTokensRemaining(userID, now, limit)
+}
+
+func userGPTTokenLimitLowThreshold(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	threshold := envInt("USER_GPT_TOKEN_LOW_WARNING_THRESHOLD", 0)
+	if threshold < 0 {
+		threshold = 0
+	}
+	if threshold == 0 {
+		threshold = limit / 10
+		if threshold < 1000 {
+			threshold = 1000
+		}
+	}
+	if threshold > limit {
+		threshold = limit
+	}
+	return threshold
+}
+
+func userGPTTokenLimitFromEnv() int {
+	limit := envInt("USER_GPT_TOKEN_LIMIT", -1)
+	if limit < 0 {
+		legacyMessages := envInt("USER_DAILY_BOT_MESSAGES_LIMIT", 12)
+		if legacyMessages < 0 {
+			legacyMessages = 0
+		}
+		limit = legacyMessages * envInt("USER_GPT_TOKEN_LIMIT_LEGACY_MESSAGE_TOKENS", 2500)
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	return limit
 }
 
 func quotaWindowKeyUTC(now time.Time, window time.Duration) string {

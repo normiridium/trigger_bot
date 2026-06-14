@@ -152,18 +152,18 @@ func (s *Store) UpsertChatAdminCache(chatID, userID int64, isAdmin bool, updated
 	return s.mg.upsertChatAdminCache(chatID, userID, isAdmin, updatedAt)
 }
 
-func (s *Store) TryConsumeDailyUserBotMessage(userID int64, now time.Time, limit int) (bool, error) {
-	if s == nil || s.mg == nil {
-		return false, errors.New("mongo backend not initialized")
-	}
-	return s.mg.tryConsumeDailyUserBotMessage(userID, now, limit)
-}
-
-func (s *Store) DailyUserBotMessagesRemaining(userID int64, now time.Time, limit int) (int, error) {
+func (s *Store) UserGPTTokensRemaining(userID int64, now time.Time, limit int) (int, error) {
 	if s == nil || s.mg == nil {
 		return 0, errors.New("mongo backend not initialized")
 	}
-	return s.mg.dailyUserBotMessagesRemaining(userID, now, limit)
+	return s.mg.userGPTTokensRemaining(userID, now, limit)
+}
+
+func (s *Store) AddUserGPTTokens(userID int64, now time.Time, tokens int, limit int) (int, error) {
+	if s == nil || s.mg == nil {
+		return 0, errors.New("mongo backend not initialized")
+	}
+	return s.mg.addUserGPTTokens(userID, now, tokens, limit)
 }
 
 func (s *Store) UpsertScheduledUnmute(chatID, userID int64, unmuteAt int64) error {

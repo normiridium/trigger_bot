@@ -725,39 +725,50 @@ func TestChatAdminSyncCRUD(t *testing.T) {
 	}
 }
 
-func TestTryConsumeDailyUserBotMessage(t *testing.T) {
+func TestUserGPTTokenQuota(t *testing.T) {
 	s := openTestStore(t)
 	userID := int64(123456)
 	winStart := time.Date(2026, time.April, 23, 12, 5, 0, 0, time.UTC) // 12:00..15:59 window
 	nextWin := time.Date(2026, time.April, 23, 16, 0, 1, 0, time.UTC)  // next 4h window
 
-	ok, err := s.TryConsumeDailyUserBotMessage(userID, winStart, 2)
+	remaining, err := s.UserGPTTokensRemaining(userID, winStart, 1000)
 	if err != nil {
-		t.Fatalf("first consume: %v", err)
+		t.Fatalf("initial remaining: %v", err)
 	}
-	if !ok {
-		t.Fatalf("first consume must pass")
+	if remaining != 1000 {
+		t.Fatalf("expected full initial token budget, got %d", remaining)
 	}
-	ok, err = s.TryConsumeDailyUserBotMessage(userID, winStart.Add(2*time.Hour), 2)
+
+	remaining, err = s.AddUserGPTTokens(userID, winStart, 300, 1000)
 	if err != nil {
-		t.Fatalf("second consume: %v", err)
+		t.Fatalf("first token add: %v", err)
 	}
-	if !ok {
-		t.Fatalf("second consume must pass")
+	if remaining != 700 {
+		t.Fatalf("expected 700 tokens remaining, got %d", remaining)
 	}
-	ok, err = s.TryConsumeDailyUserBotMessage(userID, winStart.Add(3*time.Hour), 2)
+
+	remaining, err = s.AddUserGPTTokens(userID, winStart.Add(2*time.Hour), 800, 1000)
 	if err != nil {
-		t.Fatalf("third consume: %v", err)
+		t.Fatalf("second token add: %v", err)
 	}
-	if ok {
-		t.Fatalf("third consume in same 4h window must be blocked")
+	if remaining != 0 {
+		t.Fatalf("expected exhausted token budget, got %d", remaining)
 	}
-	ok, err = s.TryConsumeDailyUserBotMessage(userID, nextWin, 2)
+
+	remaining, err = s.UserGPTTokensRemaining(userID, winStart.Add(3*time.Hour), 1000)
 	if err != nil {
-		t.Fatalf("next window consume: %v", err)
+		t.Fatalf("same window remaining: %v", err)
 	}
-	if !ok {
-		t.Fatalf("next 4h window consume must pass")
+	if remaining != 0 {
+		t.Fatalf("same 4h window must stay exhausted, got %d", remaining)
+	}
+
+	remaining, err = s.UserGPTTokensRemaining(userID, nextWin, 1000)
+	if err != nil {
+		t.Fatalf("next window remaining: %v", err)
+	}
+	if remaining != 1000 {
+		t.Fatalf("next 4h window must reset token budget, got %d", remaining)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -375,7 +376,7 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 			task.Msg.Chat.ID, task.Msg.MessageID, editWaited.Milliseconds(), editChanged, clipLogText(firstNonEmptyUserText(task.Msg), 200))
 	}
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
-	out, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
+	result, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
 	if err != nil {
 		log.Printf("gpt prompt failed: %s", sanitizeSecretText(err.Error()))
 		if isOpenAIInsufficientQuotaError(err) {
@@ -389,6 +390,20 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
 		return
 	}
+	if task.RecordGPTTokens != nil && result.Usage.TotalTokens > 0 && task.Msg.From != nil {
+		remaining, crossedLow, recErr := task.RecordGPTTokens(task.Msg.From.ID, result.Usage.TotalTokens, time.Now())
+		if recErr != nil {
+			log.Printf("gpt user-token-limit record failed user=%d tokens=%d: %v", task.Msg.From.ID, result.Usage.TotalTokens, recErr)
+		} else {
+			if debugGPTLogEnabled || debugTriggerLogEnabled {
+				log.Printf("gpt user-token-limit user=%d spent=%d remaining=%d", task.Msg.From.ID, result.Usage.TotalTokens, remaining)
+			}
+			if crossedLow {
+				sendUserLimitLowWarning(task.Bot, task.Msg, task.UserLimitLowTrigger, task.TemplateLookup)
+			}
+		}
+	}
+	out := result.Text
 	out = expandTemplateCalls(out, task.TemplateLookup)
 	startedAt := task.TriggeredAt
 	if startedAt.IsZero() {
@@ -1152,6 +1167,67 @@ func hasIgnoredAutoReplyPrefix(s string) bool {
 	return false
 }
 
+func hasIgnoredAutoReplyLeadingToken(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	text := firstNonEmptyUserText(msg)
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	if startsWithCustomEmojiEntity(msg) {
+		return true
+	}
+	trimmed := strings.TrimLeftFunc(text, unicode.IsSpace)
+	if loc := tgEmojiAnyWithIDRe.FindStringIndex(trimmed); loc != nil && loc[0] == 0 {
+		return true
+	}
+	if emoji, _ := extractLeadingUnicodeEmoji(trimmed); emoji != "" {
+		return true
+	}
+	return hasIgnoredAutoReplyPrefix(text)
+}
+
+func startsWithCustomEmojiEntity(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	text := msg.Text
+	entities := msg.Entities
+	if strings.TrimSpace(msg.Text) == "" && strings.TrimSpace(msg.Caption) != "" {
+		text = msg.Caption
+		entities = msg.CaptionEntities
+	}
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	if len(entities) == 0 {
+		return false
+	}
+	offset := leadingNonSpaceUTF16Offset(text)
+	for _, ent := range entities {
+		if ent.Type == "custom_emoji" && ent.Offset == offset && ent.Length > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func leadingNonSpaceUTF16Offset(s string) int {
+	offset := 0
+	for _, r := range s {
+		if !unicode.IsSpace(r) {
+			return offset
+		}
+		if r > 0xFFFF {
+			offset += 2
+		} else {
+			offset++
+		}
+	}
+	return offset
+}
+
 func buildTemplateLookup(store TriggerStorePort) func(string) string {
 	var mu sync.Mutex
 	cache := map[string]string{}
@@ -1794,14 +1870,12 @@ func Run() {
 	if logTextClipMax < 0 {
 		logTextClipMax = 200
 	}
-	userDailyBotMessagesLimit := envInt("USER_DAILY_BOT_MESSAGES_LIMIT", 12)
-	if userDailyBotMessagesLimit < 0 {
-		userDailyBotMessagesLimit = 0
-	}
-	if userDailyBotMessagesLimit > 0 {
-		log.Printf("per-user GPT response limit enabled: %d per 4h window (UTC)", userDailyBotMessagesLimit)
+	userGPTTokenLimit := userGPTTokenLimitFromEnv()
+	userGPTTokenLowThreshold := userGPTTokenLimitLowThreshold(userGPTTokenLimit)
+	if userGPTTokenLimit > 0 {
+		log.Printf("per-user GPT token limit enabled: %d tokens per 4h window (UTC), low warning threshold=%d", userGPTTokenLimit, userGPTTokenLowThreshold)
 	} else {
-		log.Printf("per-user GPT response limit disabled")
+		log.Printf("per-user GPT token limit disabled")
 	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
 
@@ -1949,6 +2023,21 @@ func Run() {
 			MediaQueue:        mediaQueue,
 			MediaInteractive:  mediaInteractive,
 			TemplateLookup:    templateLookup,
+			RecordGPTTokens: func(userID int64, tokens int, now time.Time) (int, bool, error) {
+				if userGPTTokenLimit <= 0 || userID == 0 || tokens <= 0 {
+					return 0, false, nil
+				}
+				before, err := store.UserGPTTokensRemaining(userID, now, userGPTTokenLimit)
+				if err != nil {
+					return 0, false, err
+				}
+				remaining, err := store.AddUserGPTTokens(userID, now, tokens, userGPTTokenLimit)
+				if err != nil {
+					return 0, false, err
+				}
+				crossedLow := userGPTTokenLowThreshold > 0 && before > userGPTTokenLowThreshold && remaining <= userGPTTokenLowThreshold
+				return remaining, crossedLow, nil
+			},
 		},
 		Allowed:    allowedChats,
 		Engine:     triggerEngine,
@@ -2696,35 +2785,21 @@ func Run() {
 		msg = messageWithEffectiveUserText(msg, text)
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
-		quotaConsumed := false
-		quotaLowWarningSent := false
 		var quotaLowWarningTrigger *Trigger
-		consumeDailyQuota := func() bool {
-			if quotaConsumed {
+		checkGPTTokenQuota := func() bool {
+			if userGPTTokenLimit <= 0 || msg.From == nil || msg.From.ID == 0 {
 				return true
 			}
-			ok, err := store.TryConsumeDailyUserBotMessage(msg.From.ID, now, userDailyBotMessagesLimit)
+			remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit)
 			if err != nil {
-				log.Printf("gpt user-limit check failed user=%d: %v", msg.From.ID, err)
-				quotaConsumed = true
+				log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
 				return true
 			}
-			if ok {
-				quotaConsumed = true
-				if !quotaLowWarningSent && quotaLowWarningTrigger != nil && userDailyBotMessagesLimit > 0 {
-					remaining, remErr := store.DailyUserBotMessagesRemaining(msg.From.ID, now, userDailyBotMessagesLimit)
-					if remErr != nil {
-						log.Printf("gpt user-limit remaining check failed user=%d: %v", msg.From.ID, remErr)
-					} else if remaining == 1 {
-						if sendUserLimitLowWarning(bot, msg, quotaLowWarningTrigger, templateLookup) {
-							quotaLowWarningSent = true
-						}
-					}
-				}
+			if remaining > 0 {
 				return true
 			}
 			if debugTriggerLogEnabled {
-				log.Printf("gpt user-limit reached user=%d chat=%d limit=%d/4h", msg.From.ID, msg.Chat.ID, userDailyBotMessagesLimit)
+				log.Printf("gpt user-token-limit reached user=%d chat=%d limit=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit)
 			}
 			return false
 		}
@@ -2775,7 +2850,7 @@ func Run() {
 			},
 		})
 		if primary != nil {
-			if primary.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+			if primary.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
 				continue
 			}
 			matchedAny = true
@@ -2787,7 +2862,7 @@ func Run() {
 					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
 				}
 			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, recentBefore)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, recentBefore, quotaLowWarningTrigger)
 		}
 
 		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
@@ -2804,7 +2879,7 @@ func Run() {
 			if tr == nil {
 				break
 			}
-			if tr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+			if tr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
 				matchedAny = true
 				break
 			}
@@ -2817,7 +2892,7 @@ func Run() {
 					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 				}
 			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, recentBefore)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, recentBefore, quotaLowWarningTrigger)
 		}
 		if matchedAny {
 			continue
@@ -2830,10 +2905,10 @@ func Run() {
 				return isAdminAuthor
 			})
 			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
-				if autoTr.ActionType == ActionTypeGPTPrompt && !consumeDailyQuota() {
+				if autoTr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
 					continue
 				}
-				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, recentBefore)
+				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, recentBefore, quotaLowWarningTrigger)
 				if debugTriggerLogEnabled {
 					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
 				}
@@ -2861,6 +2936,7 @@ type triggerActionDeps struct {
 	MediaQueue        *mediaDownloadQueue
 	MediaInteractive  bool
 	TemplateLookup    func(string) string
+	RecordGPTTokens   func(userID int64, tokens int, now time.Time) (remaining int, crossedLow bool, err error)
 }
 
 type triggerHandlerDeps struct {
@@ -3304,8 +3380,7 @@ func filterRuntimeTriggersForMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 	if !msg.ReplyToMessage.From.IsBot || msg.ReplyToMessage.From.ID != bot.Self.ID {
 		return all
 	}
-	replyText := strings.TrimSpace(firstNonEmptyUserText(msg.ReplyToMessage))
-	if !hasIgnoredAutoReplyPrefix(replyText) {
+	if !hasIgnoredAutoReplyLeadingToken(msg.ReplyToMessage) {
 		return all
 	}
 	out := make([]Trigger, 0, len(all))
@@ -3407,7 +3482,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 		return
 	}
 	tr.CapturingText = ""
-	enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, tr, "")
+	enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, tr, "", nil)
 	if deps.ChatRecent != nil {
 		deps.ChatRecent.Add(chatID, recentChatMessage{
 			MessageID: 0,
@@ -3418,7 +3493,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 	}
 }
 
-func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message, tr *Trigger, recentBefore string) {
+func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message, tr *Trigger, recentBefore string, userLimitLowTrigger *Trigger) {
 	if msg == nil || tr == nil {
 		return
 	}
@@ -3555,20 +3630,22 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		trCopy := *tr
 		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 		triggeredAt := time.Now()
-		var hungryWarningTrigger *Trigger
+		var openAIQuotaLowTrigger *Trigger
 		if deps.Store != nil {
 			if all, err := deps.Store.ListTriggers(); err == nil {
-				hungryWarningTrigger = pickOlenyamHungryTrigger(all, false)
+				openAIQuotaLowTrigger = pickOlenyamHungryTrigger(all, false)
 			}
 		}
 		executeGPTPromptTask(gpt.PromptTask{
-			Bot:             deps.Bot,
-			Trigger:         trCopy,
-			QuotaLowTrigger: hungryWarningTrigger,
-			Msg:             msg,
-			TriggeredAt:     triggeredAt,
-			RecentContext:   ctx,
-			TemplateLookup:  deps.TemplateLookup,
+			Bot:                 deps.Bot,
+			Trigger:             trCopy,
+			QuotaLowTrigger:     openAIQuotaLowTrigger,
+			UserLimitLowTrigger: userLimitLowTrigger,
+			Msg:                 msg,
+			TriggeredAt:         triggeredAt,
+			RecentContext:       ctx,
+			TemplateLookup:      deps.TemplateLookup,
+			RecordGPTTokens:     deps.RecordGPTTokens,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
 				if deps.IdleTracker != nil {
 					deps.IdleTracker.MarkActivity(chatID, now)

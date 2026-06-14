@@ -220,7 +220,10 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `ALLOWED_CHAT_IDS` — список chat ID, где боту разрешено отвечать в группах/супергруппах.
 
 ### GPT
-- `USER_DAILY_BOT_MESSAGES_LIMIT` — суточный лимит ответов бота на одного пользователя.
+- `USER_GPT_TOKEN_LIMIT` — лимит потраченных GPT-токенов на пользователя за 4-часовое окно UTC (`0` отключает лимит).
+- `USER_GPT_TOKEN_LOW_WARNING_THRESHOLD` — остаток токенов, при пересечении которого отправляется системное предупреждение (`0` = авто: 10% лимита, минимум 1000).
+- `USER_DAILY_BOT_MESSAGES_LIMIT` — устаревший fallback: если `USER_GPT_TOKEN_LIMIT` не задан, пересчитывается в токены через `USER_GPT_TOKEN_LIMIT_LEGACY_MESSAGE_TOKENS`.
+- `GPT_IMAGE_CONTEXT_MAX_MB` — максимум размера картинки, которую можно приложить к GPT multimodal-контексту (`0` отключает лимит).
 - `GPT_REPLY_REACTION_CHANCE_PERCENT` — шанс реакции на GPT-ответ.
 - `GPT_EDIT_WAIT_SEC` / `GPT_EDIT_WAIT_MAX_SEC` — ожидание стабилизации edited messages перед ответом.
 - `GPT_HUMAN_PAUSE` и `GPT_HUMAN_PAUSE_*` — человекоподобная пауза перед GPT-ответом.

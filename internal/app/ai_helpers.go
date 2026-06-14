@@ -392,10 +392,21 @@ func cidrContainsIP(cidr string, ip net.IP) bool {
 	return n.Contains(ip)
 }
 
-func generateChatGPTReply(ctx templateContext, promptTemplate string, recentContext string) (string, error) {
+type openAITokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+type chatGPTReplyResult struct {
+	Text  string
+	Usage openAITokenUsage
+}
+
+func generateChatGPTReply(ctx templateContext, promptTemplate string, recentContext string) (chatGPTReplyResult, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
-		return "", errors.New("OPENAI_API_KEY is empty")
+		return chatGPTReplyResult{}, errors.New("OPENAI_API_KEY is empty")
 	}
 	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
 	if model == "" {
@@ -442,7 +453,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 
 	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return chatGPTReplyResult{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -450,18 +461,18 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 	client := &http.Client{Timeout: 25 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return chatGPTReplyResult{}, err
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return chatGPTReplyResult{}, err
 	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt response status=%d body=%q", resp.StatusCode, clipLogText(sanitizeSecretText(string(bodyBytes)), 200))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600))
+		return chatGPTReplyResult{}, fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600))
 	}
 
 	var result struct {
@@ -470,18 +481,54 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", err
+		return chatGPTReplyResult{}, err
 	}
 	if len(result.Choices) == 0 {
-		return "", errors.New("empty choices")
+		return chatGPTReplyResult{}, errors.New("empty choices")
 	}
 	out := strings.TrimSpace(result.Choices[0].Message.Content)
 	if out == "" {
-		return "", errors.New("empty answer")
+		return chatGPTReplyResult{}, errors.New("empty answer")
 	}
-	return out, nil
+	usage := openAITokenUsage{
+		PromptTokens:     result.Usage.PromptTokens,
+		CompletionTokens: result.Usage.CompletionTokens,
+		TotalTokens:      result.Usage.TotalTokens,
+	}
+	if usage.TotalTokens <= 0 {
+		usage.PromptTokens = estimateTextTokens(prompt)
+		usage.CompletionTokens = estimateTextTokens(out)
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	if debugGPTLogEnabled {
+		log.Printf("gpt usage prompt_tokens=%d completion_tokens=%d total_tokens=%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	}
+	return chatGPTReplyResult{Text: out, Usage: usage}, nil
+}
+
+func estimateTextTokens(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	runes := len([]rune(s))
+	words := len(strings.Fields(s))
+	byRunes := (runes + 2) / 3
+	byWords := words * 2
+	if byWords > byRunes {
+		return byWords
+	}
+	if byRunes < 1 {
+		return 1
+	}
+	return byRunes
 }
 
 func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
@@ -876,6 +923,9 @@ func buildOpenAIImageDataURL(imageURL string) (string, error) {
 	imgBytes, err := fetchImageBytes(imageURL)
 	if err != nil {
 		return "", err
+	}
+	if maxMB := gptImageContextMaxMB(); maxMB > 0 && len(imgBytes) > maxMB<<20 {
+		return "", fmt.Errorf("image is too large for GPT context: %.2f MB > %d MB", float64(len(imgBytes))/(1024*1024), maxMB)
 	}
 	ctype := strings.ToLower(strings.TrimSpace(http.DetectContentType(imgBytes)))
 	if !strings.HasPrefix(ctype, "image/") {

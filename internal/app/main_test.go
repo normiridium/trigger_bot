@@ -386,6 +386,7 @@ func TestMediaServiceEmoji(t *testing.T) {
 }
 
 func TestExtractImageFileID(t *testing.T) {
+	t.Setenv("GPT_IMAGE_CONTEXT_MAX_MB", "5")
 	msg := &tgbotapi.Message{
 		Photo: []tgbotapi.PhotoSize{
 			{FileID: "small", FileSize: 10},
@@ -403,6 +404,29 @@ func TestExtractImageFileID(t *testing.T) {
 	}
 	if got := extractImageFileID(docMsg); got != "docimg" {
 		t.Fatalf("expected image document id, got %q", got)
+	}
+}
+
+func TestExtractImageFileID_SkipsOversizedImages(t *testing.T) {
+	t.Setenv("GPT_IMAGE_CONTEXT_MAX_MB", "5")
+	tooLarge := 6 << 20
+	msg := &tgbotapi.Message{
+		Photo: []tgbotapi.PhotoSize{
+			{FileID: "large", FileSize: tooLarge},
+		},
+	}
+	if got := extractImageFileID(msg); got != "" {
+		t.Fatalf("expected oversized photo to be skipped, got %q", got)
+	}
+	docMsg := &tgbotapi.Message{
+		Document: &tgbotapi.Document{
+			FileID:   "docimg",
+			MimeType: "image/png",
+			FileSize: tooLarge,
+		},
+	}
+	if got := extractImageFileID(docMsg); got != "" {
+		t.Fatalf("expected oversized image document to be skipped, got %q", got)
 	}
 }
 
@@ -1072,6 +1096,39 @@ func TestExtractLeadingReactionCandidateNoEmoji(t *testing.T) {
 	_, _, ok := extractLeadingReactionCandidate(in)
 	if ok {
 		t.Fatalf("list marker must not be treated as reaction emoji")
+	}
+}
+
+func TestHasIgnoredAutoReplyLeadingTokenUnicodeEmoji(t *testing.T) {
+	msg := &tgbotapi.Message{Text: "  🙂 привет"}
+	if !hasIgnoredAutoReplyLeadingToken(msg) {
+		t.Fatalf("leading unicode emoji must be ignored")
+	}
+}
+
+func TestHasIgnoredAutoReplyLeadingTokenCustomEmojiEntity(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Text: "  x привет",
+		Entities: []tgbotapi.MessageEntity{
+			{Type: "custom_emoji", Offset: 2, Length: 1, CustomEmojiID: "123"},
+		},
+	}
+	if !hasIgnoredAutoReplyLeadingToken(msg) {
+		t.Fatalf("leading custom emoji entity must be ignored")
+	}
+}
+
+func TestHasIgnoredAutoReplyLeadingTokenTGEmojiTag(t *testing.T) {
+	msg := &tgbotapi.Message{Text: `<tg-emoji emoji-id="123">🦌</tg-emoji> привет`}
+	if !hasIgnoredAutoReplyLeadingToken(msg) {
+		t.Fatalf("leading tg-emoji tag must be ignored")
+	}
+}
+
+func TestHasIgnoredAutoReplyLeadingTokenMiddleEmojiAllowed(t *testing.T) {
+	msg := &tgbotapi.Message{Text: "привет 🙂"}
+	if hasIgnoredAutoReplyLeadingToken(msg) {
+		t.Fatalf("middle emoji must not suppress reply trigger")
 	}
 }
 

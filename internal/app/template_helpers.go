@@ -177,6 +177,7 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 	if msg == nil {
 		return ""
 	}
+	maxBytes := int64(gptImageContextMaxMB()) << 20
 	if len(msg.Photo) > 0 {
 		best := msg.Photo[0]
 		for _, p := range msg.Photo {
@@ -184,14 +185,28 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 				best = p
 			}
 		}
+		if maxBytes > 0 && best.FileSize > 0 && int64(best.FileSize) > maxBytes {
+			return ""
+		}
 		return strings.TrimSpace(best.FileID)
 	}
 	if msg.Document != nil {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Document.MimeType)), "image/") {
+			if maxBytes > 0 && msg.Document.FileSize > 0 && int64(msg.Document.FileSize) > maxBytes {
+				return ""
+			}
 			return strings.TrimSpace(msg.Document.FileID)
 		}
 	}
 	return ""
+}
+
+func gptImageContextMaxMB() int {
+	maxMB := envInt("GPT_IMAGE_CONTEXT_MAX_MB", 5)
+	if maxMB < 0 {
+		return 0
+	}
+	return maxMB
 }
 
 var regexQuantifierPattern = regexp.MustCompile(`\{[^}]*\}`)
