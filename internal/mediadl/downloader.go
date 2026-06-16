@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -43,6 +44,7 @@ func progressCallbackFromContext(ctx context.Context) func(float64) {
 }
 
 var ErrUnsupportedURL = errors.New("unsupported media url")
+var ErrUnsupportedMediaVariant = errors.New("unsupported media variant")
 var ErrTooLarge = errors.New("media file is too large")
 var ErrTooLong = errors.New("media duration is too long")
 
@@ -275,6 +277,9 @@ func (d Downloader) DownloadVideoFromURL(ctx context.Context, rawURL string) (Do
 }
 
 func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string) (DownloadResult, error) {
+	if res, handled, err := d.downloadTikTokPhotoPost(ctx, rawURL); handled {
+		return res, err
+	}
 	probe, err := d.probeWithFormat(ctx, rawURL, "")
 	if err != nil {
 		return DownloadResult{}, err
@@ -374,6 +379,9 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 	normURL, service, ok := NormalizeSupportedURL(rawURL)
 	if !ok {
 		return ProbeResult{}, ErrUnsupportedURL
+	}
+	if service == ServiceTikTok && isTikTokPhotoURL(normURL) {
+		return ProbeResult{}, fmt.Errorf("%w: TikTok photo post did not expose a downloadable image", ErrUnsupportedMediaVariant)
 	}
 	if service != ServiceYouTube {
 		// Non-YouTube extractors often don't expose/accept height constraints for audio probing.
@@ -1196,11 +1204,220 @@ func (d Downloader) downloadPinterestThumbnail(ctx context.Context, rawURL, dir 
 	if rawURL == "" {
 		return "", errors.New("empty pinterest thumbnail url")
 	}
+	return d.downloadRemoteImage(ctx, rawURL, dir, "pinterest-image", "")
+}
+
+func (d Downloader) downloadTikTokPhotoPost(ctx context.Context, rawURL string) (DownloadResult, bool, error) {
+	normURL, service, ok := NormalizeSupportedURL(rawURL)
+	if !ok || service != ServiceTikTok || !isTikTokPhotoURL(normURL) {
+		return DownloadResult{}, false, nil
+	}
+	tmpDir, err := bottmp.MkdirTemp("media-tiktok-photo-*")
+	if err != nil {
+		return DownloadResult{}, true, err
+	}
+	title, imageURL, err := fetchTikTokPhotoPostImage(ctx, normURL)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return DownloadResult{}, true, err
+	}
+	path, err := d.downloadRemoteImage(ctx, imageURL, tmpDir, "tiktok-photo", normURL)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return DownloadResult{}, true, err
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		_ = os.Remove(path)
+		return DownloadResult{}, true, fmt.Errorf("downloaded file missing: %w", err)
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "TikTok photo"
+	}
+	return DownloadResult{
+		FilePath:  path,
+		Title:     title,
+		MediaKind: MediaKindPhoto,
+		SizeBytes: st.Size(),
+		Service:   ServiceTikTok,
+		SourceURL: normURL,
+	}, true, nil
+}
+
+func fetchTikTokPhotoPostImage(ctx context.Context, rawURL string) (title string, imageURL string, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("%w: TikTok photo page status=%d", ErrUnsupportedMediaVariant, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return "", "", err
+	}
+	page := string(body)
+	title, imageURL = extractTikTokPhotoFromHTML(page)
+	if strings.TrimSpace(imageURL) == "" {
+		return "", "", fmt.Errorf("%w: TikTok photo post did not expose a downloadable image", ErrUnsupportedMediaVariant)
+	}
+	return strings.TrimSpace(title), strings.TrimSpace(imageURL), nil
+}
+
+func extractTikTokPhotoFromHTML(page string) (title string, imageURL string) {
+	if t, u := extractTikTokPhotoFromUniversalData(page); strings.TrimSpace(u) != "" {
+		return t, u
+	}
+	return extractOpenGraphImage(page)
+}
+
+func extractTikTokPhotoFromUniversalData(page string) (title string, imageURL string) {
+	const marker = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">`
+	start := strings.Index(page, marker)
+	if start < 0 {
+		return "", ""
+	}
+	start += len(marker)
+	end := strings.Index(page[start:], "</script>")
+	if end < 0 {
+		return "", ""
+	}
+	var root any
+	if err := json.Unmarshal([]byte(page[start:start+end]), &root); err != nil {
+		return "", ""
+	}
+	post := findTikTokImagePost(root)
+	if post == nil {
+		return "", ""
+	}
+	title = stringFromMap(post, "title")
+	images, _ := post["images"].([]any)
+	if len(images) == 0 {
+		return title, ""
+	}
+	first, _ := images[0].(map[string]any)
+	imageURLNode, _ := first["imageURL"].(map[string]any)
+	if imageURLNode == nil {
+		imageURLNode, _ = first["imageUrl"].(map[string]any)
+	}
+	return title, firstURLFromNode(imageURLNode)
+}
+
+func findTikTokImagePost(node any) map[string]any {
+	switch v := node.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if strings.EqualFold(key, "imagePost") {
+				if post, ok := child.(map[string]any); ok {
+					return post
+				}
+			}
+		}
+		for _, child := range v {
+			if post := findTikTokImagePost(child); post != nil {
+				return post
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if post := findTikTokImagePost(child); post != nil {
+				return post
+			}
+		}
+	}
+	return nil
+}
+
+func extractOpenGraphImage(page string) (title string, imageURL string) {
+	title = firstMetaContent(page, "property", "og:title")
+	if title == "" {
+		title = firstMetaContent(page, "name", "twitter:title")
+	}
+	imageURL = firstMetaContent(page, "property", "og:image")
+	if imageURL == "" {
+		imageURL = firstMetaContent(page, "name", "twitter:image")
+	}
+	return title, imageURL
+}
+
+func firstMetaContent(page, attrName, attrValue string) string {
+	needle := attrName + `="` + attrValue + `"`
+	pos := strings.Index(page, needle)
+	if pos < 0 {
+		return ""
+	}
+	tagStart := strings.LastIndex(page[:pos], "<meta")
+	tagEndRel := strings.Index(page[pos:], ">")
+	if tagStart < 0 || tagEndRel < 0 {
+		return ""
+	}
+	tag := page[tagStart : pos+tagEndRel]
+	contentNeedle := `content="`
+	contentStart := strings.Index(tag, contentNeedle)
+	if contentStart < 0 {
+		return ""
+	}
+	contentStart += len(contentNeedle)
+	contentEnd := strings.Index(tag[contentStart:], `"`)
+	if contentEnd < 0 {
+		return ""
+	}
+	return html.UnescapeString(tag[contentStart : contentStart+contentEnd])
+}
+
+func firstURLFromNode(node map[string]any) string {
+	if node == nil {
+		return ""
+	}
+	if v := stringFromMap(node, "url"); v != "" {
+		return v
+	}
+	if v := stringFromMap(node, "uri"); strings.HasPrefix(v, "http") {
+		return v
+	}
+	for _, key := range []string{"urlList", "url_list", "urls"} {
+		if list, ok := node[key].([]any); ok {
+			for _, item := range list {
+				if s, ok := item.(string); ok && strings.HasPrefix(strings.TrimSpace(s), "http") {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func stringFromMap(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if s, ok := m[key].(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func (d Downloader) downloadRemoteImage(ctx context.Context, rawURL, dir, baseName, referer string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", errors.New("empty image url")
+	}
 	ext := mediaExtensionFromURL(rawURL, ".jpg")
-	path := filepath.Join(dir, "pinterest-image"+ext)
+	path := filepath.Join(dir, baseName+ext)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	if strings.TrimSpace(referer) != "" {
+		req.Header.Set("Referer", referer)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1208,7 +1425,7 @@ func (d Downloader) downloadPinterestThumbnail(ctx context.Context, rawURL, dir 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("pinterest thumbnail download status=%d", resp.StatusCode)
+		return "", fmt.Errorf("image download status=%d", resp.StatusCode)
 	}
 	out, err := os.Create(path)
 	if err != nil {
@@ -1227,7 +1444,7 @@ func (d Downloader) downloadPinterestThumbnail(ctx context.Context, rawURL, dir 
 	}
 	if written <= 0 {
 		_ = os.Remove(path)
-		return "", errors.New("pinterest thumbnail download is empty")
+		return "", errors.New("image download is empty")
 	}
 	if max := int64(d.maxSizeMB()) * 1024 * 1024; max > 0 && written > max {
 		_ = os.Remove(path)
@@ -1305,4 +1522,21 @@ func inferMediaKindByPath(path string) MediaKind {
 	default:
 		return MediaKindVideo
 	}
+}
+
+func isTikTokPhotoURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u.Hostname()), "www."))
+	if host != "tiktok.com" && host != "m.tiktok.com" {
+		return false
+	}
+	for _, part := range strings.Split(u.EscapedPath(), "/") {
+		if strings.EqualFold(part, "photo") {
+			return true
+		}
+	}
+	return false
 }

@@ -855,6 +855,9 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 						case mediadl.ModeAudio:
 							title = "ошибка скачивания аудио"
 						}
+						if errors.Is(err, mediadl.ErrUnsupportedMediaVariant) {
+							title = "неподдерживаемый формат медиа"
+						}
 						reportChatFailure(task.SendCtx.Bot, chatID, title, errors.New(userFacingMediaDownloadError(err)))
 						return
 					}
@@ -917,6 +920,11 @@ func userFacingMediaDownloadError(err error) string {
 		return "YouTube вернул только storyboard вместо аудио/видео"
 	case strings.Contains(msg, "vk.com/badbrowser.php") || strings.Contains(msg, "vk.ru/badbrowser.php"):
 		return "VK временно не выдал медиа-поток (badbrowser), попробуйте позже"
+	case errors.Is(err, mediadl.ErrUnsupportedMediaVariant):
+		if strings.Contains(msg, "tiktok photo") {
+			return "TikTok не отдал картинку из photo-поста"
+		}
+		return "этот вариант медиа пока не поддерживается"
 	case strings.Contains(msg, "unsupported media url"):
 		return "ссылка не поддерживается"
 	default:

@@ -10,6 +10,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -786,11 +787,67 @@ func buildSourceLinkHTML(rawURL, label string) string {
 	if rawURL == "" {
 		return ""
 	}
+	rawURL = cleanSourceURLForCaption(rawURL)
 	label = strings.TrimSpace(label)
 	if label == "" {
 		label = "ссылка"
 	}
 	return `<a href="` + html.EscapeString(rawURL) + `">` + html.EscapeString(label) + `</a>`
+}
+
+func cleanSourceURLForCaption(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return rawURL
+	}
+	host := strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+	u.Fragment = ""
+	switch {
+	case host == "tiktok.com" || host == "m.tiktok.com" || host == "vm.tiktok.com" || host == "vt.tiktok.com":
+		u.RawQuery = ""
+	case host == "instagram.com" || host == "x.com" || host == "twitter.com" || host == "pinterest.com" || strings.HasSuffix(host, ".pinterest.com"):
+		u.RawQuery = ""
+	default:
+		u.RawQuery = cleanTrackingQuery(u.Query(), host).Encode()
+	}
+	return u.String()
+}
+
+func cleanTrackingQuery(values url.Values, host string) url.Values {
+	if len(values) == 0 {
+		return values
+	}
+	out := make(url.Values, len(values))
+	for key, vals := range values {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if lower == "" || isTrackingQueryKey(lower, host) {
+			continue
+		}
+		for _, v := range vals {
+			out.Add(key, v)
+		}
+	}
+	return out
+}
+
+func isTrackingQueryKey(key, host string) bool {
+	if strings.HasPrefix(key, "utm_") || strings.HasPrefix(key, "share_") {
+		return true
+	}
+	switch key {
+	case "fbclid", "gclid", "yclid", "igshid", "si", "feature", "source", "ref", "ref_src":
+		return true
+	case "_r", "_t", "u_code", "preview_pb", "sharer_language", "sec_user_id", "sec_uid", "social_share_type", "tt_from":
+		return true
+	}
+	if strings.Contains(host, "youtube.com") {
+		switch key {
+		case "v", "list", "t", "start", "index":
+			return false
+		}
+	}
+	return false
 }
 
 func ensureTelegramUploadLimit(path string) error {

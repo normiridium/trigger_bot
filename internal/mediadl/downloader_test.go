@@ -208,6 +208,26 @@ func TestPinterestImageHelpers(t *testing.T) {
 	}
 }
 
+func TestTikTokPhotoHelpers(t *testing.T) {
+	if !isTikTokPhotoURL("https://www.tiktok.com/@artist/photo/7630008047309475086?_r=1") {
+		t.Fatal("expected TikTok photo URL to be detected")
+	}
+	if isTikTokPhotoURL("https://www.tiktok.com/@artist/video/7630008047309475086") {
+		t.Fatal("did not expect TikTok video URL to be detected as photo")
+	}
+	html := `<html><head><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">` +
+		`{"item":{"imagePost":{"title":"demo title","images":[{"imageURL":{"urlList":["https://example.org/first.webp","https://example.org/second.webp"]}}]}}}` +
+		`</script></head></html>`
+	title, imageURL := extractTikTokPhotoFromHTML(html)
+	if title != "demo title" || imageURL != "https://example.org/first.webp" {
+		t.Fatalf("unexpected extracted tiktok photo: title=%q image=%q", title, imageURL)
+	}
+	metaTitle, metaImage := extractTikTokPhotoFromHTML(`<meta property="og:title" content="meta title"><meta property="og:image" content="https://example.org/meta.jpg">`)
+	if metaTitle != "meta title" || metaImage != "https://example.org/meta.jpg" {
+		t.Fatalf("unexpected meta fallback: title=%q image=%q", metaTitle, metaImage)
+	}
+}
+
 func TestPinterestGeneratedTitleUsesCleanServiceTitle(t *testing.T) {
 	got := displayTitleForService(
 		ServicePinterest,

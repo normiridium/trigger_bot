@@ -367,6 +367,19 @@ func TestBuildAudioCaption_AttachesSourceLink(t *testing.T) {
 	}
 }
 
+func TestCleanSourceURLForCaption(t *testing.T) {
+	raw := "https://www.tiktok.com/@vladlen.k_life/video/7650899329523125534?_r=1&u_code=e29jbe9ec0am3j&preview_pb=0&sharer_language=ru&_d=f1e6fi4mimgcjh&share_item_id=7650899323125534&source=h5_m&timestamp=1781641448&user_id=7109721649335239686&sec_user_id=MS4wLjABAAAA&item_author_type=2&social_share_type=2&utm_source=telegram&utm_campaign=client_share&utm_medium=android&share_iid=7600316765428123410&share_link_id=e2eafda3-2efa-447c-b8f2-68795ed0eaa5"
+	got := cleanSourceURLForCaption(raw)
+	want := "https://www.tiktok.com/@vladlen.k_life/video/7650899329523125534"
+	if got != want {
+		t.Fatalf("unexpected cleaned tiktok url:\n got %q\nwant %q", got, want)
+	}
+	yt := cleanSourceURLForCaption("https://www.youtube.com/watch?v=abc&utm_source=telegram&t=12s&si=nope")
+	if yt != "https://www.youtube.com/watch?t=12s&v=abc" {
+		t.Fatalf("unexpected cleaned youtube url: %q", yt)
+	}
+}
+
 func TestMediaServiceEmoji(t *testing.T) {
 	if got := mediaServiceEmoji(mediadl.ServiceYouTube, mediadl.ModeVideo); !strings.Contains(got, "5463206079913533096") {
 		t.Fatalf("unexpected youtube video emoji: %q", got)
