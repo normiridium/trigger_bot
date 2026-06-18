@@ -1756,12 +1756,9 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 		}
 	}
 
-	// Improve speech intelligibility over music:
-	// - translated track is boosted noticeably
-	// - original is dynamically ducked while translated speech is active
-	// - keep limiter to avoid clipping peaks
-	dynamicFilter := "[1:a]asplit=2[a1mix0][a1ctrl];[a1mix0]volume=2.1[a1mix];[a1ctrl]highpass=f=140,lowpass=f=4200,agate=threshold=0.015:ratio=14:attack=6:release=260[ctrl];[0:a][ctrl]sidechaincompress=threshold=0.018:ratio=22:attack=4:release=260[a0duck];[a0duck][a1mix]amix=inputs=2:normalize=0:duration=first:dropout_transition=2,alimiter=limit=0.92[mix]"
-	staticFilter := "[0:a]volume=0.28[a0];[1:a]volume=1.7[a1];[a0][a1]amix=inputs=2:normalize=0:duration=first:dropout_transition=2,alimiter=limit=0.94[mix]"
+	// Keep original audio audible: translated speech is slightly boosted,
+	// while source audio is ducked only moderately when speech is active.
+	dynamicFilter, staticFilter := voiceTranslateMixFilters()
 	filter := dynamicFilter
 	if hasVideo {
 		mixWav, err := bottmp.CreateTemp("voice_mix_*.wav")
@@ -1856,7 +1853,7 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 				"-y",
 				"-i", sourcePath,
 				"-i", translatedMP3Path,
-				"-filter_complex", "[0:a:0]volume=0.30[a0];[1:a:0]volume=1.8[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.94[mix]",
+				"-filter_complex", staticFilter,
 				"-map", "[mix]",
 				"-c:a", "libmp3lame",
 				"-b:a", "160k",
@@ -1869,6 +1866,38 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 		}
 	}
 	return outPath, nil
+}
+
+func voiceTranslateMixFilters() (dynamicFilter string, staticFilter string) {
+	origVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME", 0.92, 0.05, 3)
+	trVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME", 1.00, 0.05, 5)
+	duckThreshold := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_THRESHOLD", 0.06, 0.001, 1)
+	duckRatio := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_RATIO", 3, 1, 30)
+	staticOrigVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME", 0.80, 0.05, 3)
+	staticTrVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", 1.00, 0.05, 5)
+	return fmt.Sprintf(
+			"[1:a]asplit=2[a1mix0][a1ctrl];[a1mix0]volume=%.4g[a1mix];[a1ctrl]highpass=f=150,lowpass=f=4200,agate=threshold=0.02:ratio=8:attack=10:release=180[ctrl];[0:a]volume=%.4g[a0base];[a0base][ctrl]sidechaincompress=threshold=%.4g:ratio=%.4g:attack=12:release=360[a0duck];[a0duck][a1mix]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			trVol,
+			origVol,
+			duckThreshold,
+			duckRatio,
+		),
+		fmt.Sprintf(
+			"[0:a]volume=%.4g[a0];[1:a]volume=%.4g[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			staticOrigVol,
+			staticTrVol,
+		)
+}
+
+func voiceTranslateMixFloat(key string, fallback, min, max float64) float64 {
+	v := envFloat(key, fallback)
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 func convertAudioToAudioOnlyMP4(inputPath, outPath string) error {

@@ -309,6 +309,9 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `VOICE_TRANSLATE_WORKERS` / `VOICE_TRANSLATE_QUEUE` — воркеры и очередь voice translate.
 - `VOICE_TRANSLATE_MAX_MB` — лимит результата для отправки.
 - `VOICE_TRANSLATE_PUBLIC_BASE_URL` / `VOICE_TRANSLATE_SHARE_TTL_SEC` — публичные ссылки на результаты, если включён share-flow.
+- `VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME` — баланс оригинала и озвучки в микшированном переводе; дефолт `0.92` и `1.00`.
+- `VOICE_TRANSLATE_MIX_DUCK_THRESHOLD` / `VOICE_TRANSLATE_MIX_DUCK_RATIO` — насколько сильно оригинал приглушается, когда активна озвучка; дефолт `0.06` и `3`.
+- `VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME` — запасной баланс, если динамический ducking не сработал; дефолт `0.80` и `1.00`.
 - `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к VOT CLI и Node.js.
 
 ### Roleplay inline
