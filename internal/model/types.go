@@ -10,9 +10,9 @@ type Trigger struct {
 	TriggerMode   TriggerMode // all
 	AdminMode     AdminMode   // anybody|admins
 	MatchText     string
-	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member
+	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member|positive_reactions|negative_reactions
 	CaseSensitive bool
-	ActionType    ActionType         // send|send_file|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|vk_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning|openai_insufficient_quota_warning
+	ActionType    ActionType         // send|send_file|send_voice|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|vk_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning|openai_insufficient_quota_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
 	Reply         bool
 	Preview       bool
@@ -111,13 +111,15 @@ func (m AdminMode) String() string {
 type MatchType string
 
 const (
-	MatchTypeFull      MatchType = "full"
-	MatchTypePartial   MatchType = "partial"
-	MatchTypeRegex     MatchType = "regex"
-	MatchTypeStarts    MatchType = "starts"
-	MatchTypeEnds      MatchType = "ends"
-	MatchTypeIdle      MatchType = "idle"
-	MatchTypeNewMember MatchType = "new_member"
+	MatchTypeFull              MatchType = "full"
+	MatchTypePartial           MatchType = "partial"
+	MatchTypeRegex             MatchType = "regex"
+	MatchTypeStarts            MatchType = "starts"
+	MatchTypeEnds              MatchType = "ends"
+	MatchTypeIdle              MatchType = "idle"
+	MatchTypeNewMember         MatchType = "new_member"
+	MatchTypePositiveReactions MatchType = "positive_reactions"
+	MatchTypeNegativeReactions MatchType = "negative_reactions"
 )
 
 var MatchTypeValues = []MatchType{
@@ -128,6 +130,8 @@ var MatchTypeValues = []MatchType{
 	MatchTypeStarts,
 	MatchTypeEnds,
 	MatchTypeNewMember,
+	MatchTypePositiveReactions,
+	MatchTypeNegativeReactions,
 }
 
 func (m MatchType) String() string {
@@ -146,6 +150,10 @@ func (m MatchType) String() string {
 		return "Заканчивается на"
 	case MatchTypeNewMember:
 		return "Новый участник"
+	case MatchTypePositiveReactions:
+		return "Позитивные реакции больше N"
+	case MatchTypeNegativeReactions:
+		return "Негативные реакции больше N"
 	default:
 		return string(m)
 	}
@@ -156,6 +164,7 @@ type ActionType string
 const (
 	ActionTypeSend           ActionType = "send"
 	ActionTypeSendFile       ActionType = "send_file"
+	ActionTypeSendVoice      ActionType = "send_voice"
 	ActionTypeSendGIF        ActionType = "send_gif"
 	ActionTypeSendSticker    ActionType = "send_sticker"
 	ActionTypeDelete         ActionType = "delete"
@@ -178,6 +187,7 @@ const (
 var ActionTypeValues = []ActionType{
 	ActionTypeSend,
 	ActionTypeSendFile,
+	ActionTypeSendVoice,
 	ActionTypeSendGIF,
 	ActionTypeSendSticker,
 	ActionTypeDelete,
@@ -203,6 +213,8 @@ func (m ActionType) String() string {
 		return "Отправить сообщение"
 	case ActionTypeSendFile:
 		return "Отправить файл"
+	case ActionTypeSendVoice:
+		return "Отправить голосовое сообщение"
 	case ActionTypeSendGIF:
 		return "Отправить GIF"
 	case ActionTypeSendSticker:

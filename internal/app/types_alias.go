@@ -32,18 +32,21 @@ const (
 )
 
 const (
-	MatchTypeFull      = model.MatchTypeFull
-	MatchTypePartial   = model.MatchTypePartial
-	MatchTypeRegex     = model.MatchTypeRegex
-	MatchTypeStarts    = model.MatchTypeStarts
-	MatchTypeEnds      = model.MatchTypeEnds
-	MatchTypeIdle      = model.MatchTypeIdle
-	MatchTypeNewMember = model.MatchTypeNewMember
+	MatchTypeFull              = model.MatchTypeFull
+	MatchTypePartial           = model.MatchTypePartial
+	MatchTypeRegex             = model.MatchTypeRegex
+	MatchTypeStarts            = model.MatchTypeStarts
+	MatchTypeEnds              = model.MatchTypeEnds
+	MatchTypeIdle              = model.MatchTypeIdle
+	MatchTypeNewMember         = model.MatchTypeNewMember
+	MatchTypePositiveReactions = model.MatchTypePositiveReactions
+	MatchTypeNegativeReactions = model.MatchTypeNegativeReactions
 )
 
 const (
 	ActionTypeSend           = model.ActionTypeSend
 	ActionTypeSendFile       = model.ActionTypeSendFile
+	ActionTypeSendVoice      = model.ActionTypeSendVoice
 	ActionTypeSendGIF        = model.ActionTypeSendGIF
 	ActionTypeSendSticker    = model.ActionTypeSendSticker
 	ActionTypeDelete         = model.ActionTypeDelete

@@ -1597,6 +1597,10 @@ func iconForMatchType(v model.MatchType) string {
 		return "bi-arrow-left"
 	case model.MatchTypeNewMember:
 		return "bi-person-plus"
+	case model.MatchTypePositiveReactions:
+		return "bi-hand-thumbs-up"
+	case model.MatchTypeNegativeReactions:
+		return "bi-hand-thumbs-down"
 	default:
 		return ""
 	}
@@ -1608,6 +1612,8 @@ func iconForActionType(v model.ActionType) string {
 		return "bi-send"
 	case model.ActionTypeSendFile:
 		return "bi-file-earmark-arrow-up"
+	case model.ActionTypeSendVoice:
+		return "bi-mic"
 	case model.ActionTypeSendGIF:
 		return "bi-film"
 	case model.ActionTypeSendSticker:

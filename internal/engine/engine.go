@@ -58,7 +58,7 @@ func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 		if !cand.Enabled {
 			continue
 		}
-		if match.NormalizeMatchType(string(cand.MatchType)) == "new_member" {
+		if match.IsRuntimeOnlyMatchType(cand.MatchType) {
 			continue
 		}
 		matched, capture := match.TriggerMatchCapture(cand, input.Text)
@@ -128,6 +128,19 @@ func (e *TriggerEngine) SelectNewMember(input SelectNewMemberInput) *model.Trigg
 		return &cand
 	}
 	return nil
+}
+
+func (e *TriggerEngine) ChanceAllowed(triggerID int64, chatID int64, chance int) bool {
+	if e == nil {
+		return true
+	}
+	if chance < 100 && e.randIntn(100) >= chance {
+		return false
+	}
+	if chance > 100 && !allowCooldownChance(triggerID, chatID, chance) {
+		return false
+	}
+	return true
 }
 
 func TriggerModeMatches(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgbotapi.Message) bool {

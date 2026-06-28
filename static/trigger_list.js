@@ -2200,6 +2200,15 @@ function applyMatchTypeUI(){
     if(area){ area.classList.add('d-none'); }
     if(toggle){ toggle.disabled = true; }
     inp.disabled = true;
+  } else if(mt.value === 'positive_reactions' || mt.value === 'negative_reactions'){
+    lbl.textContent = 'Порог реакций';
+    inp.type = 'number';
+    inp.min = '0';
+    inp.step = '1';
+    inp.placeholder = 'например, 3';
+    if(area){ area.classList.add('d-none'); }
+    if(toggle){ toggle.disabled = true; }
+    inp.disabled = false;
   } else {
     lbl.textContent = 'Текст триггера';
     inp.type = 'text';
@@ -2217,6 +2226,11 @@ function applyActionTypeUI(){
   if(!response){ return; }
   if(action === 'send_sticker'){
     response.placeholder = 'Код стикера: file_id:set_id (или только file_id)';
+    scheduleEmojiSetHelperRefresh();
+    return;
+  }
+  if(action === 'send_voice'){
+    response.placeholder = 'file_id, URL или путь к voice-файлу; со второй строки можно указать подпись';
     scheduleEmojiSetHelperRefresh();
     return;
   }

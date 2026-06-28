@@ -1989,7 +1989,7 @@ func Run() {
 	startedAtUnix := time.Now().Unix()
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "edited_message", "inline_query", "callback_query", "chat_member", "my_chat_member"}
+	u.AllowedUpdates = []string{"message", "edited_message", "inline_query", "callback_query", "chat_member", "my_chat_member", "message_reaction", "message_reaction_count"}
 	if envBool("TELEGRAM_DROP_PENDING_UPDATES_ON_START", true) {
 		nextOffset, count, err := discardPendingUpdatesWithEmojiMeta(bot, u)
 		if err != nil {
@@ -2059,12 +2059,32 @@ func Run() {
 			}
 			continue
 		}
+		if isStartupBacklogReactionCount(update.RawMessageReactionCount, startedAtUnix) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip startup backlog message_reaction_count update date=%d", update.RawMessageReactionCount.Date)
+			}
+			continue
+		}
+		if isStartupBacklogMessageReaction(update.RawMessageReaction, startedAtUnix) {
+			if debugTriggerLogEnabled {
+				log.Printf("skip startup backlog message_reaction update date=%d", update.RawMessageReaction.Date)
+			}
+			continue
+		}
 		if update.RawChatMember != nil {
 			handleNewMemberUpdate(handlerDeps, update.RawChatMember)
 		}
 		if update.RawMyChatMember != nil {
 			handleDisallowedMyChatMemberNotice(bot, allowedChats, disallowedNotifier, update.RawMyChatMember)
 			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
+		}
+		if update.RawMessageReactionCount != nil {
+			handleReactionCountUpdate(handlerDeps, update.RawMessageReactionCount)
+			continue
+		}
+		if update.RawMessageReaction != nil {
+			handleMessageReactionUpdate(handlerDeps, update.RawMessageReaction)
+			continue
 		}
 		if update.Update.InlineQuery != nil {
 			handleRoleplayInlineQuery(bot, update.Update.InlineQuery)
@@ -2748,6 +2768,10 @@ func Run() {
 			}
 			if animationHit, ok := extractAnimationCode(msg); ok {
 				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
+				continue
+			}
+			if out := buildFileIDReply(extractPrivateAutoFileIDs(msg)); out != "" {
+				sendHTML(cmdSendCtx.WithReply(msg.MessageID), out, false)
 				continue
 			}
 		}
@@ -3546,6 +3570,34 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if err := sendDocumentFromFile(sendCtx, filePath, caption); err != nil {
 			log.Printf("send file failed path=%q: %v", clipText(filePath, 180), err)
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки файла", err)
+			return
+		}
+		if deps.IdleTracker != nil {
+			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
+			deleteTriggerSourceMessage(deps.Bot, msg, tr)
+		}
+		return
+	case ActionTypeSendVoice:
+		replyTo := 0
+		if tr.Reply || tr.TriggerMode == TriggerModeCommandReply {
+			replyTo = msg.MessageID
+		}
+		tmplCtx := newTemplateContext(deps.Bot, msg, tr, deps.TemplateLookup)
+		raw := strings.TrimSpace(buildResponseFromMessage(tmplCtx, resolvedTemplate))
+		if raw == "" {
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки голосового сообщения", errors.New("empty voice source in response_text"))
+			return
+		}
+		source := raw
+		caption := ""
+		if i := strings.Index(raw, "\n"); i >= 0 {
+			source = strings.TrimSpace(raw[:i])
+			caption = strings.TrimSpace(raw[i+1:])
+		}
+		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
+		if err := sendVoiceMessage(sendCtx, source, caption); err != nil {
+			log.Printf("send voice failed source=%q: %v", clipText(source, 180), err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки голосового сообщения", err)
 			return
 		}
 		if deps.IdleTracker != nil {

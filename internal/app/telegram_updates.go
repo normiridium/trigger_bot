@@ -28,16 +28,20 @@ type rawMessageWithEmoji struct {
 }
 
 type rawUpdateWithEmoji struct {
-	Message      *rawMessageWithEmoji  `json:"message"`
-	ChatMember   *rawChatMemberUpdated `json:"chat_member"`
-	MyChatMember *rawChatMemberUpdated `json:"my_chat_member"`
+	Message              *rawMessageWithEmoji           `json:"message"`
+	ChatMember           *rawChatMemberUpdated          `json:"chat_member"`
+	MyChatMember         *rawChatMemberUpdated          `json:"my_chat_member"`
+	MessageReaction      *rawMessageReactionUpdate      `json:"message_reaction"`
+	MessageReactionCount *rawMessageReactionCountUpdate `json:"message_reaction_count"`
 }
 
 type updateWithEmojiMeta struct {
-	Update          tgbotapi.Update
-	RawMessage      *rawMessageWithEmoji
-	RawChatMember   *rawChatMemberUpdated
-	RawMyChatMember *rawChatMemberUpdated
+	Update                  tgbotapi.Update
+	RawMessage              *rawMessageWithEmoji
+	RawChatMember           *rawChatMemberUpdated
+	RawMyChatMember         *rawChatMemberUpdated
+	RawMessageReaction      *rawMessageReactionUpdate
+	RawMessageReactionCount *rawMessageReactionCountUpdate
 }
 
 type rawChatMemberUpdated struct {
@@ -65,6 +69,34 @@ type rawUser struct {
 type rawChatMember struct {
 	User   *rawUser `json:"user"`
 	Status string   `json:"status"`
+}
+
+type rawMessageReactionCountUpdate struct {
+	Chat      *rawChat           `json:"chat"`
+	MessageID int                `json:"message_id"`
+	Date      int64              `json:"date"`
+	Reactions []rawReactionCount `json:"reactions"`
+}
+
+type rawMessageReactionUpdate struct {
+	Chat        *rawChat          `json:"chat"`
+	MessageID   int               `json:"message_id"`
+	User        *rawUser          `json:"user"`
+	ActorChat   *rawChat          `json:"actor_chat"`
+	Date        int64             `json:"date"`
+	OldReaction []rawReactionType `json:"old_reaction"`
+	NewReaction []rawReactionType `json:"new_reaction"`
+}
+
+type rawReactionCount struct {
+	Type       rawReactionType `json:"type"`
+	TotalCount int             `json:"total_count"`
+}
+
+type rawReactionType struct {
+	Type          string `json:"type"`
+	Emoji         string `json:"emoji"`
+	CustomEmojiID string `json:"custom_emoji_id"`
 }
 
 type customEmojiHit struct {
@@ -144,10 +176,12 @@ func getUpdatesWithEmojiMeta(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig)
 			return nil, err
 		}
 		out = append(out, updateWithEmojiMeta{
-			Update:          upd,
-			RawMessage:      rawUpd.Message,
-			RawChatMember:   rawUpd.ChatMember,
-			RawMyChatMember: rawUpd.MyChatMember,
+			Update:                  upd,
+			RawMessage:              rawUpd.Message,
+			RawChatMember:           rawUpd.ChatMember,
+			RawMyChatMember:         rawUpd.MyChatMember,
+			RawMessageReaction:      rawUpd.MessageReaction,
+			RawMessageReactionCount: rawUpd.MessageReactionCount,
 		})
 	}
 	return out, nil

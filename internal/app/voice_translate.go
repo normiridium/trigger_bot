@@ -701,8 +701,12 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 	}
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
+	outText := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("vot-cli failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
+		return "", fmt.Errorf("vot-cli failed: %v (%s)", err, clipText(outText, 500))
+	}
+	if votCLIOutputFailed(outText) {
+		return "", fmt.Errorf("vot-cli reported failure (%s)", clipText(outText, 500))
 	}
 
 	// vot-cli output extension may vary by version/config; prefer explicit name, then discover.
@@ -749,7 +753,7 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("vot-cli output missing after success (%s)", clipText(strings.TrimSpace(string(out)), 500))
+	return "", fmt.Errorf("vot-cli output missing after success (%s)", clipText(outText, 500))
 }
 
 func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang, outFormat string) (string, error) {
@@ -808,8 +812,12 @@ func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 	}
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
+	outText := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("vot-cli subs failed: %v (%s)", err, clipText(strings.TrimSpace(string(out)), 500))
+		return "", fmt.Errorf("vot-cli subs failed: %v (%s)", err, clipText(outText, 500))
+	}
+	if votCLIOutputFailed(outText) {
+		return "", fmt.Errorf("vot-cli subs reported failure (%s)", clipText(outText, 500))
 	}
 
 	candidates := []string{
@@ -838,7 +846,26 @@ func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 			}
 		}
 	}
-	return "", fmt.Errorf("vot-cli subtitles output missing after success (%s)", clipText(strings.TrimSpace(string(out)), 500))
+	return "", fmt.Errorf("vot-cli subtitles output missing after success (%s)", clipText(outText, 500))
+}
+
+func votCLIOutputFailed(out string) bool {
+	s := strings.ToLower(strings.TrimSpace(out))
+	if s == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"\nerror:",
+		"error: возникла ошибка",
+		"failed to request video translation",
+		"downloading failed",
+		"[failed:",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(s, "error:")
 }
 
 func subtitlesToPlainText(path string) string {
@@ -2275,14 +2302,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 				}
 			}
 			if backendErr != nil || strings.TrimSpace(providerUsed) == "cache" {
-				msg := "Не удалось выполнить голосовой перевод."
-				errText := strings.ToLower(cliErr.Error())
-				if strings.Contains(errText, "timeout") {
-					msg = "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
-				} else if strings.Contains(errText, "too big") {
-					maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
-					msg = fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
-				}
+				msg := voiceTranslateUserErrorMessage(cliErr)
 				if debugTriggerLogEnabled && backendErr != nil {
 					log.Printf("voice translate backend fallback failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, backendErr)
 				}
@@ -2354,4 +2374,26 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if err := sendAudioFromFileNamedCaption(sendCtx, mixedPath, voiceOutName(cacheKey, mediaInfo, ".mp3"), "", "", voiceTranslateMixCaption); err != nil {
 		reply(sendCtx, "Не удалось отправить аудиомикс.", false)
 	}
+}
+
+func voiceTranslateUserErrorMessage(err error) string {
+	msg := "Не удалось выполнить голосовой перевод."
+	if err == nil {
+		return msg
+	}
+	errText := strings.ToLower(err.Error())
+	if strings.Contains(errText, "timeout") {
+		return "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
+	}
+	if strings.Contains(errText, "too big") {
+		maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
+		return fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
+	}
+	if strings.Contains(errText, "vot-cli reported failure") ||
+		strings.Contains(errText, "vot-cli subs reported failure") ||
+		strings.Contains(errText, "возникла ошибка при переводе") ||
+		strings.Contains(errText, "failed to request video translation") {
+		return "VOT не смог обработать этот ролик. Можно попробовать позже или взять другой источник."
+	}
+	return msg
 }

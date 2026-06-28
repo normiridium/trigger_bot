@@ -55,3 +55,36 @@ func TestVoiceTranslateMixFiltersUseEnvOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestVOTCLIOutputFailedDetectsZeroExitFailures(t *testing.T) {
+	out := `Request language is set to en
+Response language is set to ru
+❯ Translating (ID: https://example.test/video.mp4).
+Error: Возникла ошибка при переводе, попробуйте позже
+✔ Failed to request video translation
+✖ Downloading (ID: https://example.test/video.mp4). [FAILED: Downloading failed!]`
+	if !votCLIOutputFailed(out) {
+		t.Fatalf("expected VOT CLI error output to be treated as failure")
+	}
+}
+
+func TestVOTCLIOutputFailedAllowsNormalOutput(t *testing.T) {
+	out := `Request language is set to en
+Response language is set to ru
+✔ Forming a link to the video
+✔ Translating finished!`
+	if votCLIOutputFailed(out) {
+		t.Fatalf("expected normal VOT CLI output to be allowed")
+	}
+}
+
+func TestVoiceTranslateUserErrorMessageForVOTFailure(t *testing.T) {
+	msg := voiceTranslateUserErrorMessage(assertErr("vot-cli reported failure (Error: Возникла ошибка при переводе)"))
+	if !strings.Contains(msg, "VOT не смог обработать") {
+		t.Fatalf("unexpected user message: %q", msg)
+	}
+}
+
+type assertErr string
+
+func (e assertErr) Error() string { return string(e) }

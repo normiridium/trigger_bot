@@ -363,6 +363,8 @@ func parseActionType(v string) (ActionType, bool) {
 		return ActionTypeSend, true
 	case "send_file":
 		return ActionTypeSendFile, true
+	case "send_voice":
+		return ActionTypeSendVoice, true
 	case "send_gif":
 		return ActionTypeSendGIF, true
 	case "send_sticker":

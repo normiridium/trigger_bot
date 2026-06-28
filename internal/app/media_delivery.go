@@ -670,6 +670,116 @@ func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
 	return nil
 }
 
+func sendVoiceMessage(ctx sendContext, source, caption string) error {
+	source = strings.TrimSpace(source)
+	if ctx.Bot == nil || ctx.ChatID == 0 || source == "" {
+		return errors.New("invalid voice send params")
+	}
+	file, err := voiceRequestFileData(ctx.Bot, source)
+	if err != nil {
+		return err
+	}
+	m := tgbotapi.NewVoice(ctx.ChatID, file)
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	caption = strings.TrimSpace(caption)
+	if caption != "" {
+		m.Caption = clipText(caption, 1024)
+		m.ParseMode = "HTML"
+	}
+	sent, err := sendTelegramWithFloodRetry(ctx, "voice message", m)
+	if err != nil {
+		return err
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send voice ok chat=%d msg=%d replyTo=%d source=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(source, 120))
+	}
+	return nil
+}
+
+func voiceRequestFileData(bot *tgbotapi.BotAPI, source string) (tgbotapi.RequestFileData, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil, errors.New("empty voice source")
+	}
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		return tgbotapi.FileURL(source), nil
+	}
+	if st, err := os.Stat(source); err == nil {
+		if st.IsDir() {
+			return nil, errors.New("voice source is a directory")
+		}
+		if err := ensureTelegramUploadLimit(source); err != nil {
+			return nil, err
+		}
+		return tgbotapi.FilePath(source), nil
+	}
+	if strings.ContainsAny(source, `/\`) || strings.HasPrefix(source, ".") {
+		return nil, errors.New("voice file path does not exist")
+	}
+	return voiceFileIDAsUpload(bot, source)
+}
+
+func voiceFileIDAsUpload(bot *tgbotapi.BotAPI, fileID string) (tgbotapi.RequestFileData, error) {
+	if bot == nil {
+		return nil, errors.New("bot is nil")
+	}
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return nil, errors.New("empty voice file_id")
+	}
+	fileURL, err := getTelegramFileDirectURL(bot, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve voice file_id: %w", err)
+	}
+	body, err := downloadTelegramVoiceUploadBytes(fileURL)
+	if err != nil {
+		return nil, err
+	}
+	return tgbotapi.FileBytes{Name: "voice.ogg", Bytes: body}, nil
+}
+
+func downloadTelegramVoiceUploadBytes(fileURL string) ([]byte, error) {
+	fileURL = strings.TrimSpace(fileURL)
+	if fileURL == "" {
+		return nil, errors.New("empty telegram voice file url")
+	}
+	maxMB := envInt("SEND_VOICE_FILE_ID_MAX_MB", 50)
+	if maxMB <= 0 {
+		maxMB = 50
+	}
+	if maxMB > 50 {
+		maxMB = 50
+	}
+	maxBytes := int64(maxMB) << 20
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("download voice file status=%d body=%s", resp.StatusCode, clipText(string(raw), 300))
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("voice file_id is too large: >%d MB", maxMB)
+	}
+	if len(body) == 0 {
+		return nil, errors.New("voice file_id download is empty")
+	}
+	return body, nil
+}
+
 func buildMediaAudioTitle(title, sourceURL, service string) string {
 	title = strings.TrimSpace(title)
 	_ = sourceURL

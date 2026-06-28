@@ -28,6 +28,10 @@ func NormalizeMatchType(v string) model.MatchType {
 		return model.MatchTypeIdle
 	case "new_member", "new-member":
 		return model.MatchTypeNewMember
+	case "positive_reactions", "positive-reactions", "positive_likes", "positive-likes":
+		return model.MatchTypePositiveReactions
+	case "negative_reactions", "negative-reactions", "negative_likes", "negative-likes":
+		return model.MatchTypeNegativeReactions
 	default:
 		return model.MatchType(v)
 	}
@@ -41,7 +45,7 @@ func TriggerMatches(t model.Trigger, incoming string) bool {
 func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 	needle := strings.TrimSpace(t.MatchText)
 	hay := strings.TrimSpace(incoming)
-	if NormalizeMatchType(string(t.MatchType)) == "new_member" {
+	if IsRuntimeOnlyMatchType(t.MatchType) {
 		return false, ""
 	}
 	if hay == "" {
@@ -95,6 +99,15 @@ func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 			hay = strings.ToLower(hay)
 		}
 		return hay == needle, ""
+	}
+}
+
+func IsRuntimeOnlyMatchType(v model.MatchType) bool {
+	switch NormalizeMatchType(string(v)) {
+	case model.MatchTypeIdle, model.MatchTypeNewMember, model.MatchTypePositiveReactions, model.MatchTypeNegativeReactions:
+		return true
+	default:
+		return false
 	}
 }
 
