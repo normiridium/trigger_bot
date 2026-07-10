@@ -1902,10 +1902,6 @@ func Run() {
 	mtprotoSetup := newMTProtoSetupManager(time.Duration(envInt("MTPROTO_SETUP_TTL_SEC", 1200)) * time.Second)
 	setMTProtoSetupVisible(clearChatService != nil && clearChatService.Available(context.Background()))
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
-	summaryTracker := newChatSummaryTracker(store, envInt("CHAT_SUMMARY_EVERY_MESSAGES", 200), envInt("CHAT_SUMMARY_POOL_MESSAGES", 1000))
-	if summaryTracker != nil {
-		defer summaryTracker.Close()
-	}
 	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
 	qsSessionTTLSec := envInt("QS_SESSION_TTL_SEC", int(quoteStickerSessionTTL/time.Second))
 	if qsSessionTTLSec < 300 {
@@ -1914,18 +1910,9 @@ func Run() {
 	quoteSessions := newQuoteStickerSessionManager(time.Duration(qsSessionTTLSec) * time.Second)
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
-		if summaryTracker != nil {
-			return summaryTracker.RecentText(chatID, limit)
-		}
 		return chatRecent.RecentText(chatID, limit)
 	})
-	setChatSummaryResolver(func(chatID int64) string {
-		rec, err := store.GetChatSummary(chatID)
-		if err != nil || rec == nil {
-			return ""
-		}
-		return strings.TrimSpace(rec.Summary)
-	})
+	setChatSummaryResolver(nil)
 	defer func() {
 		setOutgoingChatRecentStore(nil, "")
 		setChatContextResolver(nil)
@@ -2384,7 +2371,7 @@ func Run() {
 				if isPrivateChat {
 					commands := []string{
 						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
-						cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait, cmdSummary, cmdAnon,
+						cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
 						cmdTranslateVoice, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
 						cmdReadonly, cmdReloadAdmins,
 					}
@@ -2518,7 +2505,6 @@ func Run() {
 						}
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — показать ваш портрет", cmdMyPortrait))
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
-						usageLines = append(usageLines, fmt.Sprintf("— /%s — краткая сводка по переписке чата", cmdSummary))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
 						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
@@ -2681,16 +2667,7 @@ func Run() {
 				handleRoleplayCommand(bot, msg, msg.CommandArguments())
 				continue
 			case cmdSummary, cmdSummaryAlias:
-				rec, err := store.GetChatSummary(msg.Chat.ID)
-				if err != nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось получить сводку: "+clipText(err.Error(), 200), false)
-					continue
-				}
-				if rec == nil || strings.TrimSpace(rec.Summary) == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка пока не собрана. Нужно накопить сообщения в чате.", false)
-					continue
-				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), rec.Summary, false)
+				reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка чата отключена.", false)
 				continue
 			case cmdClearChat:
 				if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {
@@ -2841,7 +2818,6 @@ func Run() {
 				Text:      text,
 				At:        time.Now(),
 			})
-			summaryTracker.ObserveMessage(msg, text)
 		}
 
 		if debugTriggerLogEnabled {

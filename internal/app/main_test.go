@@ -1,6 +1,9 @@
 package app
 
 import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -417,6 +420,85 @@ func TestExtractImageFileID(t *testing.T) {
 	}
 	if got := extractImageFileID(docMsg); got != "docimg" {
 		t.Fatalf("expected image document id, got %q", got)
+	}
+}
+
+func TestResolveMessageImageURL_CurrentPhotoReplyToBotUsesConfiguredFileEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"Оле-ням","username":"olenyam_bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/getFile"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_id":"photo-id","file_unique_id":"u","file_size":123,"file_path":"photos/file_0.jpg"}}`))
+		default:
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	const token = "123456:ABCDEF"
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint(token, srv.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatalf("create bot: %v", err)
+	}
+	t.Setenv("TELEGRAM_BOT_FILE_ENDPOINT", srv.URL+"/file/bot%s/%s")
+
+	msg := &tgbotapi.Message{
+		Photo:   []tgbotapi.PhotoSize{{FileID: "photo-id", FileSize: 123}},
+		Caption: "Оле-ням, оцени фото",
+		ReplyToMessage: &tgbotapi.Message{
+			From: &tgbotapi.User{ID: bot.Self.ID, IsBot: true, UserName: bot.Self.UserName},
+			Text: "кидай",
+		},
+	}
+	got, ok := resolveMessageImageURL(bot, msg)
+	if !ok {
+		t.Fatalf("expected image URL")
+	}
+	want := srv.URL + "/file/bot" + token + "/photos/file_0.jpg"
+	if got != want {
+		t.Fatalf("unexpected image URL:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestBuildOpenAITelegramImageDataURL_AllowsLocalTelegramFileEndpoint(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	}))
+	defer srv.Close()
+
+	got, err := buildOpenAITelegramImageDataURL(srv.URL + "/file/botTOKEN/photos/file_0.png")
+	if err != nil {
+		t.Fatalf("build data URL: %v", err)
+	}
+	if !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("expected png data URL, got %q", got[:min(len(got), 40)])
+	}
+}
+
+func TestBuildOpenAITelegramImageDataURL_AllowsOctetStreamTelegramPhoto(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(png)
+	}))
+	defer srv.Close()
+
+	got, err := buildOpenAITelegramImageDataURL(srv.URL + "/file/botTOKEN/photos/file_0.jpg")
+	if err != nil {
+		t.Fatalf("build data URL: %v", err)
+	}
+	if !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Fatalf("expected detected png data URL, got %q", got[:min(len(got), 40)])
 	}
 }
 

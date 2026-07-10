@@ -288,11 +288,28 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return fetchImageBytesFromURL(u, false)
+}
+
+func fetchTrustedTelegramImageBytes(imageURL string) ([]byte, error) {
+	u, err := validateTrustedImageURL(imageURL)
+	if err != nil {
+		return nil, err
+	}
+	return fetchImageBytesFromURL(u, true)
+}
+
+func fetchImageBytesFromURL(u *url.URL, allowPrivateRedirect bool) ([]byte, error) {
+	imageURL := u.String()
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 5 {
 				return errors.New("too many redirects")
+			}
+			if allowPrivateRedirect {
+				_, err := validateTrustedImageURL(req.URL.String())
+				return err
 			}
 			_, err := validateExternalImageURL(req.URL.String())
 			return err
@@ -319,11 +336,34 @@ func fetchImageBytes(imageURL string) ([]byte, error) {
 	if len(bodyBytes) == 0 {
 		return nil, fmt.Errorf("downloaded empty body url=%s", clipText(imageURL, 140))
 	}
-	ctype := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
-	if ctype != "" && !strings.Contains(ctype, "image/") {
-		return nil, fmt.Errorf("not an image content-type=%s url=%s", ctype, clipText(imageURL, 140))
+	headerType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	detectedType := strings.ToLower(strings.TrimSpace(http.DetectContentType(bodyBytes)))
+	if !strings.HasPrefix(detectedType, "image/") {
+		if headerType != "" {
+			return nil, fmt.Errorf("not an image content-type=%s detected=%s url=%s", headerType, detectedType, clipText(imageURL, 140))
+		}
+		return nil, fmt.Errorf("not an image detected=%s url=%s", detectedType, clipText(imageURL, 140))
 	}
 	return bodyBytes, nil
+}
+
+func validateTrustedImageURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("empty image url")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("bad image url: %w", err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return nil, errors.New("unsupported image url scheme")
+	}
+	if strings.TrimSpace(u.Hostname()) == "" {
+		return nil, errors.New("empty image host")
+	}
+	return u, nil
 }
 
 func validateExternalImageURL(raw string) (*url.URL, error) {
@@ -426,9 +466,9 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 
 	userMessage := map[string]interface{}{"role": "user", "content": prompt}
 	if imageURL, ok := resolveMessageImageURL(ctx.Bot, ctx.Msg); ok {
-		openAIImageURL := imageURL
-		if dataURL, err := buildOpenAIImageDataURL(imageURL); err == nil && strings.TrimSpace(dataURL) != "" {
-			openAIImageURL = dataURL
+		openAIImageURL, err := buildOpenAITelegramImageDataURL(imageURL)
+		if err != nil {
+			return chatGPTReplyResult{}, fmt.Errorf("image context failed: %w", err)
 		}
 		userMessage["content"] = []map[string]interface{}{
 			{"type": "text", "text": prompt},
@@ -921,6 +961,26 @@ func buildOpenAIImageDataURL(imageURL string) (string, error) {
 		return "", errors.New("image url is empty")
 	}
 	imgBytes, err := fetchImageBytes(imageURL)
+	if err != nil {
+		return "", err
+	}
+	if maxMB := gptImageContextMaxMB(); maxMB > 0 && len(imgBytes) > maxMB<<20 {
+		return "", fmt.Errorf("image is too large for GPT context: %.2f MB > %d MB", float64(len(imgBytes))/(1024*1024), maxMB)
+	}
+	ctype := strings.ToLower(strings.TrimSpace(http.DetectContentType(imgBytes)))
+	if !strings.HasPrefix(ctype, "image/") {
+		ctype = "image/jpeg"
+	}
+	enc := base64.StdEncoding.EncodeToString(imgBytes)
+	return "data:" + ctype + ";base64," + enc, nil
+}
+
+func buildOpenAITelegramImageDataURL(imageURL string) (string, error) {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", errors.New("image url is empty")
+	}
+	imgBytes, err := fetchTrustedTelegramImageBytes(imageURL)
 	if err != nil {
 		return "", err
 	}

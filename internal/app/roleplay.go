@@ -1,7 +1,7 @@
 package app
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"html"
@@ -103,7 +103,7 @@ func (m *roleplaySessionManager) cleanupLocked(now time.Time) {
 
 func randomRoleplayID() string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := crand.Read(b[:]); err != nil {
 		return fmt.Sprintf("%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
@@ -299,6 +299,12 @@ func handleRoleplayInlineSentMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 	if st.TargetID == 0 || roleplayPlainText(st.TargetLink) == "кого-то" {
 		return true
 	}
+	if roleplayTargetIsBot(bot, st) {
+		declined := !roleplayBotAutoAccepts()
+		defaultRoleplaySessions.delete(st.ID)
+		editRoleplayFinal(bot, st, msg.MessageID, declined)
+		return true
+	}
 	text, entities := roleplayInlineProposalContent(st)
 	edit := tgbotapi.EditMessageTextConfig{
 		BaseEdit: tgbotapi.BaseEdit{
@@ -384,6 +390,13 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 		}
 		st.ActionIndex = idx
 		defaultRoleplaySessions.update(st)
+		if roleplayTargetIsBot(bot, st) {
+			declined := !roleplayBotAutoAccepts()
+			answerRoleplayCallback(bot, cb, roleplayAutoDecisionCallbackText(declined))
+			defaultRoleplaySessions.delete(st.ID)
+			editRoleplayFinal(bot, st, cb.Message.MessageID, declined)
+			return true
+		}
 		answerRoleplayCallback(bot, cb, "Выбрано: "+roleplayActions[idx].Command)
 		editRoleplayProposal(bot, st, cb.Message.MessageID)
 	case "accept":
@@ -483,6 +496,9 @@ func editRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, msgID, page in
 
 func sendRoleplayProposal(bot *tgbotapi.BotAPI, st roleplaySession, replyTo int, editExisting bool) bool {
 	_ = editExisting
+	if roleplayTargetIsBot(bot, st) {
+		return sendRoleplayAutoDecision(bot, st, replyTo)
+	}
 	m := tgbotapi.NewMessage(st.ChatID, roleplayProposalText(st))
 	m.ParseMode = tgbotapi.ModeHTML
 	m.DisableWebPagePreview = true
@@ -494,6 +510,44 @@ func sendRoleplayProposal(bot *tgbotapi.BotAPI, st roleplaySession, replyTo int,
 		reportChatFailure(bot, st.ChatID, "ошибка roleplay", err)
 		return false
 	}
+	if st.SourceMsgID > 0 {
+		deleteRoleplayCommandMessage(bot, st.ChatID, st.SourceMsgID)
+	}
+	return true
+}
+
+func roleplayTargetIsBot(bot *tgbotapi.BotAPI, st roleplaySession) bool {
+	return bot != nil && bot.Self.ID != 0 && st.TargetID == bot.Self.ID
+}
+
+func roleplayBotAutoAccepts() bool {
+	var b [1]byte
+	if _, err := crand.Read(b[:]); err == nil {
+		return int(b[0])%100 < 75
+	}
+	return time.Now().UnixNano()%100 < 75
+}
+
+func roleplayAutoDecisionCallbackText(declined bool) string {
+	if declined {
+		return "Оле-ням отказалась"
+	}
+	return "Оле-ням приняла"
+}
+
+func sendRoleplayAutoDecision(bot *tgbotapi.BotAPI, st roleplaySession, replyTo int) bool {
+	declined := !roleplayBotAutoAccepts()
+	m := tgbotapi.NewMessage(st.ChatID, roleplayFinalText(st, declined))
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableWebPagePreview = true
+	m.ReplyToMessageID = replyTo
+	m.AllowSendingWithoutReply = true
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("roleplay auto decision send failed chat=%d: %v", st.ChatID, err)
+		reportChatFailure(bot, st.ChatID, "ошибка roleplay", err)
+		return false
+	}
+	defaultRoleplaySessions.delete(st.ID)
 	if st.SourceMsgID > 0 {
 		deleteRoleplayCommandMessage(bot, st.ChatID, st.SourceMsgID)
 	}

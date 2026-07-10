@@ -10,7 +10,7 @@ type Trigger struct {
 	TriggerMode   TriggerMode // all
 	AdminMode     AdminMode   // anybody|admins
 	MatchText     string
-	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member|positive_reactions|negative_reactions
+	MatchType     MatchType // full|partial|regex|starts|ends|idle|new_member|support_reactions|hype_reactions|funny_reactions|sad_reactions|angry_reactions
 	CaseSensitive bool
 	ActionType    ActionType         // send|send_file|send_voice|send_gif|send_sticker|delete|gpt_prompt|gpt_image|search_image|spotify_music_audio|vk_music_audio|music_audio|yandex_music_audio|media_link_audio|media_tiktok_download|media_coub_download|media_x_download|user_limit_low_warning|openai_insufficient_quota_warning
 	ResponseText  []ResponseTextItem `json:"response_text"`
@@ -111,15 +111,18 @@ func (m AdminMode) String() string {
 type MatchType string
 
 const (
-	MatchTypeFull              MatchType = "full"
-	MatchTypePartial           MatchType = "partial"
-	MatchTypeRegex             MatchType = "regex"
-	MatchTypeStarts            MatchType = "starts"
-	MatchTypeEnds              MatchType = "ends"
-	MatchTypeIdle              MatchType = "idle"
-	MatchTypeNewMember         MatchType = "new_member"
-	MatchTypePositiveReactions MatchType = "positive_reactions"
-	MatchTypeNegativeReactions MatchType = "negative_reactions"
+	MatchTypeFull             MatchType = "full"
+	MatchTypePartial          MatchType = "partial"
+	MatchTypeRegex            MatchType = "regex"
+	MatchTypeStarts           MatchType = "starts"
+	MatchTypeEnds             MatchType = "ends"
+	MatchTypeIdle             MatchType = "idle"
+	MatchTypeNewMember        MatchType = "new_member"
+	MatchTypeSupportReactions MatchType = "support_reactions"
+	MatchTypeHypeReactions    MatchType = "hype_reactions"
+	MatchTypeFunnyReactions   MatchType = "funny_reactions"
+	MatchTypeSadReactions     MatchType = "sad_reactions"
+	MatchTypeAngryReactions   MatchType = "angry_reactions"
 )
 
 var MatchTypeValues = []MatchType{
@@ -130,8 +133,11 @@ var MatchTypeValues = []MatchType{
 	MatchTypeStarts,
 	MatchTypeEnds,
 	MatchTypeNewMember,
-	MatchTypePositiveReactions,
-	MatchTypeNegativeReactions,
+	MatchTypeSupportReactions,
+	MatchTypeHypeReactions,
+	MatchTypeFunnyReactions,
+	MatchTypeSadReactions,
+	MatchTypeAngryReactions,
 }
 
 func (m MatchType) String() string {
@@ -150,10 +156,16 @@ func (m MatchType) String() string {
 		return "Заканчивается на"
 	case MatchTypeNewMember:
 		return "Новый участник"
-	case MatchTypePositiveReactions:
-		return "Позитивные реакции больше N"
-	case MatchTypeNegativeReactions:
-		return "Негативные реакции больше N"
+	case MatchTypeSupportReactions:
+		return "Реакции поддержки больше N"
+	case MatchTypeHypeReactions:
+		return "Восторженные реакции больше N"
+	case MatchTypeFunnyReactions:
+		return "Смешные реакции больше N"
+	case MatchTypeSadReactions:
+		return "Грустные реакции больше N"
+	case MatchTypeAngryReactions:
+		return "Злые реакции больше N"
 	default:
 		return string(m)
 	}

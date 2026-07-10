@@ -28,10 +28,16 @@ func NormalizeMatchType(v string) model.MatchType {
 		return model.MatchTypeIdle
 	case "new_member", "new-member":
 		return model.MatchTypeNewMember
-	case "positive_reactions", "positive-reactions", "positive_likes", "positive-likes":
-		return model.MatchTypePositiveReactions
-	case "negative_reactions", "negative-reactions", "negative_likes", "negative-likes":
-		return model.MatchTypeNegativeReactions
+	case "support_reactions":
+		return model.MatchTypeSupportReactions
+	case "hype_reactions":
+		return model.MatchTypeHypeReactions
+	case "funny_reactions":
+		return model.MatchTypeFunnyReactions
+	case "sad_reactions":
+		return model.MatchTypeSadReactions
+	case "angry_reactions":
+		return model.MatchTypeAngryReactions
 	default:
 		return model.MatchType(v)
 	}
@@ -104,7 +110,13 @@ func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 
 func IsRuntimeOnlyMatchType(v model.MatchType) bool {
 	switch NormalizeMatchType(string(v)) {
-	case model.MatchTypeIdle, model.MatchTypeNewMember, model.MatchTypePositiveReactions, model.MatchTypeNegativeReactions:
+	case model.MatchTypeIdle,
+		model.MatchTypeNewMember,
+		model.MatchTypeSupportReactions,
+		model.MatchTypeHypeReactions,
+		model.MatchTypeFunnyReactions,
+		model.MatchTypeSadReactions,
+		model.MatchTypeAngryReactions:
 		return true
 	default:
 		return false

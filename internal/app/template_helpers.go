@@ -159,13 +159,13 @@ func resolveMessageImageURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string
 		return "", false
 	}
 	if fileID := extractImageFileID(msg); fileID != "" {
-		if url, err := bot.GetFileDirectURL(fileID); err == nil && strings.TrimSpace(url) != "" {
+		if url, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(url) != "" {
 			return strings.TrimSpace(url), true
 		}
 	}
 	if msg.ReplyToMessage != nil {
 		if fileID := extractImageFileID(msg.ReplyToMessage); fileID != "" {
-			if url, err := bot.GetFileDirectURL(fileID); err == nil && strings.TrimSpace(url) != "" {
+			if url, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(url) != "" {
 				return strings.TrimSpace(url), true
 			}
 		}
@@ -1392,10 +1392,10 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	}
 	rewrittenTemplate, chatContextLimits := rewriteChatContextTemplateActions(template)
 	vars := buildTemplateVars(ctx)
+	vars["summary"] = ""
 	if ctx.Msg != nil && ctx.Msg.Chat != nil {
 		chatID := ctx.Msg.Chat.ID
 		vars["chat_context"] = strings.TrimSpace(resolveChatContext(chatID, 12))
-		vars["summary"] = strings.TrimSpace(resolveChatSummary(chatID))
 		for _, n := range chatContextLimits {
 			key := fmt.Sprintf("__chat_context_%d", n)
 			vars[key] = strings.TrimSpace(resolveChatContext(chatID, n))

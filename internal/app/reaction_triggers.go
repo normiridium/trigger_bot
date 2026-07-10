@@ -12,34 +12,122 @@ import (
 	"trigger-admin-bot/internal/model"
 )
 
-type reactionPolarity string
+type reactionKind string
 
 const (
-	reactionPolarityPositive reactionPolarity = "positive"
-	reactionPolarityNegative reactionPolarity = "negative"
+	reactionKindSupport reactionKind = "support"
+	reactionKindHype    reactionKind = "hype"
+	reactionKindFunny   reactionKind = "funny"
+	reactionKindSad     reactionKind = "sad"
+	reactionKindAngry   reactionKind = "angry"
 )
+
+var reactionWinnerPriority = []reactionKind{
+	reactionKindAngry,
+	reactionKindSad,
+	reactionKindSupport,
+	reactionKindHype,
+	reactionKindFunny,
+}
 
 var reactionTriggerState = struct {
 	mu            sync.Mutex
 	counts        map[string]int
-	messageCounts map[string]reactionMessageCounts
+	messageCounts map[string]reactionKindCounts
 }{
 	counts:        make(map[string]int),
-	messageCounts: make(map[string]reactionMessageCounts),
+	messageCounts: make(map[string]reactionKindCounts),
 }
 
-type reactionMessageCounts struct {
-	Positive int
-	Negative int
+type reactionKindCounts struct {
+	Support int
+	Hype    int
+	Funny   int
+	Sad     int
+	Angry   int
 }
 
-var positiveReactionEmoji = map[string]struct{}{
-	"👍": {}, "❤": {}, "🔥": {}, "🥰": {}, "👏": {}, "😁": {}, "🤩": {}, "😍": {},
-	"❤‍🔥": {}, "💯": {}, "⚡": {}, "🏆": {}, "🍾": {}, "🤝": {}, "👌": {}, "💋": {}, "🫡": {},
+func (c reactionKindCounts) value(kind reactionKind) int {
+	switch kind {
+	case reactionKindSupport:
+		return c.Support
+	case reactionKindHype:
+		return c.Hype
+	case reactionKindFunny:
+		return c.Funny
+	case reactionKindSad:
+		return c.Sad
+	case reactionKindAngry:
+		return c.Angry
+	default:
+		return 0
+	}
 }
 
-var negativeReactionEmoji = map[string]struct{}{
-	"👎": {}, "💩": {}, "🤮": {}, "🤬": {}, "😡": {}, "😭": {}, "😢": {}, "😱": {}, "😨": {}, "🤯": {},
+func (c *reactionKindCounts) add(kind reactionKind, delta int) {
+	switch kind {
+	case reactionKindSupport:
+		c.Support += delta
+		if c.Support < 0 {
+			c.Support = 0
+		}
+	case reactionKindHype:
+		c.Hype += delta
+		if c.Hype < 0 {
+			c.Hype = 0
+		}
+	case reactionKindFunny:
+		c.Funny += delta
+		if c.Funny < 0 {
+			c.Funny = 0
+		}
+	case reactionKindSad:
+		c.Sad += delta
+		if c.Sad < 0 {
+			c.Sad = 0
+		}
+	case reactionKindAngry:
+		c.Angry += delta
+		if c.Angry < 0 {
+			c.Angry = 0
+		}
+	}
+}
+
+func (c reactionKindCounts) winner() (reactionKind, int, bool) {
+	best := 0
+	winner := reactionKind("")
+	for _, kind := range reactionWinnerPriority {
+		count := c.value(kind)
+		if count > best {
+			best = count
+			winner = kind
+		}
+	}
+	if best <= 0 {
+		return "", 0, false
+	}
+	return winner, best, true
+}
+
+var supportReactionEmoji = map[string]struct{}{
+	"👍": {}, "❤": {}, "🥰": {}, "👏": {}, "🤝": {}, "👌": {}, "🫡": {}, "💯": {},
+}
+
+var hypeReactionEmoji = map[string]struct{}{
+	"🔥": {}, "❤‍🔥": {}, "🤩": {}, "😍": {}, "⚡": {}, "🏆": {},
+}
+
+var funnyReactionEmoji = map[string]struct{}{
+	"😁": {}, "😂": {}, "🤡": {}, "🤯": {}, "🥴": {}, "🍾": {},
+}
+
+var sadReactionEmoji = map[string]struct{}{
+	"😭": {}, "😢": {}, "😱": {}, "😨": {},
+}
+
+var angryReactionEmoji = map[string]struct{}{
+	"👎": {}, "💩": {}, "🤮": {}, "🤬": {}, "😡": {},
 }
 
 func isStartupBacklogReactionCount(upd *rawMessageReactionCountUpdate, startedAtUnix int64) bool {
@@ -64,13 +152,15 @@ func handleReactionCountUpdate(deps triggerHandlerDeps, upd *rawMessageReactionC
 	if !deps.Allowed.Allows(chatID) {
 		return
 	}
-	positive, negative := reactionPolarityCounts(upd)
-	if positive <= 0 && negative <= 0 {
+	counts := reactionCountUpdateKinds(upd)
+	winner, winnerCount, ok := counts.winner()
+	if !ok {
 		return
 	}
-	setReactionMessageCounts(chatID, upd.MessageID, positive, negative)
-	log.Printf("message_reaction_count chat=%d msg=%d positive=%d negative=%d", chatID, upd.MessageID, positive, negative)
-	handleReactionCounts(deps, chatID, upd.Chat, upd.MessageID, upd.Date, positive, negative)
+	setReactionMessageCounts(chatID, upd.MessageID, counts)
+	log.Printf("message_reaction_count chat=%d msg=%d support=%d hype=%d funny=%d sad=%d angry=%d winner=%s winner_count=%d",
+		chatID, upd.MessageID, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry, winner, winnerCount)
+	handleReactionCounts(deps, chatID, upd.Chat, upd.MessageID, upd.Date, counts)
 }
 
 func handleMessageReactionUpdate(deps triggerHandlerDeps, upd *rawMessageReactionUpdate) {
@@ -81,20 +171,35 @@ func handleMessageReactionUpdate(deps triggerHandlerDeps, upd *rawMessageReactio
 	if !deps.Allowed.Allows(chatID) {
 		return
 	}
-	oldPositive, oldNegative := reactionTypesPolarityCounts(upd.OldReaction)
-	newPositive, newNegative := reactionTypesPolarityCounts(upd.NewReaction)
-	deltaPositive := newPositive - oldPositive
-	deltaNegative := newNegative - oldNegative
-	if deltaPositive == 0 && deltaNegative == 0 {
+	oldCounts := reactionTypesKindCounts(upd.OldReaction)
+	newCounts := reactionTypesKindCounts(upd.NewReaction)
+	delta := reactionKindCounts{
+		Support: newCounts.Support - oldCounts.Support,
+		Hype:    newCounts.Hype - oldCounts.Hype,
+		Funny:   newCounts.Funny - oldCounts.Funny,
+		Sad:     newCounts.Sad - oldCounts.Sad,
+		Angry:   newCounts.Angry - oldCounts.Angry,
+	}
+	if delta == (reactionKindCounts{}) {
 		return
 	}
-	counts := applyReactionMessageDelta(chatID, upd.MessageID, deltaPositive, deltaNegative)
-	log.Printf("message_reaction chat=%d msg=%d user=%d actor_chat=%d delta_positive=%d delta_negative=%d positive=%d negative=%d",
-		chatID, upd.MessageID, rawReactionUserID(upd), rawReactionActorChatID(upd), deltaPositive, deltaNegative, counts.Positive, counts.Negative)
-	handleReactionCounts(deps, chatID, upd.Chat, upd.MessageID, upd.Date, counts.Positive, counts.Negative)
+	counts := applyReactionMessageDelta(chatID, upd.MessageID, delta)
+	winner, winnerCount, ok := counts.winner()
+	if !ok {
+		log.Printf("message_reaction chat=%d msg=%d user=%d actor_chat=%d delta_support=%d delta_hype=%d delta_funny=%d delta_sad=%d delta_angry=%d support=%d hype=%d funny=%d sad=%d angry=%d winner=none winner_count=0",
+			chatID, upd.MessageID, rawReactionUserID(upd), rawReactionActorChatID(upd), delta.Support, delta.Hype, delta.Funny, delta.Sad, delta.Angry, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry)
+		return
+	}
+	log.Printf("message_reaction chat=%d msg=%d user=%d actor_chat=%d delta_support=%d delta_hype=%d delta_funny=%d delta_sad=%d delta_angry=%d support=%d hype=%d funny=%d sad=%d angry=%d winner=%s winner_count=%d",
+		chatID, upd.MessageID, rawReactionUserID(upd), rawReactionActorChatID(upd), delta.Support, delta.Hype, delta.Funny, delta.Sad, delta.Angry, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry, winner, winnerCount)
+	handleReactionCounts(deps, chatID, upd.Chat, upd.MessageID, upd.Date, counts)
 }
 
-func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, messageID int, date int64, positive, negative int) {
+func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, messageID int, date int64, counts reactionKindCounts) {
+	winner, winnerCount, ok := counts.winner()
+	if !ok {
+		return
+	}
 	items, err := deps.Store.ListTriggersCached()
 	if err != nil {
 		log.Printf("list triggers for reaction count failed: %v", err)
@@ -119,8 +224,8 @@ func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, 
 		if !tr.Enabled {
 			continue
 		}
-		polarity, ok := triggerReactionPolarity(tr.MatchType)
-		if !ok {
+		kind, ok := triggerReactionKind(tr.MatchType)
+		if !ok || kind != winner {
 			continue
 		}
 		threshold, ok := parseReactionThreshold(tr.MatchText)
@@ -130,11 +235,8 @@ func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, 
 			}
 			continue
 		}
-		count := positive
-		if polarity == reactionPolarityNegative {
-			count = negative
-		}
-		if !reactionThresholdCrossed(tr.ID, chatID, messageID, polarity, threshold, count) {
+		count := counts.value(kind)
+		if !reactionThresholdCrossed(tr.ID, chatID, messageID, kind, threshold, count) {
 			continue
 		}
 		if !engineModeMatchesReaction(deps.Bot, &tr, msg) {
@@ -149,9 +251,10 @@ func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, 
 		if deps.Engine != nil && !deps.Engine.ChanceAllowed(tr.ID, chatID, tr.Chance) {
 			continue
 		}
-		tr.CapturingText = strconv.Itoa(count)
+		tr.CapturingText = strconv.Itoa(winnerCount)
 		enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, &tr, "", nil)
-		log.Printf("reaction trigger queued trigger=%d chat=%d msg=%d polarity=%s count=%d threshold=%d", tr.ID, chatID, messageID, polarity, count, threshold)
+		log.Printf("reaction trigger queued trigger=%d chat=%d msg=%d kind=%s count=%d threshold=%d support=%d hype=%d funny=%d sad=%d angry=%d",
+			tr.ID, chatID, messageID, kind, count, threshold, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry)
 	}
 }
 
@@ -166,12 +269,18 @@ func engineModeMatchesReaction(bot *tgbotapi.BotAPI, tr *model.Trigger, msg *tgb
 	}
 }
 
-func triggerReactionPolarity(mt model.MatchType) (reactionPolarity, bool) {
+func triggerReactionKind(mt model.MatchType) (reactionKind, bool) {
 	switch match.NormalizeMatchType(string(mt)) {
-	case model.MatchTypePositiveReactions:
-		return reactionPolarityPositive, true
-	case model.MatchTypeNegativeReactions:
-		return reactionPolarityNegative, true
+	case model.MatchTypeSupportReactions:
+		return reactionKindSupport, true
+	case model.MatchTypeHypeReactions:
+		return reactionKindHype, true
+	case model.MatchTypeFunnyReactions:
+		return reactionKindFunny, true
+	case model.MatchTypeSadReactions:
+		return reactionKindSad, true
+	case model.MatchTypeAngryReactions:
+		return reactionKindAngry, true
 	default:
 		return "", false
 	}
@@ -185,8 +294,8 @@ func parseReactionThreshold(raw string) (int, bool) {
 	return n, true
 }
 
-func reactionThresholdCrossed(triggerID, chatID int64, messageID int, polarity reactionPolarity, threshold, current int) bool {
-	key := strconv.FormatInt(chatID, 10) + ":" + strconv.Itoa(messageID) + ":" + strconv.FormatInt(triggerID, 10) + ":" + string(polarity)
+func reactionThresholdCrossed(triggerID, chatID int64, messageID int, kind reactionKind, threshold, current int) bool {
+	key := strconv.FormatInt(chatID, 10) + ":" + strconv.Itoa(messageID) + ":" + strconv.FormatInt(triggerID, 10) + ":" + string(kind)
 	reactionTriggerState.mu.Lock()
 	defer reactionTriggerState.mu.Unlock()
 	prev, seen := reactionTriggerState.counts[key]
@@ -201,67 +310,74 @@ func reactionMessageKey(chatID int64, messageID int) string {
 	return strconv.FormatInt(chatID, 10) + ":" + strconv.Itoa(messageID)
 }
 
-func setReactionMessageCounts(chatID int64, messageID int, positive, negative int) {
+func setReactionMessageCounts(chatID int64, messageID int, counts reactionKindCounts) {
 	reactionTriggerState.mu.Lock()
 	defer reactionTriggerState.mu.Unlock()
-	reactionTriggerState.messageCounts[reactionMessageKey(chatID, messageID)] = reactionMessageCounts{
-		Positive: positive,
-		Negative: negative,
-	}
+	reactionTriggerState.messageCounts[reactionMessageKey(chatID, messageID)] = counts
 }
 
-func applyReactionMessageDelta(chatID int64, messageID int, deltaPositive, deltaNegative int) reactionMessageCounts {
+func applyReactionMessageDelta(chatID int64, messageID int, delta reactionKindCounts) reactionKindCounts {
 	reactionTriggerState.mu.Lock()
 	defer reactionTriggerState.mu.Unlock()
 	key := reactionMessageKey(chatID, messageID)
 	counts := reactionTriggerState.messageCounts[key]
-	counts.Positive += deltaPositive
-	counts.Negative += deltaNegative
-	if counts.Positive < 0 {
-		counts.Positive = 0
-	}
-	if counts.Negative < 0 {
-		counts.Negative = 0
-	}
+	counts.add(reactionKindSupport, delta.Support)
+	counts.add(reactionKindHype, delta.Hype)
+	counts.add(reactionKindFunny, delta.Funny)
+	counts.add(reactionKindSad, delta.Sad)
+	counts.add(reactionKindAngry, delta.Angry)
 	reactionTriggerState.messageCounts[key] = counts
 	return counts
 }
 
-func reactionPolarityCounts(upd *rawMessageReactionCountUpdate) (positive int, negative int) {
+func reactionCountUpdateKinds(upd *rawMessageReactionCountUpdate) reactionKindCounts {
 	if upd == nil {
-		return 0, 0
+		return reactionKindCounts{}
 	}
+	var counts reactionKindCounts
 	for _, r := range upd.Reactions {
-		emoji := strings.TrimSpace(r.Type.Emoji)
-		if emoji == "" || r.TotalCount <= 0 {
+		kind, ok := reactionEmojiKind(r.Type.Emoji)
+		if !ok || r.TotalCount <= 0 {
 			continue
 		}
-		if _, ok := positiveReactionEmoji[emoji]; ok {
-			positive += r.TotalCount
-			continue
-		}
-		if _, ok := negativeReactionEmoji[emoji]; ok {
-			negative += r.TotalCount
-		}
+		counts.add(kind, r.TotalCount)
 	}
-	return positive, negative
+	return counts
 }
 
-func reactionTypesPolarityCounts(reactions []rawReactionType) (positive int, negative int) {
+func reactionTypesKindCounts(reactions []rawReactionType) reactionKindCounts {
+	var counts reactionKindCounts
 	for _, r := range reactions {
-		emoji := strings.TrimSpace(r.Emoji)
-		if emoji == "" {
+		kind, ok := reactionEmojiKind(r.Emoji)
+		if !ok {
 			continue
 		}
-		if _, ok := positiveReactionEmoji[emoji]; ok {
-			positive++
-			continue
-		}
-		if _, ok := negativeReactionEmoji[emoji]; ok {
-			negative++
-		}
+		counts.add(kind, 1)
 	}
-	return positive, negative
+	return counts
+}
+
+func reactionEmojiKind(raw string) (reactionKind, bool) {
+	emoji := strings.TrimSpace(raw)
+	if emoji == "" {
+		return "", false
+	}
+	if _, ok := supportReactionEmoji[emoji]; ok {
+		return reactionKindSupport, true
+	}
+	if _, ok := hypeReactionEmoji[emoji]; ok {
+		return reactionKindHype, true
+	}
+	if _, ok := funnyReactionEmoji[emoji]; ok {
+		return reactionKindFunny, true
+	}
+	if _, ok := sadReactionEmoji[emoji]; ok {
+		return reactionKindSad, true
+	}
+	if _, ok := angryReactionEmoji[emoji]; ok {
+		return reactionKindAngry, true
+	}
+	return "", false
 }
 
 func rawReactionUserID(upd *rawMessageReactionUpdate) int64 {

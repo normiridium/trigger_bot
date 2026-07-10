@@ -2200,7 +2200,7 @@ function applyMatchTypeUI(){
     if(area){ area.classList.add('d-none'); }
     if(toggle){ toggle.disabled = true; }
     inp.disabled = true;
-  } else if(mt.value === 'positive_reactions' || mt.value === 'negative_reactions'){
+  } else if(['support_reactions', 'hype_reactions', 'funny_reactions', 'sad_reactions', 'angry_reactions'].includes(mt.value)){
     lbl.textContent = 'Порог реакций';
     inp.type = 'number';
     inp.min = '0';

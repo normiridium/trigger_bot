@@ -718,7 +718,6 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 		{Value: "{{ .user_portrait_remaining }}", Label: "{{ .user_portrait_remaining }} — сколько сообщений осталось до обновления портрета"},
 		{Value: "{{ .bot_portrait }}", Label: "{{ .bot_portrait }} — портрет бота в этом чате"},
 		{Value: "{{ chat_context 12 }}", Label: "{{ chat_context 12 }} — последние сообщения чата в бюджете ~150×N символов (без обрезки строк)"},
-		{Value: "{{ .summary }}", Label: "{{ .summary }} — авто-сводка переписки чата"},
 		{Value: "{{ weather \"Рязань\" }}", Label: "{{ weather \"Рязань\" }} — погода сейчас по городу (кэшируется)"},
 		{Value: "{{ .message | web_search }}", Label: "{{ .message | web_search }} — веб-поиск по запросу (pipeline-стиль)"},
 		{Value: "{{ .message | web_search \"компактно\" }}", Label: "{{ .message | web_search \"компактно\" }} — компактная поисковая выдача"},
@@ -1428,7 +1427,6 @@ func settingsSchema() []settingField {
 		{Key: "USER_INDEX_MAX", Label: "Лимит пользователей в индексе", Type: "int", Description: "800"},
 		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
 		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
-		{Key: "CHAT_SUMMARY_EVERY_MESSAGES", Label: "Авто-сводка: сообщений на обновление", Type: "int", Description: "200"},
 		{Key: "OLENYAM_CONTEXT_MESSAGES", Label: "Контекст для GPT (сообщений)", Type: "int", Description: "4"},
 		{Key: "USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов на пользователя за 4 часа (0 = выкл)", Type: "int", Description: "30000"},
 		{Key: "USER_GPT_TOKEN_LOW_WARNING_THRESHOLD", Label: "Предупреждать при остатке GPT-токенов", Type: "int", Description: "0 = авто"},
@@ -1597,9 +1595,15 @@ func iconForMatchType(v model.MatchType) string {
 		return "bi-arrow-left"
 	case model.MatchTypeNewMember:
 		return "bi-person-plus"
-	case model.MatchTypePositiveReactions:
+	case model.MatchTypeSupportReactions:
 		return "bi-hand-thumbs-up"
-	case model.MatchTypeNegativeReactions:
+	case model.MatchTypeHypeReactions:
+		return "bi-fire"
+	case model.MatchTypeFunnyReactions:
+		return "bi-emoji-laughing"
+	case model.MatchTypeSadReactions:
+		return "bi-emoji-frown"
+	case model.MatchTypeAngryReactions:
 		return "bi-hand-thumbs-down"
 	default:
 		return ""

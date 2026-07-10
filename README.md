@@ -330,7 +330,6 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `CHAT_RECENT_MAX_MESSAGES` / `CHAT_RECENT_MAX_AGE_SEC` — окно недавних сообщений для контекста.
 - `QS_HISTORY_MAX_MESSAGES` / `QS_SESSION_TTL_SEC` — история и TTL сессий quote-sticker.
 - `OLENYAM_CONTEXT_MESSAGES` — сколько последних сообщений давать в контекст Оле-ням.
-- `CHAT_SUMMARY_EVERY_MESSAGES` / `CHAT_SUMMARY_POOL_MESSAGES` — частота и глубина авто-сводки чата.
 - `MOD_CONFIRM_TTL_SEC` — TTL inline-подтверждений модерации.
 - `DISALLOWED_CHAT_NOTICE_TTL_SEC` — TTL уведомления о запрещённом чате.
 - `LOG_TEXT_CLIP_CHARS` — длина обрезки текста в логах.
@@ -380,7 +379,6 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
   Использование: в reply на сообщение со стикером, который нужно удалить.
 - `/spsearch <запрос>` (`/spfind`) — поиск трека в Spotify.
   Пример: `/spsearch daft punk harder better faster stronger`.
-- `/summary` (`/sum`) — делает краткую сводку по переписке (если функция включена).
 - `/my_portrait` (`/portrait`) — показывает ваш сохранённый портрет/персону для GPT-сценариев.
 - `/delete_my_portrait` (`/clear_my_portrait`) — удаляет ваш сохранённый портрет/персону.
 
@@ -465,7 +463,7 @@ systemctl status trigger-admin-bot.service --no-pager -n 50
 Сообщение проходит первичную валидацию: есть ли нужные поля, не бот ли отправитель, разрешён ли чат (`ALLOWED_CHAT_IDS`), доступен ли контекст для обработки.
 
 3. Индексация и служебный контекст.
-Бот обновляет внутренний контекст (например, индекс пользователей, кеш админов, историю для quote/summary), чтобы следующие шаги работали корректно.
+Бот обновляет внутренний контекст (например, индекс пользователей, кеш админов и историю для quote), чтобы следующие шаги работали корректно.
 
 4. Проверка на модерационные команды.
 Если сообщение похоже на команду модерации (`/ban`, `!mute`, `/readonly` и т.д.), выполняется модерационный обработчик.
