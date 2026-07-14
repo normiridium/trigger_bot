@@ -42,7 +42,7 @@ var choiceMu sync.Mutex
 var choiceRequests = make(map[string]ChoiceRequest)
 var choicePromptDeletions = make(map[choicePromptKey]string)
 
-const ChoicePromptTimeout = 30 * time.Second
+const ChoicePromptTimeout = 15 * time.Second
 
 type choicePromptKey struct {
 	ChatID    int64
