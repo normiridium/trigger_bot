@@ -40,6 +40,31 @@ type ChoiceFailureReporter func(chatID int64, title string, err error)
 
 var choiceMu sync.Mutex
 var choiceRequests = make(map[string]ChoiceRequest)
+var choicePromptDeletions = make(map[choicePromptKey]string)
+
+const ChoicePromptTimeout = 30 * time.Second
+
+type choicePromptKey struct {
+	ChatID    int64
+	MessageID int
+}
+
+func ScheduleChoicePromptDeletion(bot *tgbotapi.BotAPI, chatID int64, messageID int) {
+	if bot == nil || chatID == 0 || messageID <= 0 {
+		return
+	}
+	key := choicePromptKey{ChatID: chatID, MessageID: messageID}
+	token := newChoiceToken()
+	choiceMu.Lock()
+	choicePromptDeletions[key] = token
+	choiceMu.Unlock()
+	time.AfterFunc(ChoicePromptTimeout, func() {
+		if !takeChoicePromptDeletion(key, token) {
+			return
+		}
+		_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: chatID, MessageID: messageID})
+	})
+}
 
 func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.InlineKeyboardMarkup {
 	_, service, _ := NormalizeSupportedURL(req.URL)
@@ -116,6 +141,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
 			return true
 		}
+		clearChoicePromptDeletionFromCallback(cb)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Отменено"))
 		if cb.Message != nil {
 			_, _ = bot.Request(tgbotapi.DeleteMessageConfig{ChatID: cb.Message.Chat.ID, MessageID: cb.Message.MessageID})
@@ -130,6 +156,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
 			return true
 		}
+		clearChoicePromptDeletionFromCallback(cb)
 		token1 := putChoice(req)
 		token2 := putChoice(req)
 		token5 := putChoice(req)
@@ -176,6 +203,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		if cb.Message != nil {
 			edit := tgbotapi.NewEditMessageTextAndMarkup(cb.Message.Chat.ID, cb.Message.MessageID, "Выбери формат скачивания:", kb)
 			_, _ = bot.Request(edit)
+			ScheduleChoicePromptDeletion(bot, cb.Message.Chat.ID, cb.Message.MessageID)
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Назад"))
 		return true
@@ -200,6 +228,7 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
 		return true
 	}
+	clearChoicePromptDeletionFromCallback(cb)
 	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Скачиваю..."))
 	if cb.Message != nil {
 		status := "🎞 Выбрано: видео"
@@ -268,6 +297,30 @@ func takeChoice(token string, userID int64) (ChoiceRequest, bool, string) {
 	}
 	delete(choiceRequests, token)
 	return req, true, ""
+}
+
+func clearChoicePromptDeletionFromCallback(cb *tgbotapi.CallbackQuery) {
+	if cb == nil || cb.Message == nil {
+		return
+	}
+	clearChoicePromptDeletion(choicePromptKey{ChatID: cb.Message.Chat.ID, MessageID: cb.Message.MessageID})
+}
+
+func clearChoicePromptDeletion(key choicePromptKey) {
+	choiceMu.Lock()
+	defer choiceMu.Unlock()
+	delete(choicePromptDeletions, key)
+}
+
+func takeChoicePromptDeletion(key choicePromptKey, token string) bool {
+	choiceMu.Lock()
+	defer choiceMu.Unlock()
+	current, ok := choicePromptDeletions[key]
+	if !ok || current != token {
+		return false
+	}
+	delete(choicePromptDeletions, key)
+	return true
 }
 
 func newChoiceToken() string {

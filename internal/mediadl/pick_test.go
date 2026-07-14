@@ -12,6 +12,7 @@ func resetChoiceState() {
 	choiceMu.Lock()
 	defer choiceMu.Unlock()
 	choiceRequests = make(map[string]ChoiceRequest)
+	choicePromptDeletions = make(map[choicePromptKey]string)
 }
 
 func TestBuildChoiceKeyboard(t *testing.T) {
@@ -64,5 +65,40 @@ func TestTakeChoice_Expired(t *testing.T) {
 	}
 	if !strings.Contains(msg, "устарел") {
 		t.Fatalf("unexpected expired message: %q", msg)
+	}
+}
+
+func TestChoicePromptDeletionTakenOnce(t *testing.T) {
+	resetChoiceState()
+	key := choicePromptKey{ChatID: -1001, MessageID: 55}
+	token := "abc"
+
+	choiceMu.Lock()
+	choicePromptDeletions[key] = token
+	choiceMu.Unlock()
+
+	if !takeChoicePromptDeletion(key, token) {
+		t.Fatalf("expected prompt deletion to be pending")
+	}
+	if takeChoicePromptDeletion(key, token) {
+		t.Fatalf("expected prompt deletion to be consumed")
+	}
+}
+
+func TestChoicePromptDeletionClearedByCallback(t *testing.T) {
+	resetChoiceState()
+	key := choicePromptKey{ChatID: -1001, MessageID: 55}
+	token := "abc"
+
+	choiceMu.Lock()
+	choicePromptDeletions[key] = token
+	choiceMu.Unlock()
+
+	clearChoicePromptDeletionFromCallback(&tgbotapi.CallbackQuery{
+		Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: key.ChatID}, MessageID: key.MessageID},
+	})
+
+	if takeChoicePromptDeletion(key, token) {
+		t.Fatalf("expected prompt deletion to be cleared")
 	}
 }

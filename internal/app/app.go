@@ -4127,10 +4127,12 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 				m.AllowSendingWithoutReply = true
 			}
 			log.Printf("media pick keyboard built rows=%d chat=%d replyTo=%d", len(kb.InlineKeyboard), msg.Chat.ID, replyTo)
-			if _, err := deps.Bot.Send(m); err != nil {
+			sent, err := deps.Bot.Send(m)
+			if err != nil {
 				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки выбора формата", err)
 				return
 			}
+			mediadl.ScheduleChoicePromptDeletion(deps.Bot, msg.Chat.ID, sent.MessageID)
 			log.Printf("send media pick keyboard trigger=%d replyTo=%d url=%q", tr.ID, replyTo, clipText(targetURL, 160))
 			if deps.IdleTracker != nil {
 				deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
