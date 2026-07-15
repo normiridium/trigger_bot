@@ -231,12 +231,8 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 	}
 
 	var payload struct {
-		Error        string `json:"error"`
-		ImagesResult []struct {
-			Original  string `json:"original"`
-			Link      string `json:"link"`
-			Thumbnail string `json:"thumbnail"`
-		} `json:"images_results"`
+		Error        string            `json:"error"`
+		ImagesResult []serpImageResult `json:"images_results"`
 	}
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		return generatedImage{}, err
@@ -248,20 +244,7 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 		return generatedImage{}, errors.New("nothing found")
 	}
 
-	candidates := make([]string, 0, len(payload.ImagesResult))
-	for _, it := range payload.ImagesResult {
-		u := strings.TrimSpace(it.Original)
-		if u == "" {
-			u = strings.TrimSpace(it.Link)
-		}
-		if u == "" {
-			u = strings.TrimSpace(it.Thumbnail)
-		}
-		if u == "" {
-			continue
-		}
-		candidates = append(candidates, u)
-	}
+	candidates := collectSerpImageCandidateURLs(payload.ImagesResult)
 	if len(candidates) == 0 {
 		return generatedImage{}, errors.New("image URL is empty")
 	}
@@ -281,6 +264,34 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 		return generatedImage{}, fmt.Errorf("all image links failed: %w", lastErr)
 	}
 	return generatedImage{}, errors.New("image URL is empty")
+}
+
+type serpImageResult struct {
+	Original  string `json:"original"`
+	Link      string `json:"link"`
+	Thumbnail string `json:"thumbnail"`
+}
+
+func collectSerpImageCandidateURLs(results []serpImageResult) []string {
+	candidates := make([]string, 0, len(results)*2)
+	seen := make(map[string]struct{}, len(results)*2)
+	appendURL := func(raw string) {
+		u := strings.TrimSpace(raw)
+		if u == "" {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		seen[u] = struct{}{}
+		candidates = append(candidates, u)
+	}
+	for _, it := range results {
+		appendURL(it.Original)
+		appendURL(it.Thumbnail)
+		appendURL(it.Link)
+	}
+	return candidates
 }
 
 func fetchImageBytes(imageURL string) ([]byte, error) {

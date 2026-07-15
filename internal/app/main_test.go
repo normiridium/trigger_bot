@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,29 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 	}, "доброе фото {{capturing_text}} для {{user_first_name}}")
 	if got != "доброе фото кац для Аня" {
 		t.Fatalf("query mismatch: %q", got)
+	}
+}
+
+func TestCollectSerpImageCandidateURLsIncludesThumbnails(t *testing.T) {
+	got := collectSerpImageCandidateURLs([]serpImageResult{
+		{
+			Original:  "https://example.com/original.jpg",
+			Thumbnail: "https://example.com/thumb.jpg",
+			Link:      "https://example.com/page",
+		},
+		{
+			Original:  "https://example.com/original.jpg",
+			Thumbnail: " https://example.com/second-thumb.jpg ",
+		},
+	})
+	want := []string{
+		"https://example.com/original.jpg",
+		"https://example.com/thumb.jpg",
+		"https://example.com/page",
+		"https://example.com/second-thumb.jpg",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates mismatch:\nwant=%#v\n got=%#v", want, got)
 	}
 }
 
