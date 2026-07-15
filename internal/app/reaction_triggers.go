@@ -1,6 +1,7 @@
 package app
 
 import (
+	"image"
 	"log"
 	"strconv"
 	"strings"
@@ -34,9 +35,17 @@ var reactionTriggerState = struct {
 	mu            sync.Mutex
 	counts        map[string]int
 	messageCounts map[string]reactionKindCounts
+	display       map[string][]reactionDisplay
 }{
 	counts:        make(map[string]int),
 	messageCounts: make(map[string]reactionKindCounts),
+	display:       make(map[string][]reactionDisplay),
+}
+
+type reactionDisplay struct {
+	Emoji string
+	Count int
+	Image image.Image
 }
 
 type reactionKindCounts struct {
@@ -158,6 +167,7 @@ func handleReactionCountUpdate(deps triggerHandlerDeps, upd *rawMessageReactionC
 		return
 	}
 	setReactionMessageCounts(chatID, upd.MessageID, counts)
+	setReactionMessageDisplay(chatID, upd.MessageID, reactionCountUpdateDisplay(upd))
 	log.Printf("message_reaction_count chat=%d msg=%d support=%d hype=%d funny=%d sad=%d angry=%d winner=%s winner_count=%d",
 		chatID, upd.MessageID, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry, winner, winnerCount)
 	handleReactionCounts(deps, chatID, upd.Chat, upd.MessageID, upd.Date, counts)
@@ -184,6 +194,7 @@ func handleMessageReactionUpdate(deps triggerHandlerDeps, upd *rawMessageReactio
 		return
 	}
 	counts := applyReactionMessageDelta(chatID, upd.MessageID, delta)
+	applyReactionMessageDisplayDelta(chatID, upd.MessageID, upd.OldReaction, upd.NewReaction)
 	winner, winnerCount, ok := counts.winner()
 	if !ok {
 		log.Printf("message_reaction chat=%d msg=%d user=%d actor_chat=%d delta_support=%d delta_hype=%d delta_funny=%d delta_sad=%d delta_angry=%d support=%d hype=%d funny=%d sad=%d angry=%d winner=none winner_count=0",
@@ -330,6 +341,58 @@ func applyReactionMessageDelta(chatID int64, messageID int, delta reactionKindCo
 	return counts
 }
 
+func setReactionMessageDisplay(chatID int64, messageID int, items []reactionDisplay) {
+	reactionTriggerState.mu.Lock()
+	defer reactionTriggerState.mu.Unlock()
+	key := reactionMessageKey(chatID, messageID)
+	if len(items) == 0 {
+		delete(reactionTriggerState.display, key)
+		return
+	}
+	reactionTriggerState.display[key] = append([]reactionDisplay(nil), items...)
+}
+
+func applyReactionMessageDisplayDelta(chatID int64, messageID int, oldReactions, newReactions []rawReactionType) []reactionDisplay {
+	reactionTriggerState.mu.Lock()
+	defer reactionTriggerState.mu.Unlock()
+	key := reactionMessageKey(chatID, messageID)
+	counts := reactionDisplaySliceToMap(reactionTriggerState.display[key])
+	for _, r := range oldReactions {
+		displayKey := reactionDisplayKey(r)
+		if displayKey == "" {
+			continue
+		}
+		counts[displayKey]--
+		if counts[displayKey] <= 0 {
+			delete(counts, displayKey)
+		}
+	}
+	for _, r := range newReactions {
+		displayKey := reactionDisplayKey(r)
+		if displayKey == "" {
+			continue
+		}
+		counts[displayKey]++
+	}
+	items := reactionDisplayMapToSlice(counts)
+	if len(items) == 0 {
+		delete(reactionTriggerState.display, key)
+		return nil
+	}
+	reactionTriggerState.display[key] = items
+	return append([]reactionDisplay(nil), items...)
+}
+
+func getReactionMessageDisplay(chatID int64, messageID int) []reactionDisplay {
+	reactionTriggerState.mu.Lock()
+	defer reactionTriggerState.mu.Unlock()
+	items := reactionTriggerState.display[reactionMessageKey(chatID, messageID)]
+	if len(items) == 0 {
+		return nil
+	}
+	return append([]reactionDisplay(nil), items...)
+}
+
 func reactionCountUpdateKinds(upd *rawMessageReactionCountUpdate) reactionKindCounts {
 	if upd == nil {
 		return reactionKindCounts{}
@@ -343,6 +406,80 @@ func reactionCountUpdateKinds(upd *rawMessageReactionCountUpdate) reactionKindCo
 		counts.add(kind, r.TotalCount)
 	}
 	return counts
+}
+
+func reactionCountUpdateDisplay(upd *rawMessageReactionCountUpdate) []reactionDisplay {
+	if upd == nil {
+		return nil
+	}
+	counts := make(map[string]int)
+	for _, r := range upd.Reactions {
+		if r.TotalCount <= 0 {
+			continue
+		}
+		key := reactionDisplayKey(r.Type)
+		if key == "" {
+			continue
+		}
+		counts[key] += r.TotalCount
+	}
+	return reactionDisplayMapToSlice(counts)
+}
+
+func reactionDisplayKey(r rawReactionType) string {
+	switch strings.TrimSpace(r.Type) {
+	case "emoji", "":
+		return strings.TrimSpace(r.Emoji)
+	case "custom_emoji":
+		id := strings.TrimSpace(r.CustomEmojiID)
+		if id == "" {
+			return ""
+		}
+		fallback := strings.TrimSpace(r.Emoji)
+		if fallback == "" {
+			fallback = "✨"
+		}
+		return `<tg-emoji emoji-id="` + id + `">` + fallback + `</tg-emoji>`
+	default:
+		return strings.TrimSpace(r.Emoji)
+	}
+}
+
+func reactionDisplaySliceToMap(items []reactionDisplay) map[string]int {
+	out := make(map[string]int, len(items))
+	for _, it := range items {
+		emoji := strings.TrimSpace(it.Emoji)
+		if emoji == "" || it.Count <= 0 {
+			continue
+		}
+		out[emoji] += it.Count
+	}
+	return out
+}
+
+func reactionDisplayMapToSlice(counts map[string]int) []reactionDisplay {
+	order := []string{"👍", "❤", "🔥", "😂", "😁", "🥰", "👏", "🤝", "👌", "🫡", "💯", "🤩", "😍", "⚡", "🏆", "😭", "😢", "😱", "😨", "👎", "💩", "🤮", "🤬", "😡"}
+	used := make(map[string]struct{}, len(counts))
+	out := make([]reactionDisplay, 0, len(counts))
+	for _, emoji := range order {
+		if count := counts[emoji]; count > 0 {
+			out = append(out, reactionDisplay{Emoji: emoji, Count: count})
+			used[emoji] = struct{}{}
+		}
+	}
+	for emoji, count := range counts {
+		if count <= 0 {
+			continue
+		}
+		if _, ok := used[emoji]; ok {
+			continue
+		}
+		out = append(out, reactionDisplay{Emoji: emoji, Count: count})
+	}
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
 }
 
 func reactionTypesKindCounts(reactions []rawReactionType) reactionKindCounts {

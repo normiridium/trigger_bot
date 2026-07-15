@@ -1,7 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
 	"strconv"
 	"testing"
 
@@ -110,6 +114,124 @@ func TestBuildQuoteAPIMediaField_GIFFrameFallbackPrefersURL(t *testing.T) {
 	}
 	if _, ok := mediaDecoded["file_id"]; ok {
 		t.Fatalf("encoded media unexpectedly has file_id: %#v", mediaDecoded)
+	}
+}
+
+func TestRequestQuoteStickerPNGUsesLocalRendererWhenEndpointIsEmpty(t *testing.T) {
+	t.Setenv("QUOTE_API_URI", "")
+	got, err := requestQuoteStickerPNG(nil, []quoteHistoryItem{
+		{
+			Msg: &tgbotapi.Message{
+				From: &tgbotapi.User{ID: 123, FirstName: "Test"},
+				Text: "hello",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("local quote render failed: %v", err)
+	}
+	img, format, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode local quote png: %v", err)
+	}
+	if format != "png" {
+		t.Fatalf("unexpected format: %q", format)
+	}
+	if img.Bounds().Dx() != 512 || img.Bounds().Dy() != 512 {
+		t.Fatalf("unexpected sticker size: %v", img.Bounds())
+	}
+}
+
+func TestRenderLocalQuoteStickerPNGDrawsAvatar(t *testing.T) {
+	avatar := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	draw.Draw(avatar, avatar.Bounds(), image.NewUniform(color.RGBA{R: 230, G: 40, B: 60, A: 255}), image.Point{}, draw.Src)
+	got, err := renderLocalQuoteStickerPNG([]quoteAPIMessage{
+		{
+			From: quoteAPIFrom{
+				Name:        "Avatar User",
+				AvatarImage: avatar,
+			},
+			Text:   "hello",
+			Avatar: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("local quote render failed: %v", err)
+	}
+	img, format, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode local quote png: %v", err)
+	}
+	if format != "png" {
+		t.Fatalf("unexpected format: %q", format)
+	}
+	r, g, b, a := img.At(42, 57).RGBA()
+	if a == 0 || r <= g || r <= b {
+		t.Fatalf("avatar sample does not look red: rgba=(%d,%d,%d,%d)", r, g, b, a)
+	}
+}
+
+func TestRenderLocalQuoteStickerPNGDrawsMediaPreview(t *testing.T) {
+	preview := image.NewRGBA(image.Rect(0, 0, 80, 60))
+	draw.Draw(preview, preview.Bounds(), image.NewUniform(color.RGBA{R: 20, G: 190, B: 80, A: 255}), image.Point{}, draw.Src)
+	got, err := renderLocalQuoteStickerPNG([]quoteAPIMessage{
+		{
+			From: quoteAPIFrom{Name: "Media User"},
+			Local: &quoteLocalMedia{
+				Kind:    "photo",
+				Preview: preview,
+			},
+			Reacts: []reactionDisplay{{Emoji: "👍", Count: 3}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("local quote render failed: %v", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode local quote png: %v", err)
+	}
+	r, g, b, a := img.At(100, 100).RGBA()
+	if a == 0 || g <= r || g <= b {
+		t.Fatalf("media sample does not look green: rgba=(%d,%d,%d,%d)", r, g, b, a)
+	}
+}
+
+func TestRenderLocalQuoteStickerPNGDrawsCustomEmojiEntity(t *testing.T) {
+	emoji := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	draw.Draw(emoji, emoji.Bounds(), image.NewUniform(color.RGBA{R: 20, G: 230, B: 40, A: 255}), image.Point{}, draw.Src)
+	got, err := renderLocalQuoteStickerPNG([]quoteAPIMessage{
+		{
+			From: quoteAPIFrom{Name: "Emoji User"},
+			Text: "A 🎉 B",
+			Entities: []quoteAPIEntity{{
+				Type:          "custom_emoji",
+				Offset:        2,
+				Length:        2,
+				CustomEmojiID: "123",
+				Fallback:      "🎉",
+				Image:         emoji,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("local quote render failed: %v", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode local quote png: %v", err)
+	}
+	greenPixels := 0
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			if a > 0x8000 && g > 0x9000 && r < 0x4000 && b < 0x5000 {
+				greenPixels++
+			}
+		}
+	}
+	if greenPixels < 80 {
+		t.Fatalf("custom emoji pixels were not rendered, green_pixels=%d", greenPixels)
 	}
 }
 

@@ -319,7 +319,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - Превью генерируются командой `./scripts/generate_roleplay_previews.py` в `static/roleplay/` из Telegram custom emoji.
 
 ### Quote sticker
-- `QUOTE_API_URI` — endpoint внешнего quote-render API; если пусто, quote-sticker flow использует доступные fallback-и.
+- `QUOTE_API_URI` — endpoint вашего quote-render API. Если пусто, бот использует встроенный локальный renderer и не отправляет данные цитаты/токен на сторонние сервисы.
 
 ### Очереди, updates и наблюдаемость
 - `TRIGGER_ACTION_WORKERS` / `TRIGGER_ACTION_QUEUE` — async-очередь тяжёлых trigger action.
