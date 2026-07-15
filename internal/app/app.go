@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -46,6 +47,7 @@ var chatErrorLogEnabled bool
 var debugTriggerLogEnabled bool
 var debugGPTLogEnabled bool
 var errTelegramUploadTooLarge = errors.New("telegram upload too large")
+var appLogFile *os.File
 
 type yandexTop10Request struct {
 	Token        string
@@ -1745,7 +1747,27 @@ func cleanupTriggerBotTmpStartup() {
 	}
 }
 
+func setupAppLogFile() {
+	logPath := strings.TrimSpace(os.Getenv("TRIGGER_BOT_LOG_FILE"))
+	if logPath == "" {
+		logPath = filepath.Join("var", "log", "trigger_admin_bot.log")
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		log.Printf("app log mkdir failed path=%q err=%v", logPath, err)
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("app log open failed path=%q err=%v", logPath, err)
+		return
+	}
+	appLogFile = f
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.Printf("app log file enabled path=%s", logPath)
+}
+
 func Run() {
+	setupAppLogFile()
 	token := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	if token == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN is required")
@@ -3703,7 +3725,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		query := buildImageSearchQueryFromMessage(tmplCtx, resolvedTemplate)
 		img, err := searchImageInSerpAPI(query)
 		if err != nil {
-			log.Printf("search image failed: %v", err)
+			log.Printf("search image failed query=%q: %v", clipText(query, 160), err)
 			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка поиска картинки", err)
 			return
 		}
