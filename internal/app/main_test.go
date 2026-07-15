@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,6 +117,31 @@ func TestCollectSerpImageCandidateURLsIncludesThumbnails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates mismatch:\nwant=%#v\n got=%#v", want, got)
+	}
+}
+
+func TestImageSearchRetryQueries(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+		Text: "навальный",
+	}
+	got := imageSearchRetryQueries(templateContext{
+		Msg:           msg,
+		CapturingText: "Навальный",
+	}, "Алексей Навальный портрет фото")
+	want := []string{"Алексей Навальный портрет фото", "Навальный"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("retry queries mismatch:\nwant=%#v\n got=%#v", want, got)
+	}
+}
+
+func TestIsImageSearchNoResults(t *testing.T) {
+	if !isImageSearchNoResults(errors.New("Google Images hasn't returned any results for this query.")) {
+		t.Fatalf("expected serpapi no-results error")
+	}
+	if isImageSearchNoResults(errors.New("serpapi status=401 body=bad key")) {
+		t.Fatalf("auth/status errors must not be treated as no-results")
 	}
 }
 

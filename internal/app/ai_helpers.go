@@ -266,6 +266,64 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 	return generatedImage{}, errors.New("image URL is empty")
 }
 
+func searchImageInSerpAPIWithRetryQueries(ctx templateContext, primaryQuery string) (generatedImage, error) {
+	queries := imageSearchRetryQueries(ctx, primaryQuery)
+	if len(queries) == 0 {
+		return generatedImage{}, errors.New("empty search query")
+	}
+	var lastErr error
+	for i, query := range queries {
+		img, err := searchImageInSerpAPI(query)
+		if err == nil {
+			if i > 0 {
+				log.Printf("search image retry ok primary=%q query=%q", clipText(queries[0], 160), clipText(query, 160))
+			}
+			return img, nil
+		}
+		lastErr = err
+		if !isImageSearchNoResults(err) {
+			return generatedImage{}, err
+		}
+		log.Printf("search image no results query=%q: %v", clipText(query, 160), err)
+	}
+	if lastErr != nil {
+		return generatedImage{}, lastErr
+	}
+	return generatedImage{}, errors.New("nothing found")
+}
+
+func imageSearchRetryQueries(ctx templateContext, primaryQuery string) []string {
+	queries := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	appendQuery := func(raw string) {
+		q := strings.TrimSpace(raw)
+		if q == "" {
+			return
+		}
+		key := strings.ToLower(q)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		queries = append(queries, q)
+	}
+	appendQuery(primaryQuery)
+	appendQuery(ctx.CapturingText)
+	if ctx.Msg != nil {
+		replacements := buildMessageTemplateReplacements(ctx.Bot, ctx.Msg)
+		appendQuery(replacements["{{message}}"])
+	}
+	return queries
+}
+
+func isImageSearchNoResults(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return msg == "nothing found" || strings.Contains(msg, "hasn't returned any results") || strings.Contains(msg, "no results")
+}
+
 type serpImageResult struct {
 	Original  string `json:"original"`
 	Link      string `json:"link"`
