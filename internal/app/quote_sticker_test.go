@@ -165,9 +165,11 @@ func TestRenderLocalQuoteStickerPNGDrawsAvatar(t *testing.T) {
 	if format != "png" {
 		t.Fatalf("unexpected format: %q", format)
 	}
-	r, g, b, a := img.At(42, 57).RGBA()
-	if a == 0 || r <= g || r <= b {
-		t.Fatalf("avatar sample does not look red: rgba=(%d,%d,%d,%d)", r, g, b, a)
+	redPixels := countQuoteTestPixels(img, func(r, g, b, a uint32) bool {
+		return a > 0x8000 && r > 0x9000 && r > g*2 && r > b*2
+	})
+	if redPixels < 80 {
+		t.Fatalf("avatar pixels were not rendered, red_pixels=%d", redPixels)
 	}
 }
 
@@ -191,9 +193,46 @@ func TestRenderLocalQuoteStickerPNGDrawsMediaPreview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode local quote png: %v", err)
 	}
-	r, g, b, a := img.At(100, 100).RGBA()
-	if a == 0 || g <= r || g <= b {
-		t.Fatalf("media sample does not look green: rgba=(%d,%d,%d,%d)", r, g, b, a)
+	greenPixels := countQuoteTestPixels(img, func(r, g, b, a uint32) bool {
+		return a > 0x8000 && g > 0x9000 && g > r*2 && g > b*2
+	})
+	if greenPixels < 80 {
+		t.Fatalf("media pixels were not rendered, green_pixels=%d", greenPixels)
+	}
+}
+
+func TestRenderLocalQuoteStickerPNGKeepsTransparentCanvas(t *testing.T) {
+	got, err := renderLocalQuoteStickerPNG([]quoteAPIMessage{
+		{
+			From:   quoteAPIFrom{Name: "Short"},
+			Text:   "короткая цитата",
+			Avatar: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("local quote render failed: %v", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode local quote png: %v", err)
+	}
+	for _, p := range []image.Point{
+		{X: 0, Y: 0},
+		{X: img.Bounds().Max.X - 1, Y: 0},
+		{X: 0, Y: img.Bounds().Max.Y - 1},
+		{X: img.Bounds().Max.X - 1, Y: img.Bounds().Max.Y - 1},
+	} {
+		_, _, _, a := img.At(p.X, p.Y).RGBA()
+		if a != 0 {
+			t.Fatalf("expected transparent corner at %v, alpha=%d", p, a)
+		}
+	}
+	alphaB := quoteTestAlphaBounds(img)
+	if alphaB.Empty() {
+		t.Fatalf("expected visible quote bubble")
+	}
+	if alphaB.Dy() >= img.Bounds().Dy()/2 {
+		t.Fatalf("short quote should not fill sticker height, alpha bounds=%v", alphaB)
 	}
 }
 
@@ -221,18 +260,63 @@ func TestRenderLocalQuoteStickerPNGDrawsCustomEmojiEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode local quote png: %v", err)
 	}
-	greenPixels := 0
-	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
-		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			if a > 0x8000 && g > 0x9000 && r < 0x4000 && b < 0x5000 {
-				greenPixels++
-			}
-		}
-	}
+	greenPixels := countQuoteTestPixels(img, func(r, g, b, a uint32) bool {
+		return a > 0x8000 && g > 0x9000 && r < 0x4000 && b < 0x5000
+	})
 	if greenPixels < 80 {
 		t.Fatalf("custom emoji pixels were not rendered, green_pixels=%d", greenPixels)
 	}
+}
+
+func countQuoteTestPixels(img image.Image, match func(r, g, b, a uint32) bool) int {
+	if img == nil || match == nil {
+		return 0
+	}
+	count := 0
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			if match(r, g, b, a) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func quoteTestAlphaBounds(img image.Image) image.Rectangle {
+	if img == nil {
+		return image.Rectangle{}
+	}
+	b := img.Bounds()
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X, b.Min.Y
+	found := false
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, _, _, a := img.At(x, y).RGBA()
+			if a == 0 {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+			found = true
+		}
+	}
+	if !found {
+		return image.Rectangle{}
+	}
+	return image.Rect(minX, minY, maxX+1, maxY+1)
 }
 
 func TestBuildQuoteMediaPayload_StickerFileIDFallback(t *testing.T) {

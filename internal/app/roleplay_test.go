@@ -175,11 +175,13 @@ func TestRoleplayInlineFinalUsesCustomEmojiEntity(t *testing.T) {
 func TestRoleplayInlineDeclineUsesCustomEmojiAndRoleplayText(t *testing.T) {
 	st := roleplaySession{
 		ActorLink:   "Оленька",
+		ActorTag:    "она",
 		TargetLink:  "Фрешка",
+		TargetTag:   "она",
 		ActionIndex: 0,
 	}
 	text, entities := roleplayInlineFinalContent(st, true)
-	if text != roleplayDeclineAction.Emoji+" | Фрешка не хочет "+roleplayActions[0].Command+" Оленька" {
+	if text != roleplayDeclineAction.Emoji+" | Фрешка не хочет, чтобы Оленька обняла её" {
 		t.Fatalf("unexpected decline text: %q", text)
 	}
 	if len(entities) != 1 || entities[0].CustomEmojiID != roleplayDeclineAction.EmojiID {
@@ -190,12 +192,37 @@ func TestRoleplayInlineDeclineUsesCustomEmojiAndRoleplayText(t *testing.T) {
 func TestRoleplayDeclineTextIncludesActionTarget(t *testing.T) {
 	st := roleplaySession{
 		ActorLink:   "Оленька",
+		ActorTag:    "она",
 		TargetLink:  "Женя",
+		TargetTag:   "она",
 		ActionIndex: 5,
 	}
 	text := roleplayFinalText(st, true)
-	if !strings.Contains(text, "Женя не хочет прижать Оленька") {
+	if !strings.Contains(text, "Женя не хочет, чтобы Оленька прижала её к себе") {
 		t.Fatalf("decline text must include action target, got %q", text)
+	}
+}
+
+func TestRoleplayDeclineResultUsesTargetPronounCases(t *testing.T) {
+	lie := roleplayAction{Command: "лечь", DeclineResult: roleplayDeclineResults["лечь"]}
+	if got := roleplayDeclineResult(lie, "он", "она"); got != "лёг рядом с ней" {
+		t.Fatalf("unexpected instrumental decline result: %q", got)
+	}
+	handshake := roleplayAction{Command: "пожать руку", DeclineResult: roleplayDeclineResults["пожать руку"]}
+	if got := roleplayDeclineResult(handshake, "они", "он"); got != "крепко пожали ему руку" {
+		t.Fatalf("unexpected dative decline result: %q", got)
+	}
+	sniff := roleplayAction{Command: "понюхать", DeclineResult: roleplayDeclineResults["понюхать"]}
+	if got := roleplayDeclineResult(sniff, "она", "они"); got != "понюхала их" {
+		t.Fatalf("unexpected object decline result: %q", got)
+	}
+}
+
+func TestRoleplayActionsHaveDeclineResults(t *testing.T) {
+	for _, action := range roleplayActions {
+		if strings.TrimSpace(resolveGenderVariant("", action.DeclineResult)) == "" {
+			t.Fatalf("roleplay action %q has no decline result", action.Command)
+		}
 	}
 }
 
@@ -206,13 +233,13 @@ func TestRoleplayResponderPolicyWithReplyTarget(t *testing.T) {
 		TargetLink:  "Ci",
 		ActionIndex: 0,
 	}
-	if _, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 30, FirstName: "Ann"}, "accept"); ok || reason != "Принять может только адресат" {
+	if _, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 30, FirstName: "Ann"}, "accept"); ok || reason != "Принять может только адресат" {
 		t.Fatalf("non-target accept must be rejected, ok=%v reason=%q", ok, reason)
 	}
-	if _, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "decline"); ok || reason != "Отказать может только адресат" {
+	if _, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "decline"); ok || reason != "Отказать может только адресат" {
 		t.Fatalf("actor decline must be rejected when target exists, ok=%v reason=%q", ok, reason)
 	}
-	next, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 20, FirstName: "Ci"}, "decline")
+	next, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 20, FirstName: "Ci"}, "decline")
 	if !ok || reason != "" || next.TargetID != 20 {
 		t.Fatalf("target decline must be allowed, next=%#v ok=%v reason=%q", next, ok, reason)
 	}
@@ -225,10 +252,10 @@ func TestRoleplayResponderPolicyWithoutReplyTarget(t *testing.T) {
 		TargetLink:  "кого-то",
 		ActionIndex: 0,
 	}
-	if _, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "accept"); ok || reason != "Принять должен другой участник" {
+	if _, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "accept"); ok || reason != "Принять должен другой участник" {
 		t.Fatalf("actor accept must be rejected without target, ok=%v reason=%q", ok, reason)
 	}
-	next, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 30, FirstName: "Ann"}, "accept")
+	next, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 30, FirstName: "Ann"}, "accept")
 	if !ok || reason != "" || next.TargetID != 30 || roleplayPlainText(next.TargetLink) != "Ann" {
 		t.Fatalf("first non-actor accept must claim target, next=%#v ok=%v reason=%q", next, ok, reason)
 	}
@@ -240,10 +267,10 @@ func TestRoleplayResponderPolicyAllowsActorToCancelPicker(t *testing.T) {
 		TargetID:    20,
 		ActionIndex: -1,
 	}
-	if _, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 20, FirstName: "Ci"}, "decline"); ok || reason != "Это меню не для вас" {
+	if _, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 20, FirstName: "Ci"}, "decline"); ok || reason != "Это меню не для вас" {
 		t.Fatalf("target must not cancel actor picker, ok=%v reason=%q", ok, reason)
 	}
-	if _, ok, reason := roleplayResolveResponder(st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "decline"); !ok || reason != "" {
+	if _, ok, reason := roleplayResolveResponder(nil, st, &tgbotapi.User{ID: 10, FirstName: "Оленька"}, "decline"); !ok || reason != "" {
 		t.Fatalf("actor must cancel own picker, ok=%v reason=%q", ok, reason)
 	}
 }

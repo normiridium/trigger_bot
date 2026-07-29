@@ -43,6 +43,7 @@ type Downloader struct {
 	CookiesFile  string
 	ProxyURL     string
 	WebUserID    int
+	WebBaseURL   string
 }
 
 func NewDownloader(token, userAgent string) (Downloader, error) {
@@ -59,10 +60,7 @@ func NewDownloader(token, userAgent string) (Downloader, error) {
 
 func (d Downloader) SearchTracks(ctx context.Context, query string, limit int) ([]Track, error) {
 	if strings.TrimSpace(d.CookiesFile) != "" {
-		tracks, err := d.webSearchTracks(ctx, query, limit)
-		if err == nil || d.Client == nil {
-			return tracks, err
-		}
+		return d.webSearchTracks(ctx, query, limit)
 	}
 	if d.Client == nil {
 		return nil, errors.New("vk client is not configured")
@@ -89,10 +87,7 @@ func (d Downloader) DownloadTrack(ctx context.Context, trackID string) (Download
 		return DownloadResult{}, errors.New("empty vk track id")
 	}
 	if strings.TrimSpace(d.CookiesFile) != "" {
-		res, err := d.webDownloadTrack(ctx, trackID)
-		if err == nil || d.Client == nil {
-			return res, err
-		}
+		return d.webDownloadTrack(ctx, trackID)
 	}
 	if d.Client == nil {
 		return DownloadResult{}, errors.New("vk client is not configured")
@@ -198,6 +193,10 @@ func (d Downloader) downloadAudioURL(ctx context.Context, audioURL string) (stri
 }
 
 func (d Downloader) runFFmpeg(ctx context.Context, audioURL, outPath string) error {
+	webBase, err := normalizeVKWebBase(d.WebBaseURL)
+	if err != nil {
+		return err
+	}
 	args := []string{
 		"-nostdin",
 		"-hide_banner",
@@ -209,7 +208,7 @@ func (d Downloader) runFFmpeg(ctx context.Context, audioURL, outPath string) err
 		"-reconnect_delay_max", "5",
 		"-rw_timeout", "15000000",
 		"-http_persistent", "0",
-		"-headers", "Referer: https://vk.com/\r\nOrigin: https://vk.com\r\nAccept: */*\r\n",
+		"-headers", fmt.Sprintf("Referer: %s/\r\nOrigin: %s\r\nAccept: */*\r\n", webBase, webBase),
 		"-user_agent", d.userAgent(),
 		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
 		"-allowed_extensions", "ALL",

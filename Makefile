@@ -5,7 +5,7 @@ PKGS ?= ./...
 GO_LIMIT_PROCS ?= 1
 GO_BUILD_P ?= 1
 
-.PHONY: fmt test build preflight build-safe test-safe
+.PHONY: fmt test build preflight build-safe test-safe deploy restart-service
 
 fmt:
 	@files="$$(find . -type f -name '*.go' -not -path './vendor/*')"; \
@@ -27,3 +27,6 @@ build-safe: preflight
 
 test-safe: preflight
 	GOMAXPROCS=$(GO_LIMIT_PROCS) $(GO) test -p $(GO_BUILD_P) $(PKGS)
+
+deploy restart-service:
+	./scripts/deploy-trigger-admin-bot.sh

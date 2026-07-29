@@ -1812,23 +1812,23 @@ func Run() {
 	}
 	var vkDownloader VKMusicDownloadPort
 	vkUserAgent := strings.TrimSpace(os.Getenv("VK_USER_AGENT"))
-	vkToken := strings.TrimSpace(os.Getenv("VK_TOKEN"))
 	vkCookiesFile := strings.TrimSpace(firstNonEmptyEnv("VK_COOKIES_FILE", "YTDLP_COOKIES_FILE"))
-	if vkToken != "" || vkCookiesFile != "" {
-		vkDL, err := vkaudio.NewDownloader(vkToken, vkUserAgent)
+	if vkCookiesFile != "" {
+		vkDL, err := vkaudio.NewDownloader("", vkUserAgent)
 		if err != nil {
 			log.Printf("vk music client init failed: %v", err)
 		} else {
 			vkDL.CookiesFile = vkCookiesFile
 			vkDL.ProxyURL = strings.TrimSpace(firstNonEmptyEnv("VK_PROXY_URL", "FIXIE_SOCKS_HOST"))
 			vkDL.WebUserID = envInt("VK_WEB_USER_ID", 0)
+			vkDL.WebBaseURL = strings.TrimSpace(os.Getenv("VK_WEB_BASE"))
 			vkDL.FFmpegBin = strings.TrimSpace(firstNonEmptyEnv("VK_AUDIO_FFMPEG_BIN", "FFMPEG_BIN"))
 			vkDL.MaxSizeMB = envInt("VK_AUDIO_MAX_MB", 60)
 			vkDL.TimeoutSec = envInt("VK_AUDIO_FFMPEG_TIMEOUT_SEC", 120)
 			vkDL.RetryCount = envInt("VK_AUDIO_RETRY_COUNT", 3)
 			vkDL.RetryDelayMs = envInt("VK_AUDIO_RETRY_DELAY_MS", 500)
 			vkDownloader = vkDL
-			log.Printf("vk music client enabled api=%t web=%t", vkToken != "", vkCookiesFile != "")
+			log.Printf("vk music client enabled web=true")
 		}
 	} else {
 		log.Printf("vk music client disabled: set VK_COOKIES_FILE")
@@ -2371,7 +2371,8 @@ func Run() {
 				if isPrivateChat {
 					commands := []string{
 						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
-						cmdSpotifySearch, cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
+						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
+						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
 						cmdTranslateVoice, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
 						cmdReadonly, cmdReloadAdmins,
 					}
@@ -2501,7 +2502,13 @@ func Run() {
 							usageLines = append(usageLines, fmt.Sprintf("— для Spotify: /%s <запрос>", cmdSpotifySearch))
 						}
 						if hasYandexMusic {
-							usageLines = append(usageLines, "— для Яндекс.Музыки: отправьте ссылку music.yandex.ru")
+							usageLines = append(usageLines, fmt.Sprintf("— для Yandex Music: /%s <запрос> или ссылка music.yandex.ru", cmdYandexMusicSearch))
+						}
+						if hasVKMusic {
+							usageLines = append(usageLines, fmt.Sprintf("— для VK: /%s <запрос>", cmdVKMusicSearch))
+						}
+						if hasSoundCloud {
+							usageLines = append(usageLines, fmt.Sprintf("— для SoundCloud: /%s <запрос>", cmdSoundCloudSearch))
 						}
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — показать ваш портрет", cmdMyPortrait))
 						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
@@ -2594,33 +2601,46 @@ func Run() {
 					reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
 					continue
 				}
-			case cmdSpotifySearch, cmdSpotifySearchAlt:
+			case cmdSpotifySearch, cmdSpotifySearchAlt, cmdYandexMusicSearch, cmdYandexMusicFind, cmdVKMusicSearch, cmdVKMusicFind, cmdSoundCloudSearch, cmdSoundCloudFind:
+				spec, ok := musicCommandSpecByCommand(cmd)
+				if !ok {
+					continue
+				}
 				query := strings.TrimSpace(msg.CommandArguments())
 				if query == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", cmdSpotifySearch), false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", spec.UsageCommand), false)
 					continue
 				}
-				if spotifyMusicClient == nil || !spotifyMusicClient.Enabled() {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Spotify-поиск не настроен (добавьте SPOTIPY_CLIENT_ID и SPOTIPY_CLIENT_SECRET в .env).", false)
-					continue
+				userID := int64(0)
+				if msg.From != nil {
+					userID = msg.From.ID
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-				tracks, err := spotifyMusicClient.SearchTracks(ctx, query, 10)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				err := processMusicProviderChoice(ctx, musicProviderDeps{
+					Bot:               bot,
+					SpotifyMusic:      spotifyMusicClient,
+					SpotifyDownloader: spotifyDownloader,
+					SpotifyQueue:      spotifyQueue,
+					YandexDownloader:  yandexDownloader,
+					YandexQueue:       yandexMusicQueue,
+					VKDownloader:      vkDownloader,
+					VKQueue:           vkMusicQueue,
+					SoundCloudSearch:  mediaDownloader,
+					MediaDownloader:   mediaDownloader,
+					MediaQueue:        mediaQueue,
+					IdleTracker:       idleTracker,
+				}, musicpick.ChoiceRequest{
+					Query:       query,
+					ChatID:      msg.Chat.ID,
+					ReplyTo:     msg.MessageID,
+					SourceMsgID: msg.MessageID,
+					UserID:      userID,
+				}, spec.Provider)
 				cancel()
 				if err != nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка Spotify-поиска: "+clipText(err.Error(), 240), false)
-					continue
+					log.Printf("music command search failed provider=%s chat=%d msg=%d query=%q err=%v", spec.Provider, msg.Chat.ID, msg.MessageID, clipText(query, 160), err)
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка поиска "+spec.ServiceName+": "+clipText(err.Error(), 240), false)
 				}
-				if len(tracks) == 0 {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ничего не найдено в Spotify.", false)
-					continue
-				}
-				var b strings.Builder
-				b.WriteString("Spotify поиск:\n")
-				for i, tr := range tracks {
-					fmt.Fprintf(&b, "%d. %s — %s (<code>%s</code>)\n", i+1, strings.TrimSpace(tr.Artist), strings.TrimSpace(tr.Title), strings.TrimSpace(tr.ID))
-				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.TrimSpace(b.String()), false)
 				continue
 			case cmdAnon:
 				if handleAnonCommand(bot, msg) {
@@ -2984,6 +3004,43 @@ type musicProviderDeps struct {
 	MediaDownloader   MediaDownloadPort
 	MediaQueue        *mediaDownloadQueue
 	IdleTracker       *trigger.IdleTracker
+}
+
+type musicCommandSpec struct {
+	Provider     string
+	UsageCommand string
+	ServiceName  string
+}
+
+func musicCommandSpecByCommand(cmd string) (musicCommandSpec, bool) {
+	switch cmd {
+	case cmdSpotifySearch, cmdSpotifySearchAlt:
+		return musicCommandSpec{
+			Provider:     musicpick.ProviderSpotify,
+			UsageCommand: cmdSpotifySearch,
+			ServiceName:  "Spotify",
+		}, true
+	case cmdYandexMusicSearch, cmdYandexMusicFind:
+		return musicCommandSpec{
+			Provider:     musicpick.ProviderYandex,
+			UsageCommand: cmdYandexMusicSearch,
+			ServiceName:  "Yandex Music",
+		}, true
+	case cmdVKMusicSearch, cmdVKMusicFind:
+		return musicCommandSpec{
+			Provider:     musicpick.ProviderVK,
+			UsageCommand: cmdVKMusicSearch,
+			ServiceName:  "VK",
+		}, true
+	case cmdSoundCloudSearch, cmdSoundCloudFind:
+		return musicCommandSpec{
+			Provider:     musicpick.ProviderSC,
+			UsageCommand: cmdSoundCloudSearch,
+			ServiceName:  "SoundCloud",
+		}, true
+	default:
+		return musicCommandSpec{}, false
+	}
 }
 
 func newYandexTop10Token() string {

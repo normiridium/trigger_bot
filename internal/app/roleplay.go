@@ -27,11 +27,12 @@ var roleplayDeclineAction = roleplayAction{
 }
 
 type roleplayAction struct {
-	Emoji       string
-	EmojiID     string
-	Command     string
-	Result      genderVariants
-	NeedsTarget bool
+	Emoji         string
+	EmojiID       string
+	Command       string
+	Result        genderVariants
+	DeclineResult genderVariants
+	NeedsTarget   bool
 }
 
 type roleplaySession struct {
@@ -42,6 +43,7 @@ type roleplaySession struct {
 	ActorLink   string
 	ActorTag    string
 	TargetLink  string
+	TargetTag   string
 	Inline      bool
 	ActionIndex int
 	SourceMsgID int
@@ -109,7 +111,7 @@ func randomRoleplayID() string {
 	return hex.EncodeToString(b[:])
 }
 
-var roleplayActions = []roleplayAction{
+var roleplayActions = withRoleplayDeclines([]roleplayAction{
 	{Emoji: "🫶", EmojiID: "5289978022957440232", Command: "обнять", Result: genderVariants{Male: "обнял", Female: "обняла", Neuter: "обняло", Plural: "обняли", Unknown: "обнял(а)"}, NeedsTarget: true},
 	{Emoji: "💋", EmojiID: "5474525960143385880", Command: "поцеловать", Result: genderVariants{Male: "поцеловал", Female: "поцеловала", Neuter: "поцеловало", Plural: "поцеловали", Unknown: "поцеловал(а)"}, NeedsTarget: true},
 	{Emoji: "☺️", EmojiID: "5373149502003747704", Command: "погладить", Result: genderVariants{Male: "погладил", Female: "погладила", Neuter: "погладило", Plural: "погладили", Unknown: "погладил(а)"}, NeedsTarget: true},
@@ -179,6 +181,96 @@ var roleplayActions = []roleplayAction{
 	{Emoji: "🥳", EmojiID: "5269480798343406297", Command: "поздравить", Result: genderVariants{Male: "поздравил", Female: "поздравила", Neuter: "поздравило", Plural: "поздравили", Unknown: "поздравил(а)"}, NeedsTarget: true},
 	{Emoji: "💥", EmojiID: "5269331183157649318", Command: "уничтожить", Result: genderVariants{Male: "уничтожил", Female: "уничтожила", Neuter: "уничтожило", Plural: "уничтожили", Unknown: "уничтожил(а)"}, NeedsTarget: true},
 	{Emoji: "🤢", EmojiID: "5350708280702281097", Command: "отравить", Result: genderVariants{Male: "отравил", Female: "отравила", Neuter: "отравило", Plural: "отравили", Unknown: "отравил(а)"}, NeedsTarget: true},
+})
+
+func roleplayGV(male, female, neuter, plural, unknown string) genderVariants {
+	return genderVariants{
+		Male:    male,
+		Female:  female,
+		Neuter:  neuter,
+		Plural:  plural,
+		Unknown: unknown,
+	}
+}
+
+var roleplayDeclineResults = map[string]genderVariants{
+	"обнять":              roleplayGV("обнял {obj}", "обняла {obj}", "обняло {obj}", "обняли {obj}", "обнял(а) {obj}"),
+	"поцеловать":          roleplayGV("поцеловал {obj}", "поцеловала {obj}", "поцеловало {obj}", "поцеловали {obj}", "поцеловал(а) {obj}"),
+	"погладить":           roleplayGV("погладил {obj}", "погладила {obj}", "погладило {obj}", "погладили {obj}", "погладил(а) {obj}"),
+	"чмок":                roleplayGV("нежно чмокнул {obj}", "нежно чмокнула {obj}", "нежно чмокнуло {obj}", "нежно чмокнули {obj}", "нежно чмокнул(а) {obj}"),
+	"засосать":            roleplayGV("сладко засосал {obj}", "сладко засосала {obj}", "сладко засосало {obj}", "сладко засосали {obj}", "сладко засосал(а) {obj}"),
+	"прижать":             roleplayGV("прижал {obj} к себе", "прижала {obj} к себе", "прижало {obj} к себе", "прижали {obj} к себе", "прижал(а) {obj} к себе"),
+	"отлизать":            roleplayGV("отлизал у {gen}", "отлизала у {gen}", "отлизало у {gen}", "отлизали у {gen}", "отлизал(а) у {gen}"),
+	"отсосать":            roleplayGV("отсосал у {gen}", "отсосала у {gen}", "отсосало у {gen}", "отсосали у {gen}", "отсосал(а) у {gen}"),
+	"выебать":             roleplayGV("жёстко выебал {obj}", "жёстко выебала {obj}", "жёстко выебало {obj}", "жёстко выебали {obj}", "жёстко выебал(а) {obj}"),
+	"кусь":                roleplayGV("кусьнул {obj}", "кусьнула {obj}", "кусьнуло {obj}", "кусьнули {obj}", "кусьнул(а) {obj}"),
+	"лечь":                roleplayGV("лёг рядом с {inst}", "легла рядом с {inst}", "легло рядом с {inst}", "легли рядом с {inst}", "лег(ла) рядом с {inst}"),
+	"укусить":             roleplayGV("укусил {obj}", "укусила {obj}", "укусило {obj}", "укусили {obj}", "укусил(а) {obj}"),
+	"шлёпнуть":            roleplayGV("шлёпнул {obj} по попке", "шлёпнула {obj} по попке", "шлёпнуло {obj} по попке", "шлёпнули {obj} по попке", "шлёпнул(а) {obj} по попке"),
+	"трахнуть":            roleplayGV("страстно трахнул {obj}", "страстно трахнула {obj}", "страстно трахнуло {obj}", "страстно трахнули {obj}", "страстно трахнул(а) {obj}"),
+	"отдаться":            roleplayGV("отдался {dat}", "отдалась {dat}", "отдалось {dat}", "отдались {dat}", "отдался(-ась) {dat}"),
+	"потрогать":           roleplayGV("потрогал {obj}", "потрогала {obj}", "потрогало {obj}", "потрогали {obj}", "потрогал(а) {obj}"),
+	"похвалить":           roleplayGV("похвалил {obj} как умничку", "похвалила {obj} как умничку", "похвалило {obj} как умничку", "похвалили {obj} как умничку", "похвалил(а) {obj} как умничку"),
+	"покормить":           roleplayGV("покормил {obj}", "покормила {obj}", "покормило {obj}", "покормили {obj}", "покормил(а) {obj}"),
+	"лизь":                roleplayGV("лизнул {obj}", "лизнула {obj}", "лизнуло {obj}", "лизнули {obj}", "лизнул(а) {obj}"),
+	"секс":                roleplayGV("занялся сексом с {inst}", "занялась сексом с {inst}", "занялось сексом с {inst}", "занялись сексом с {inst}", "занялся(-ась) сексом с {inst}"),
+	"кастрировать":        roleplayGV("кастрировал {obj}", "кастрировала {obj}", "кастрировало {obj}", "кастрировали {obj}", "кастрировал(а) {obj}"),
+	"куснуть":             roleplayGV("кусьнул {obj} с любовью", "кусьнула {obj} с любовью", "кусьнуло {obj} с любовью", "кусьнули {obj} с любовью", "кусьнул(а) {obj} с любовью"),
+	"раздеть":             roleplayGV("страстно сорвал одежду с {gen}", "страстно сорвала одежду с {gen}", "страстно сорвало одежду с {gen}", "страстно сорвали одежду с {gen}", "страстно сорвал(а) одежду с {gen}"),
+	"выпить":              roleplayGV("выпил с {inst}", "выпила с {inst}", "выпило с {inst}", "выпили с {inst}", "выпил(а) с {inst}"),
+	"связать":             roleplayGV("связал {obj} и начал доминировать над {inst}", "связала {obj} и начала доминировать над {inst}", "связало {obj} и начало доминировать над {inst}", "связали {obj} и начали доминировать над {inst}", "связал(а) {obj} и начал(а) доминировать над {inst}"),
+	"пожениться":          roleplayGV("объявил свадьбу с {inst}", "объявила свадьбу с {inst}", "объявило свадьбу с {inst}", "объявили свадьбу с {inst}", "объявил(а) свадьбу с {inst}"),
+	"наказать":            roleplayGV("наказал {obj}", "наказала {obj}", "наказало {obj}", "наказали {obj}", "наказал(а) {obj}"),
+	"лизнуть":             roleplayGV("лизнул {obj}", "лизнула {obj}", "лизнуло {obj}", "лизнули {obj}", "лизнул(а) {obj}"),
+	"извиниться":          roleplayGV("извинился перед {inst}", "извинилась перед {inst}", "извинилось перед {inst}", "извинились перед {inst}", "извинился(ась) перед {inst}"),
+	"доминировать":        roleplayGV("доминирует и властвует над {inst}", "доминирует и властвует над {inst}", "доминирует и властвует над {inst}", "доминируют и властвуют над {inst}", "доминирует и властвует над {inst}"),
+	"ударить":             roleplayGV("ударил {obj}", "ударила {obj}", "ударило {obj}", "ударили {obj}", "ударил(а) {obj}"),
+	"раздеться":           roleplayGV("разделся перед {inst}", "разделась перед {inst}", "разделось перед {inst}", "разделись перед {inst}", "разделся(ась) перед {inst}"),
+	"пнуть":               roleplayGV("дал {dat} смачного поджопника", "дала {dat} смачного поджопника", "дало {dat} смачного поджопника", "дали {dat} смачного поджопника", "дал(а) {dat} смачного поджопника"),
+	"сделать предложение": roleplayGV("сделал {dat} предложение", "сделала {dat} предложение", "сделало {dat} предложение", "сделали {dat} предложение", "сделал(а) {dat} предложение"),
+	"уебать":              roleplayGV("жёстко уебал {obj}", "жёстко уебала {obj}", "жёстко уебало {obj}", "жёстко уебали {obj}", "жёстко уебал(а) {obj}"),
+	"пощекотать":          roleplayGV("защекотал {obj} до потери сознания", "защекотала {obj} до потери сознания", "защекотало {obj} до потери сознания", "защекотали {obj} до потери сознания", "защекотал(а) {obj} до потери сознания"),
+	"ущипнуть":            roleplayGV("ущипнул {obj}", "ущипнула {obj}", "ущипнуло {obj}", "ущипнули {obj}", "ущипнул(а) {obj}"),
+	"придушить":           roleplayGV("в порыве страсти придушил {obj}", "в порыве страсти придушила {obj}", "в порыве страсти придушило {obj}", "в порыве страсти придушили {obj}", "в порыве страсти придушил(а) {obj}"),
+	"убить":               roleplayGV("безжалостно убил {obj}", "безжалостно убила {obj}", "безжалостно убило {obj}", "безжалостно убили {obj}", "безжалостно убил(а) {obj}"),
+	"заткнуть":            roleplayGV("заткнул {dat} рот кляпом", "заткнула {dat} рот кляпом", "заткнуло {dat} рот кляпом", "заткнули {dat} рот кляпом", "заткнул(а) {dat} рот кляпом"),
+	"пожать руку":         roleplayGV("крепко пожал {dat} руку", "крепко пожала {dat} руку", "крепко пожало {dat} руку", "крепко пожали {dat} руку", "крепко пожал(а) {dat} руку"),
+	"понюхать":            roleplayGV("понюхал {obj}", "понюхала {obj}", "понюхало {obj}", "понюхали {obj}", "понюхал(а) {obj}"),
+	"выпороть":            roleplayGV("выпорол {obj}", "выпорола {obj}", "выпороло {obj}", "выпороли {obj}", "выпорол(а) {obj}"),
+	"послать нахуй":       roleplayGV("с любовью шлёт {obj} нахуй", "с любовью шлёт {obj} нахуй", "с любовью шлёт {obj} нахуй", "с любовью шлют {obj} нахуй", "с любовью шлёт {obj} нахуй"),
+	"подмигнуть":          roleplayGV("игриво подмигнул {dat}", "игриво подмигнула {dat}", "игриво подмигнуло {dat}", "игриво подмигнули {dat}", "игриво подмигнул(а) {dat}"),
+	"арестовать":          roleplayGV("сковал {obj} в наручники", "сковала {obj} в наручники", "сковало {obj} в наручники", "сковали {obj} в наручники", "сковал(а) {obj} в наручники"),
+	"продать":             roleplayGV("продал {obj}", "продала {obj}", "продало {obj}", "продали {obj}", "продал(а) {obj}"),
+	"дать пять":           roleplayGV("дал {dat} пять", "дала {dat} пять", "дало {dat} пять", "дали {dat} пять", "дал(а) {dat} пять"),
+	"стукнуть":            roleplayGV("стукнул {obj} по башке", "стукнула {obj} по башке", "стукнуло {obj} по башке", "стукнули {obj} по башке", "стукнул(а) {obj} по башке"),
+	"расстрелять":         roleplayGV("расстрелял {obj}", "расстреляла {obj}", "расстреляло {obj}", "расстреляли {obj}", "расстрелял(а) {obj}"),
+	"задушить":            roleplayGV("задушил {obj}", "задушила {obj}", "задушило {obj}", "задушили {obj}", "задушил(а) {obj}"),
+	"унизить":             roleplayGV("унизил {obj}", "унизила {obj}", "унизило {obj}", "унизили {obj}", "унизил(а) {obj}"),
+	"наорать":             roleplayGV("наорал на {gen}", "наорала на {gen}", "наорало на {gen}", "наорали на {gen}", "наорал(а) на {gen}"),
+	"испугать":            roleplayGV("испугал {obj}", "испугала {obj}", "испугало {obj}", "испугали {obj}", "испугал(а) {obj}"),
+	"огонёк":              roleplayGV("поджёг огонёк для {gen}", "подожгла огонёк для {gen}", "подожгло огонёк для {gen}", "подожгли огонёк для {gen}", "поджёг/подожгла огонёк для {gen}"),
+	"повесить":            roleplayGV("повесил {obj}", "повесила {obj}", "повесило {obj}", "повесили {obj}", "повесил(а) {obj}"),
+	"застрелить":          roleplayGV("застрелил {obj}", "застрелила {obj}", "застрелило {obj}", "застрелили {obj}", "застрелил(а) {obj}"),
+	"рассмешить":          roleplayGV("рассмешил {obj}", "рассмешила {obj}", "рассмешило {obj}", "рассмешили {obj}", "рассмешил(а) {obj}"),
+	"сжечь":               roleplayGV("сжёг {obj}", "сожгла {obj}", "сожгло {obj}", "сожгли {obj}", "сжёг/сожгла {obj}"),
+	"взорвать":            roleplayGV("взорвал {obj}", "взорвала {obj}", "взорвало {obj}", "взорвали {obj}", "взорвал(а) {obj}"),
+	"заставить":           roleplayGV("заставил {obj}", "заставила {obj}", "заставило {obj}", "заставили {obj}", "заставил(а) {obj}"),
+	"отрубить":            roleplayGV("отрубил кое-что у {gen}", "отрубила кое-что у {gen}", "отрубило кое-что у {gen}", "отрубили кое-что у {gen}", "отрубил(а) кое-что у {gen}"),
+	"аплодировать":        roleplayGV("громко поаплодировал {dat}", "громко поаплодировала {dat}", "громко поаплодировало {dat}", "громко поаплодировали {dat}", "громко поаплодировал(а) {dat}"),
+	"пожелать":            roleplayGV("пожелал {dat} всего хорошего", "пожелала {dat} всего хорошего", "пожелало {dat} всего хорошего", "пожелали {dat} всего хорошего", "пожелал(а) {dat} всего хорошего"),
+	"кивнуть":             roleplayGV("одобрительно кивнул {dat}", "одобрительно кивнула {dat}", "одобрительно кивнуло {dat}", "одобрительно кивнули {dat}", "одобрительно кивнул(а) {dat}"),
+	"поздравить":          roleplayGV("поздравил {obj}", "поздравила {obj}", "поздравило {obj}", "поздравили {obj}", "поздравил(а) {obj}"),
+	"уничтожить":          roleplayGV("уничтожил {obj}", "уничтожила {obj}", "уничтожило {obj}", "уничтожили {obj}", "уничтожил(а) {obj}"),
+	"отравить":            roleplayGV("отравил {obj}", "отравила {obj}", "отравило {obj}", "отравили {obj}", "отравил(а) {obj}"),
+}
+
+func withRoleplayDeclines(actions []roleplayAction) []roleplayAction {
+	for i := range actions {
+		if v, ok := roleplayDeclineResults[actions[i].Command]; ok {
+			actions[i].DeclineResult = v
+		}
+	}
+	return actions
 }
 
 func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args string) bool {
@@ -191,10 +283,12 @@ func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args str
 	}
 	targetID := int64(0)
 	targetLink := "кого-то"
+	targetTag := ""
 	replyToID := 0
 	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil {
 		targetID = msg.ReplyToMessage.From.ID
 		targetLink = buildUserLink(msg.ReplyToMessage.From)
+		targetTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, targetID)
 		replyToID = msg.ReplyToMessage.MessageID
 	}
 	if targetID != 0 && targetID == msg.From.ID {
@@ -213,6 +307,7 @@ func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args str
 		ActorLink:   buildUserLink(msg.From),
 		ActorTag:    getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID),
 		TargetLink:  targetLink,
+		TargetTag:   targetTag,
 		ActionIndex: -1,
 		SourceMsgID: msg.MessageID,
 	})
@@ -293,6 +388,7 @@ func handleRoleplayInlineSentMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 	if strings.Contains(firstNonEmptyUserText(msg), "→ кого-то") && msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil && msg.ReplyToMessage.From.ID != msg.From.ID {
 		st.TargetID = msg.ReplyToMessage.From.ID
 		st.TargetLink = buildUserLink(msg.ReplyToMessage.From)
+		st.TargetTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, st.TargetID)
 	}
 	defaultRoleplaySessions.update(st)
 
@@ -400,7 +496,7 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 		answerRoleplayCallback(bot, cb, "Выбрано: "+roleplayActions[idx].Command)
 		editRoleplayProposal(bot, st, cb.Message.MessageID)
 	case "accept":
-		next, ok, reason := roleplayResolveResponder(st, cb.From, "accept")
+		next, ok, reason := roleplayResolveResponder(bot, st, cb.From, "accept")
 		if !ok {
 			answerRoleplayCallback(bot, cb, reason)
 			return true
@@ -418,7 +514,7 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 			editRoleplayFinal(bot, st, cb.Message.MessageID, false)
 		}
 	case "decline":
-		next, ok, reason := roleplayResolveResponder(st, cb.From, "decline")
+		next, ok, reason := roleplayResolveResponder(bot, st, cb.From, "decline")
 		if !ok {
 			answerRoleplayCallback(bot, cb, reason)
 			return true
@@ -437,7 +533,7 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 	return true
 }
 
-func roleplayResolveResponder(st roleplaySession, user *tgbotapi.User, action string) (roleplaySession, bool, string) {
+func roleplayResolveResponder(bot *tgbotapi.BotAPI, st roleplaySession, user *tgbotapi.User, action string) (roleplaySession, bool, string) {
 	if user == nil {
 		return st, false, "Не вижу пользователя"
 	}
@@ -465,7 +561,15 @@ func roleplayResolveResponder(st roleplaySession, user *tgbotapi.User, action st
 	}
 	st.TargetID = userID
 	st.TargetLink = buildUserLink(user)
+	st.TargetTag = roleplayMemberTag(bot, st.ChatID, userID)
 	return st, true, ""
+}
+
+func roleplayMemberTag(bot *tgbotapi.BotAPI, chatID, userID int64) string {
+	if bot == nil || strings.TrimSpace(bot.Token) == "" || chatID == 0 || userID == 0 {
+		return ""
+	}
+	return getChatMemberTagRaw(bot.Token, chatID, userID)
 }
 
 func sendRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, page, replyTo int) bool {
@@ -752,7 +856,7 @@ func roleplayInlineFinalContent(st roleplaySession, declined bool) (string, []tg
 	if declined {
 		if st.ActionIndex >= 0 && st.ActionIndex < len(roleplayActions) {
 			a := roleplayActions[st.ActionIndex]
-			text := fmt.Sprintf("%s | %s не хочет %s %s", roleplayDeclineAction.Emoji, roleplayPlainText(st.TargetLink), a.Command, roleplayPlainText(st.ActorLink))
+			text := fmt.Sprintf("%s | %s не хочет, чтобы %s %s", roleplayDeclineAction.Emoji, roleplayPlainText(st.TargetLink), roleplayPlainText(st.ActorLink), roleplayDeclineResult(a, st.ActorTag, st.TargetTag))
 			return text, roleplayCustomEmojiEntities(roleplayDeclineAction)
 		}
 		text := fmt.Sprintf("%s | %s не хочет roleplay", roleplayDeclineAction.Emoji, roleplayPlainText(st.TargetLink))
@@ -784,6 +888,60 @@ func roleplayActionResult(a roleplayAction, actorTag string) string {
 		return result
 	}
 	return strings.TrimSpace(a.Command)
+}
+
+func roleplayDeclineResult(a roleplayAction, actorTag, targetTag string) string {
+	result := strings.TrimSpace(resolveGenderVariant(actorTag, a.DeclineResult))
+	return roleplayExpandTargetPronouns(result, targetTag)
+}
+
+func roleplayExpandTargetPronouns(s, targetTag string) string {
+	return strings.NewReplacer(
+		"{obj}", roleplayTargetObjectPronoun(targetTag),
+		"{gen}", roleplayTargetGenitivePronoun(targetTag),
+		"{inst}", roleplayTargetInstrumentalPronoun(targetTag),
+		"{dat}", roleplayTargetDativePronoun(targetTag),
+	).Replace(s)
+}
+
+func roleplayTargetObjectPronoun(tag string) string {
+	return resolveGenderVariant(tag, genderVariants{
+		Male:    "его",
+		Female:  "её",
+		Neuter:  "его",
+		Plural:  "их",
+		Unknown: "их",
+	})
+}
+
+func roleplayTargetGenitivePronoun(tag string) string {
+	return resolveGenderVariant(tag, genderVariants{
+		Male:    "него",
+		Female:  "неё",
+		Neuter:  "него",
+		Plural:  "них",
+		Unknown: "них",
+	})
+}
+
+func roleplayTargetInstrumentalPronoun(tag string) string {
+	return resolveGenderVariant(tag, genderVariants{
+		Male:    "ним",
+		Female:  "ней",
+		Neuter:  "ним",
+		Plural:  "ними",
+		Unknown: "ними",
+	})
+}
+
+func roleplayTargetDativePronoun(tag string) string {
+	return resolveGenderVariant(tag, genderVariants{
+		Male:    "ему",
+		Female:  "ей",
+		Neuter:  "ему",
+		Plural:  "им",
+		Unknown: "им",
+	})
 }
 
 func roleplayPlainText(s string) string {
@@ -839,7 +997,7 @@ func roleplayFinalText(st roleplaySession, declined bool) string {
 	if declined {
 		if st.ActionIndex >= 0 && st.ActionIndex < len(roleplayActions) {
 			a := roleplayActions[st.ActionIndex]
-			return fmt.Sprintf("%s | %s не хочет %s %s", roleplayEmojiHTML(roleplayDeclineAction), st.TargetLink, html.EscapeString(a.Command), st.ActorLink)
+			return fmt.Sprintf("%s | %s не хочет, чтобы %s %s", roleplayEmojiHTML(roleplayDeclineAction), st.TargetLink, st.ActorLink, html.EscapeString(roleplayDeclineResult(a, st.ActorTag, st.TargetTag)))
 		}
 		return fmt.Sprintf("%s | %s не хочет roleplay", roleplayEmojiHTML(roleplayDeclineAction), st.TargetLink)
 	}

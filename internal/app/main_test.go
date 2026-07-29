@@ -30,6 +30,38 @@ func TestApplyCapturingTemplate(t *testing.T) {
 	}
 }
 
+func TestMusicCommandSpecByCommand(t *testing.T) {
+	cases := []struct {
+		cmd     string
+		wantOK  bool
+		want    string
+		usage   string
+		service string
+	}{
+		{cmd: cmdSpotifySearch, wantOK: true, want: "spotify", usage: cmdSpotifySearch, service: "Spotify"},
+		{cmd: cmdSpotifySearchAlt, wantOK: true, want: "spotify", usage: cmdSpotifySearch, service: "Spotify"},
+		{cmd: cmdYandexMusicSearch, wantOK: true, want: "yandex", usage: cmdYandexMusicSearch, service: "Yandex Music"},
+		{cmd: cmdYandexMusicFind, wantOK: true, want: "yandex", usage: cmdYandexMusicSearch, service: "Yandex Music"},
+		{cmd: cmdVKMusicSearch, wantOK: true, want: "vk", usage: cmdVKMusicSearch, service: "VK"},
+		{cmd: cmdVKMusicFind, wantOK: true, want: "vk", usage: cmdVKMusicSearch, service: "VK"},
+		{cmd: cmdSoundCloudSearch, wantOK: true, want: "soundcloud", usage: cmdSoundCloudSearch, service: "SoundCloud"},
+		{cmd: cmdSoundCloudFind, wantOK: true, want: "soundcloud", usage: cmdSoundCloudSearch, service: "SoundCloud"},
+		{cmd: "unknown", wantOK: false},
+	}
+	for _, tc := range cases {
+		got, ok := musicCommandSpecByCommand(tc.cmd)
+		if ok != tc.wantOK {
+			t.Fatalf("musicCommandSpecByCommand(%q) ok=%v want=%v", tc.cmd, ok, tc.wantOK)
+		}
+		if !ok {
+			continue
+		}
+		if got.Provider != tc.want || got.UsageCommand != tc.usage || got.ServiceName != tc.service {
+			t.Fatalf("musicCommandSpecByCommand(%q)=%#v", tc.cmd, got)
+		}
+	}
+}
+
 func TestApplyCapturingTemplateChoice(t *testing.T) {
 	pattern := `^\\s*((?:уби|обня|(?:😘 )?поцелова))ть\\s*$`
 	got := applyCapturingTemplate("{{capturing_choice}}", "поцелова", pattern, false)
@@ -258,6 +290,8 @@ func TestExtractVKAudioTrackID(t *testing.T) {
 	}{
 		{in: "https://vk.com/audio-2000703018_12703018", want: "-2000703018_12703018"},
 		{in: "https://m.vk.com/audio123_456", want: "123_456"},
+		{in: "вк https://vk.ru/audio-2000703018_12703018", want: "-2000703018_12703018"},
+		{in: "https://m.vk.ru/audio123_456", want: "123_456"},
 		{in: "audio-1_2", want: "-1_2"},
 		{in: "https://vk.com/video-1_2", want: ""},
 	}

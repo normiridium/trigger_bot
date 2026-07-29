@@ -55,7 +55,7 @@ cp .env.example .env
 - `ADMIN_TOKEN` — web-админка, если `ADMIN_ENABLED=true`.
 - `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — голосовой перевод через VOT CLI.
 
-### 3) Собрать и запустить
+### 3) Собрать и запустить локально
 ```bash
 set -a && source .env && set +a
 /usr/local/go/bin/go build -o trigger_admin_bot .
@@ -80,6 +80,11 @@ systemctl status trigger-admin-bot.service --no-pager
 ```
 
 На рабочем сервере обычно используется service name `trigger-admin-bot.service`.
+Для деплоя на systemd-сервис не собирайте бинарь вручную: используйте команду, которая сама читает `ExecStart` из unit-файла, собирает ровно этот файл, рестартит сервис и проверяет статус:
+
+```bash
+make deploy
+```
 
 ## 🧩 Что умеет бот
 
@@ -160,11 +165,12 @@ systemctl status trigger-admin-bot.service --no-pager
 ### VK Music (`vk_music_audio`)
 - Ищет треки через web-cookies (`VK_COOKIES_FILE`). Это основной и поддерживаемый путь для VK Music.
 - Для выбранного трека получает direct/m3u8 URL и скачивает его через `ffmpeg`.
-- Поддерживает прямые ссылки вида `vk.com/audio..._...` в универсальном музыкальном сценарии.
+- По умолчанию ходит в VK web через `VK_WEB_BASE=https://vk.ru`; при необходимости домен можно поменять в `.env`.
+- Поддерживает прямые ссылки вида `vk.ru/audio..._...` и `vk.com/audio..._...` в универсальном музыкальном сценарии.
 - Для web-режима VK-запросы можно принудительно вести через `VK_PROXY_URL`; если он не задан, используется `FIXIE_SOCKS_HOST`.
 
 #### Как настроить `VK_COOKIES_FILE`
-- Экспортируйте cookies авторизованного VK-профиля в Netscape cookies format.
+- Экспортируйте cookies авторизованного VK-профиля в Netscape cookies format с того же домена, который указан в `VK_WEB_BASE` (по умолчанию `vk.ru`).
 - Положите файл вне git, например `cookies.txt`, и укажите путь в `.env`: `VK_COOKIES_FILE=/path/to/cookies.txt`.
 - Убедитесь, что файл попадает в `.gitignore` и имеет права только для пользователя сервиса (`chmod 600 cookies.txt`).
 - `VK_USER_AGENT` опционален: cookies-файл обычно не содержит User-Agent, поэтому бот сам ставит браузерный UA по умолчанию. Заполняйте только если VK начинает капризничать или cookies были сняты с заметно другого клиента.
@@ -264,6 +270,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `SPOTIFY_AUDIO_LYRICS_API` — endpoint поиска lyrics.
 - `AUDIO_FORMAT` / `AUDIO_QUALITY` — общий формат и качество аудио для media/yt-dlp пайплайнов.
 - `VK_COOKIES_FILE` — Netscape cookies-файл VK; основной способ поиска и скачивания VK Music.
+- `VK_WEB_BASE` — базовый web-домен VK для music web-запросов; по умолчанию `https://vk.ru`.
 - `VK_PROXY_URL` — прокси для VK web-запросов; можно оставить пустым и использовать `FIXIE_SOCKS_HOST`.
 - `VK_WEB_USER_ID` — опциональный VK user id, чтобы не определять его по странице автоматически.
 - `VK_USER_AGENT` — опциональный User-Agent для VK web и `ffmpeg`-запросов; в Netscape cookies-файле UA не хранится.
@@ -379,6 +386,12 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
   Использование: в reply на сообщение со стикером, который нужно удалить.
 - `/spsearch <запрос>` (`/spfind`) — поиск трека в Spotify.
   Пример: `/spsearch daft punk harder better faster stronger`.
+- `/ymsearch <запрос>` (`/ymfind`) — поиск трека в Yandex Music.
+  Пример: `/ymsearch кино группа крови`.
+- `/vksearch <запрос>` (`/vkfind`) — поиск трека в VK.
+  Пример: `/vksearch кино группа крови`.
+- `/scsearch <запрос>` (`/scfind`) — поиск трека в SoundCloud.
+  Пример: `/scsearch crystal castles`.
 - `/my_portrait` (`/portrait`) — показывает ваш сохранённый портрет/персону для GPT-сценариев.
 - `/delete_my_portrait` (`/clear_my_portrait`) — удаляет ваш сохранённый портрет/персону.
 
@@ -433,12 +446,11 @@ sudo journalctl -u trigger-admin-bot.service -f -l
 sudo journalctl -u trigger-admin-bot.service --since '30 minutes ago' --no-pager | tail -n 220
 ```
 
-## 🔄 Перезапуск systemd
+## 🔄 Деплой и перезапуск systemd
 ```bash
-sudo systemctl restart trigger-admin-bot.service
-systemctl status trigger-admin-bot.service --no-pager -n 50
+make deploy
 ```
-Первая команда перезапускает сервис, вторая сразу показывает его текущее состояние.
+Команда запускает тесты, собирает бинарь в фактический `ExecStart`, перезапускает сервис и показывает статус с последними логами. Это основной способ обновлять production-сервис без риска собрать не тот файл.
 
 ## 📤 Импорт/экспорт
 

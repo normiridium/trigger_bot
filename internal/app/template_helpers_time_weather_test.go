@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func TestDescribeTimeOfDay(t *testing.T) {
@@ -228,5 +230,32 @@ func TestRenderResponseTemplateRegexpReplace(t *testing.T) {
 	}
 	if got != "67?" {
 		t.Fatalf("unexpected regexp_replace result: %q", got)
+	}
+}
+
+func TestRenderTemplateWithMessageChatContextPipeline(t *testing.T) {
+	seenLimit2 := false
+	setChatContextResolver(func(chatID int64, limit int) string {
+		if chatID != 12345 {
+			t.Fatalf("unexpected chat id: %d", chatID)
+		}
+		if limit == 2 {
+			seenLimit2 = true
+			return "[12:00] Andy: Оле-ням, привет\n[12:01] Ryn: оленям: тест"
+		}
+		return "[12:00] ignored: оленям, не этот лимит"
+	})
+	defer setChatContextResolver(nil)
+
+	got := renderTemplateWithMessage(
+		templateContext{Msg: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 12345}}},
+		`{{ chat_context 2 | regexp_replace "(?i)(?:оле-ням|оленям)[\\s,.:!?—–-]*" "" | trim }}`,
+	)
+	want := "[12:00] Andy: привет\n[12:01] Ryn: тест"
+	if got != want {
+		t.Fatalf("unexpected chat_context pipeline result:\n got: %q\nwant: %q", got, want)
+	}
+	if !seenLimit2 {
+		t.Fatal("chat_context helper was not called with limit 2")
 	}
 }

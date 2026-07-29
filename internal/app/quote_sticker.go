@@ -470,7 +470,6 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 	const avatarGap = 10
 	canvas := image.NewRGBA(image.Rect(0, 0, side, side))
 	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.Alpha{A: 0}}, image.Point{}, draw.Src)
-	fillRoundedRect(canvas, canvas.Bounds(), 44, color.RGBA{R: 17, G: 24, B: 39, A: 245})
 
 	y := pad
 	drawn := 0
@@ -503,9 +502,6 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 		if len(lines) == 0 && !hasLocalMedia {
 			lines = []quoteTextLine{{quoteTextSegment{Text: "сообщение"}}}
 		}
-		if len(lines) > 5 {
-			lines = append(lines[:5], quoteTextLine{quoteTextSegment{Text: "…"}})
-		}
 		lineH := textFace.Metrics().Height.Ceil()
 		nameH := nameFace.Metrics().Height.Ceil()
 		mediaH := 0
@@ -522,6 +518,10 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 		}
 		if reactionsH > 0 {
 			bubbleH += 8 + reactionsH
+		}
+		contentW := quoteLocalBubbleContentWidth(nameFace, textFace, smallFace, name, lines, msg.Reacts, maxTextW)
+		if hasLocalMedia {
+			contentW = maxTextW
 		}
 		rowH := bubbleH
 		if msg.Avatar && rowH < avatarSize {
@@ -546,6 +546,10 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 			if reactionsH > 0 {
 				bubbleH += 8 + reactionsH
 			}
+			contentW = quoteLocalBubbleContentWidth(nameFace, textFace, smallFace, name, lines, msg.Reacts, maxTextW)
+			if hasLocalMedia {
+				contentW = maxTextW
+			}
 			rowH = bubbleH
 			if msg.Avatar && rowH < avatarSize {
 				rowH = avatarSize
@@ -556,13 +560,13 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 			drawQuoteAvatar(canvas, msg.From.AvatarImage, name, image.Rect(pad, avatarY, pad+avatarSize, avatarY+avatarSize), smallFace)
 		}
 		bubbleY := y + (rowH-bubbleH)/2
-		bubble := image.Rect(bubbleX, bubbleY, side-pad, bubbleY+bubbleH)
+		bubble := image.Rect(bubbleX, bubbleY, bubbleX+bubblePadX*2+contentW, bubbleY+bubbleH)
 		fillRoundedRect(canvas, bubble, 28, color.RGBA{R: 31, G: 41, B: 55, A: 250})
 		quoteDrawString(canvas, nameFace, name, bubble.Min.X+bubblePadX, bubble.Min.Y+bubblePadY+nameFace.Metrics().Ascent.Ceil(), color.RGBA{R: 251, G: 113, B: 133, A: 255})
 		contentY := bubble.Min.Y + bubblePadY + nameH
 		if hasLocalMedia {
 			contentY += 8
-			mediaRect := image.Rect(bubble.Min.X+bubblePadX, contentY, bubble.Min.X+bubblePadX+maxTextW, contentY+mediaH)
+			mediaRect := image.Rect(bubble.Min.X+bubblePadX, contentY, bubble.Min.X+bubblePadX+contentW, contentY+mediaH)
 			drawQuoteMediaPreview(canvas, msg.Local.Preview, mediaRect, msg.Local.Kind, smallFace)
 			contentY += mediaH
 		}
@@ -572,7 +576,7 @@ func renderLocalQuoteStickerPNG(messages []quoteAPIMessage) ([]byte, error) {
 			textY += lineH
 		}
 		if reactionsH > 0 {
-			drawQuoteReactions(canvas, msg.Reacts, bubble.Min.X+bubblePadX, bubble.Max.Y-bubblePadY-reactionsH, maxTextW, smallFace)
+			drawQuoteReactions(canvas, msg.Reacts, bubble.Min.X+bubblePadX, bubble.Max.Y-bubblePadY-reactionsH, contentW, smallFace)
 		}
 		y += rowH + gap
 		drawn++
@@ -850,6 +854,81 @@ func quoteReactionsHeight(items []reactionDisplay) int {
 		}
 	}
 	return 0
+}
+
+func quoteLocalBubbleContentWidth(nameFace, textFace, reactionFace font.Face, name string, lines []quoteTextLine, reacts []reactionDisplay, maxWidth int) int {
+	if maxWidth <= 0 {
+		return 0
+	}
+	w := quoteStringWidth(nameFace, name)
+	for _, line := range lines {
+		if lineW := quoteTextLineWidth(textFace, line); lineW > w {
+			w = lineW
+		}
+	}
+	if reactionsW := quoteReactionsWidth(reactionFace, reacts, maxWidth); reactionsW > w {
+		w = reactionsW
+	}
+	if w < 120 {
+		w = 120
+	}
+	if w > maxWidth {
+		w = maxWidth
+	}
+	return w
+}
+
+func quoteTextLineWidth(face font.Face, line quoteTextLine) int {
+	if face == nil {
+		return 0
+	}
+	w := 0
+	for _, seg := range line {
+		w += quoteSegmentWidth(face, seg)
+	}
+	return w
+}
+
+func quoteReactionsWidth(face font.Face, items []reactionDisplay, maxWidth int) int {
+	if face == nil || len(items) == 0 || maxWidth <= 0 {
+		return 0
+	}
+	total := 0
+	for _, it := range items {
+		emoji := reactionDisplayPlainEmoji(it.Emoji)
+		hasImage := it.Image != nil && !it.Image.Bounds().Empty()
+		if (emoji == "" && !hasImage) || it.Count <= 0 {
+			continue
+		}
+		label := emoji
+		if hasImage {
+			label = ""
+		}
+		if it.Count > 1 {
+			if label == "" {
+				label = strconv.Itoa(it.Count)
+			} else {
+				label += " " + strconv.Itoa(it.Count)
+			}
+		}
+		imgSize := 0
+		if hasImage {
+			imgSize = 18
+		}
+		w := quoteStringWidth(face, label) + 14 + imgSize
+		if hasImage && label != "" {
+			w += 4
+		}
+		next := w
+		if total > 0 {
+			next = total + 5 + w
+		}
+		if total > 0 && next > maxWidth {
+			break
+		}
+		total = next
+	}
+	return total
 }
 
 func drawQuoteReactions(dst draw.Image, items []reactionDisplay, x, y, maxWidth int, face font.Face) {
@@ -1426,7 +1505,7 @@ func requestQuoteStickerPNG(bot *tgbotapi.BotAPI, items []quoteHistoryItem) ([]b
 		}
 		item := quoteAPIMessage{
 			From:   from,
-			Text:   clipText(text, 1200),
+			Text:   strings.TrimSpace(strings.ToValidUTF8(text, "")),
 			Avatar: true,
 		}
 		if !useExternalQuoteAPI {
@@ -2280,6 +2359,9 @@ func normalizeStickerPNG(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	srcB := src.Bounds()
+	if alphaB := imageAlphaBounds(src); !alphaB.Empty() {
+		srcB = alphaB
+	}
 	srcW := srcB.Dx()
 	srcH := srcB.Dy()
 	if srcW <= 0 || srcH <= 0 {
@@ -2302,7 +2384,7 @@ func normalizeStickerPNG(raw []byte) ([]byte, error) {
 	}
 
 	scaled := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
-	nearestScale(scaled, src)
+	nearestScale(scaled, src, srcB)
 
 	canvas := image.NewRGBA(image.Rect(0, 0, side, side))
 	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.Alpha{A: 0}}, image.Point{}, draw.Src)
@@ -2318,9 +2400,50 @@ func normalizeStickerPNG(raw []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func nearestScale(dst draw.Image, src image.Image) {
+func imageAlphaBounds(src image.Image) image.Rectangle {
+	if src == nil {
+		return image.Rectangle{}
+	}
+	b := src.Bounds()
+	if b.Empty() {
+		return image.Rectangle{}
+	}
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X, b.Min.Y
+	found := false
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, _, _, a := src.At(x, y).RGBA()
+			if a == 0 {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y > maxY {
+				maxY = y
+			}
+			found = true
+		}
+	}
+	if !found {
+		return image.Rectangle{}
+	}
+	return image.Rect(minX, minY, maxX+1, maxY+1)
+}
+
+func nearestScale(dst draw.Image, src image.Image, srcBounds image.Rectangle) {
 	db := dst.Bounds()
-	sb := src.Bounds()
+	sb := srcBounds
+	if sb.Empty() {
+		sb = src.Bounds()
+	}
 	dw, dh := db.Dx(), db.Dy()
 	sw, sh := sb.Dx(), sb.Dy()
 	if dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 {

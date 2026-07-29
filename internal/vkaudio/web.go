@@ -20,7 +20,7 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-const vkWebBase = "https://vk.com"
+const defaultVKWebBase = "https://vk.ru"
 
 type webAudioTuple struct {
 	ID         int
@@ -141,12 +141,17 @@ func (d Downloader) webDownloadTrack(ctx context.Context, trackID string) (Downl
 
 type vkWebClient struct {
 	http      *http.Client
+	base      string
 	ua        string
 	userIDVal int
 	cookieOK  bool
 }
 
 func (d Downloader) newWebClient(ctx context.Context) (*vkWebClient, error) {
+	base, err := normalizeVKWebBase(d.WebBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
@@ -183,6 +188,7 @@ func (d Downloader) newWebClient(ctx context.Context) (*vkWebClient, error) {
 			Jar:       jar,
 			Transport: tr,
 		},
+		base:      base,
 		ua:        firstNonEmpty(strings.TrimSpace(d.UserAgent), "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0"),
 		userIDVal: d.WebUserID,
 	}
@@ -200,7 +206,7 @@ func (wc *vkWebClient) userID(ctx context.Context) (int, error) {
 	if wc.userIDVal > 0 {
 		return wc.userIDVal, nil
 	}
-	body, err := wc.getText(ctx, vkWebBase+"/audios")
+	body, err := wc.getText(ctx, wc.base+"/audios")
 	if err != nil {
 		return 0, err
 	}
@@ -250,7 +256,7 @@ func (wc *vkWebClient) postAjaxOnce(ctx context.Context, path string, form url.V
 		form = url.Values{}
 	}
 	form.Set("al", "1")
-	endpoint := vkWebBase + path
+	endpoint := wc.base + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, 0, err
@@ -258,8 +264,8 @@ func (wc *vkWebClient) postAjaxOnce(ctx context.Context, path string, form url.V
 	req.Header.Set("User-Agent", wc.ua)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("Origin", vkWebBase)
-	req.Header.Set("Referer", vkWebBase+"/audios")
+	req.Header.Set("Origin", wc.base)
+	req.Header.Set("Referer", wc.base+"/audios")
 	resp, err := wc.http.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -308,11 +314,11 @@ func (wc *vkWebClient) relogin(ctx context.Context, payload json.RawMessage) err
 	}
 	q := url.Values{}
 	q.Set("role", "al_frame")
-	q.Set("_origin", vkWebBase)
+	q.Set("_origin", wc.base)
 	q.Set("ip_h", vals[0])
 	q.Set("to", vals[1])
 	q.Set("lrt", vals[2])
-	_, err := wc.getText(ctx, "https://login.vk.com/?"+q.Encode())
+	_, err := wc.getText(ctx, vkLoginBase(wc.base)+"/?"+q.Encode())
 	return err
 }
 
@@ -334,7 +340,7 @@ func (wc *vkWebClient) getText(ctx context.Context, endpoint string) (string, er
 		return "", err
 	}
 	req.Header.Set("User-Agent", wc.ua)
-	req.Header.Set("Referer", vkWebBase+"/")
+	req.Header.Set("Referer", wc.base+"/")
 	resp, err := wc.http.Do(req)
 	if err != nil {
 		return "", err
@@ -359,6 +365,42 @@ func readVKBody(r io.Reader) (string, error) {
 		return string(out), nil
 	}
 	return string(b), nil
+}
+
+func normalizeVKWebBase(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = defaultVKWebBase
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid VK web base: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", fmt.Errorf("invalid VK web base scheme: %s", u.Scheme)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return "", errors.New("invalid VK web base: empty host")
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.Path = strings.TrimRight(u.Path, "/")
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func vkLoginBase(webBase string) string {
+	u, err := url.Parse(webBase)
+	if err != nil {
+		return "https://login.vk.ru"
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "vk.ru" || strings.HasSuffix(host, ".vk.ru") {
+		return "https://login.vk.ru"
+	}
+	return "https://login.vk.com"
 }
 
 func loadNetscapeCookies(jar *cookiejar.Jar, path string) error {

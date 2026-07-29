@@ -217,8 +217,6 @@ var webSnippetAngleURLRe = regexp.MustCompile(`<\s*https?://[^>]+>`)
 var webSearchLineDropRe = regexp.MustCompile(`(?i)^\s*(источник|sources?|source|url|ссылка)\s*[:\-]`)
 var legacyTemplateActionRe = regexp.MustCompile(`\{\{[-]?\s*([^{}]+?)\s*[-]?\}\}`)
 var legacyPipeIndexRe = regexp.MustCompile(`\|\s*index\s+(-?\d+)`)
-var chatContextActionRe = regexp.MustCompile(`\{\{\s*chat_context(?:\s+(\d+))?\s*\}\}`)
-
 var capturingChoiceCache = struct {
 	mu    sync.RWMutex
 	items map[string][]string
@@ -1181,6 +1179,10 @@ var reservedTemplateWords = map[string]struct{}{
 	"nil":      {},
 	"true":     {},
 	"false":    {},
+	// chat_context is both a function and a legacy variable alias. Do not let
+	// legacy variable normalization rewrite function calls such as
+	// {{ chat_context 12 | trim }} into invalid field invocations.
+	"chat_context": {},
 }
 
 func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) string {
@@ -1390,45 +1392,24 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	if strings.TrimSpace(template) == "" {
 		return template
 	}
-	rewrittenTemplate, chatContextLimits := rewriteChatContextTemplateActions(template)
 	vars := buildTemplateVars(ctx)
 	vars["summary"] = ""
+	var funcs htmltmpl.FuncMap
 	if ctx.Msg != nil && ctx.Msg.Chat != nil {
 		chatID := ctx.Msg.Chat.ID
 		vars["chat_context"] = strings.TrimSpace(resolveChatContext(chatID, 12))
-		for _, n := range chatContextLimits {
-			key := fmt.Sprintf("__chat_context_%d", n)
-			vars[key] = strings.TrimSpace(resolveChatContext(chatID, n))
+		funcs = htmltmpl.FuncMap{
+			"chat_context": func(args ...interface{}) string {
+				limit := templatePositiveIntArg(12, args...)
+				return strings.TrimSpace(resolveChatContext(chatID, limit))
+			},
 		}
 	}
-	out, err := renderResponseTemplate(rewrittenTemplate, vars, ctx.TemplateLookup)
+	out, err := renderResponseTemplateWithFuncs(template, vars, ctx.TemplateLookup, funcs)
 	if err != nil {
-		return restoreTrustedTemplateFragments(applySimpleTemplateVars(rewrittenTemplate, vars), vars)
+		return restoreTrustedTemplateFragments(applySimpleTemplateVars(template, vars), vars)
 	}
 	return out
-}
-
-func rewriteChatContextTemplateActions(input string) (string, []int) {
-	if strings.TrimSpace(input) == "" {
-		return input, nil
-	}
-	seen := make(map[int]struct{}, 2)
-	limits := make([]int, 0, 2)
-	out := chatContextActionRe.ReplaceAllStringFunc(input, func(full string) string {
-		m := chatContextActionRe.FindStringSubmatch(full)
-		limit := 12
-		if len(m) > 1 {
-			if n, err := strconv.Atoi(strings.TrimSpace(m[1])); err == nil && n > 0 {
-				limit = n
-			}
-		}
-		if _, ok := seen[limit]; !ok {
-			seen[limit] = struct{}{}
-			limits = append(limits, limit)
-		}
-		return fmt.Sprintf("{{ .__chat_context_%d }}", limit)
-	})
-	return out, limits
 }
 
 func buildResponseFromMessage(ctx templateContext, template string) string {
@@ -1562,12 +1543,24 @@ func resolveChatAdmins(bot *tgbotapi.BotAPI, chatID int64) []map[string]interfac
 }
 
 func renderResponseTemplate(input string, vars map[string]interface{}, lookup func(string) string) (string, error) {
+	return renderResponseTemplateWithFuncs(input, vars, lookup, nil)
+}
+
+func renderResponseTemplateWithFuncs(input string, vars map[string]interface{}, lookup func(string) string, funcs htmltmpl.FuncMap) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return input, nil
 	}
 	resolved := expandTemplateCalls(input, lookup)
 	normalized := normalizeLegacyTemplateSyntax(resolved, vars)
-	tpl, err := cachedResponseTemplate(normalized)
+	var (
+		tpl *htmltmpl.Template
+		err error
+	)
+	if templateUsesExtraFunc(normalized, funcs) {
+		tpl, err = parseResponseTemplate(normalized, funcs)
+	} else {
+		tpl, err = cachedResponseTemplate(normalized)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1576,6 +1569,73 @@ func renderResponseTemplate(input string, vars map[string]interface{}, lookup fu
 		return "", err
 	}
 	return restoreTrustedTemplateFragments(buf.String(), vars), nil
+}
+
+func templateUsesExtraFunc(src string, funcs htmltmpl.FuncMap) bool {
+	if strings.TrimSpace(src) == "" || len(funcs) == 0 {
+		return false
+	}
+	for name := range funcs {
+		if strings.Contains(src, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func templatePositiveIntArg(def int, args ...interface{}) int {
+	if def <= 0 {
+		def = 12
+	}
+	if len(args) == 0 {
+		return def
+	}
+	switch v := args[0].(type) {
+	case int:
+		if v > 0 {
+			return v
+		}
+	case int8:
+		if v > 0 {
+			return int(v)
+		}
+	case int16:
+		if v > 0 {
+			return int(v)
+		}
+	case int32:
+		if v > 0 {
+			return int(v)
+		}
+	case int64:
+		if v > 0 && v <= int64(^uint(0)>>1) {
+			return int(v)
+		}
+	case uint:
+		if v > 0 && uint64(v) <= uint64(^uint(0)>>1) {
+			return int(v)
+		}
+	case uint8:
+		if v > 0 {
+			return int(v)
+		}
+	case uint16:
+		if v > 0 {
+			return int(v)
+		}
+	case uint32:
+		if v > 0 && uint64(v) <= uint64(^uint(0)>>1) {
+			return int(v)
+		}
+	case uint64:
+		if v > 0 && v <= uint64(^uint(0)>>1) {
+			return int(v)
+		}
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(toTemplateString(args[0]))); err == nil && n > 0 {
+		return n
+	}
+	return def
 }
 
 func normalizeLegacyTemplateSyntax(input string, vars map[string]interface{}) string {
@@ -1650,13 +1710,7 @@ func cachedResponseTemplate(src string) (*htmltmpl.Template, error) {
 	}
 	responseTemplateCache.mu.RUnlock()
 
-	responseTemplateFuncsMu.RLock()
-	funcs := make(htmltmpl.FuncMap, len(responseTemplateFuncs))
-	for k, v := range responseTemplateFuncs {
-		funcs[k] = v
-	}
-	responseTemplateFuncsMu.RUnlock()
-	t, err := htmltmpl.New("response").Funcs(funcs).Option("missingkey=zero").Parse(src)
+	t, err := parseResponseTemplate(src, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1668,6 +1722,26 @@ func cachedResponseTemplate(src string) (*htmltmpl.Template, error) {
 	responseTemplateCache.items[key] = t
 	responseTemplateCache.mu.Unlock()
 	return t, nil
+}
+
+func parseResponseTemplate(src string, extra htmltmpl.FuncMap) (*htmltmpl.Template, error) {
+	funcs := mergedResponseTemplateFuncs(extra)
+	return htmltmpl.New("response").Funcs(funcs).Option("missingkey=zero").Parse(src)
+}
+
+func mergedResponseTemplateFuncs(extra htmltmpl.FuncMap) htmltmpl.FuncMap {
+	responseTemplateFuncsMu.RLock()
+	funcs := make(htmltmpl.FuncMap, len(responseTemplateFuncs)+len(extra))
+	for k, v := range responseTemplateFuncs {
+		funcs[k] = v
+	}
+	responseTemplateFuncsMu.RUnlock()
+	for k, v := range extra {
+		if strings.TrimSpace(k) != "" && v != nil {
+			funcs[k] = v
+		}
+	}
+	return funcs
 }
 
 func applySimpleTemplateVars(input string, vars map[string]interface{}) string {
