@@ -15,7 +15,6 @@ type PromptTask struct {
 	UserLimitLowTrigger *model.Trigger
 	Msg                 *tgbotapi.Message
 	TriggeredAt         time.Time
-	RecentContext       string
 	TemplateLookup      func(string) string
 	RecordGPTTokens     func(userID int64, tokens int, now time.Time) (remaining int, crossedLow bool, err error)
 	IdleMarkActivity    func(chatID int64, now time.Time)

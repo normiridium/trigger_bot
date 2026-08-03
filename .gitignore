@@ -1,9 +1,11 @@
 # build output
 trigger_admin_bot
+trigger_admin_bot.disabled-*
 
 # secrets
 .env
 cookies.txt
+cookies.txt.*
 
 # local databases
 *.db

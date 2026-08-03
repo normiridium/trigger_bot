@@ -60,16 +60,50 @@ func TestDownloaderBuildDownloadArgs(t *testing.T) {
 	}
 }
 
-func TestWithVKProxyArgs(t *testing.T) {
-	d := Downloader{ProxySocks: "127.0.0.1:1234"}
+func TestWithServiceProxyArgs(t *testing.T) {
+	d := Downloader{
+		ProxySocks:     "127.0.0.1:1234",
+		TikTokProxyURL: "http://127.0.0.1:8888",
+	}
 	base := []string{"--quiet", "https://vk.com/video-1_2"}
-	vk := d.withVKProxyArgs(ServiceVK, append([]string{}, base...))
+	vk := d.withServiceProxyArgs(ServiceVK, append([]string{}, base...))
 	if got := strings.Join(vk, " "); !strings.Contains(got, "--proxy socks5://127.0.0.1:1234") {
 		t.Fatalf("expected vk proxy args, got: %s", got)
 	}
-	yt := d.withVKProxyArgs(ServiceYouTube, append([]string{}, base...))
+	tiktok := d.withServiceProxyArgs(ServiceTikTok, []string{"--quiet", "https://www.tiktok.com/@x/video/1"})
+	if got := strings.Join(tiktok, " "); !strings.Contains(got, "--proxy http://127.0.0.1:8888") {
+		t.Fatalf("expected tiktok proxy args, got: %s", got)
+	}
+	yt := d.withServiceProxyArgs(ServiceYouTube, append([]string{}, base...))
 	if got := strings.Join(yt, " "); strings.Contains(got, "--proxy") {
 		t.Fatalf("did not expect proxy for youtube, got: %s", got)
+	}
+}
+
+func TestTikTokAutoDownloadArgsUseTikTokProxy(t *testing.T) {
+	d := Downloader{
+		CookiesFile:    "/tmp/cookies.txt",
+		TikTokProxyURL: "127.0.0.1:10809",
+	}
+	args := d.withServiceProxyArgs(
+		ServiceTikTok,
+		d.buildGenericDownloadArgsForService(ServiceTikTok, "https://vt.tiktok.com/ZS4y1dLDF/", "/tmp/%(title)s.%(ext)s"),
+	)
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--proxy socks5://127.0.0.1:10809") {
+		t.Fatalf("expected TikTok proxy in auto download args, got: %s", got)
+	}
+	if !strings.Contains(got, "--cookies /tmp/cookies.txt") {
+		t.Fatalf("expected cookies in auto download args, got: %s", got)
+	}
+}
+
+func TestNormalizeProxyURL(t *testing.T) {
+	if got := normalizeProxyURL("127.0.0.1:10808"); got != "socks5://127.0.0.1:10808" {
+		t.Fatalf("unexpected bare proxy normalization: %q", got)
+	}
+	if got := normalizeProxyURL("socks5h://127.0.0.1:10808"); got != "socks5h://127.0.0.1:10808" {
+		t.Fatalf("unexpected full proxy normalization: %q", got)
 	}
 }
 

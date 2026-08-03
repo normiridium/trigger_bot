@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -512,7 +513,7 @@ type chatGPTReplyResult struct {
 	Usage openAITokenUsage
 }
 
-func generateChatGPTReply(ctx templateContext, promptTemplate string, recentContext string) (chatGPTReplyResult, error) {
+func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTReplyResult, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return chatGPTReplyResult{}, errors.New("OPENAI_API_KEY is empty")
@@ -523,9 +524,6 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string, recentCont
 	}
 
 	prompt := buildPromptFromMessage(ctx, promptTemplate)
-	if strings.TrimSpace(recentContext) != "" {
-		prompt = prompt + "\n\nБлижайший контекст чата (последние сообщения):\n" + recentContext
-	}
 	if linkCtx := strings.TrimSpace(buildLinkContextForMessage(ctx.Msg)); linkCtx != "" {
 		prompt += "\n\nКонтекст по ссылкам (режим чтения):\n" + linkCtx
 	}
@@ -640,6 +638,27 @@ func estimateTextTokens(s string) int {
 	return byRunes
 }
 
+var (
+	participantPortraitBotAddressRe = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}_])(?:оле[\s-]?ням|оленям|оленька)(?:[^\p{L}\p{N}_]+|$)`)
+	participantPortraitSpaceRe      = regexp.MustCompile(`\s+`)
+)
+
+func sanitizeParticipantPortraitMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	for {
+		next := participantPortraitBotAddressRe.ReplaceAllString(s, "$1")
+		next = strings.TrimSpace(participantPortraitSpaceRe.ReplaceAllString(next, " "))
+		next = strings.Trim(next, " \t\r\n,.:;!?—–-")
+		if next == s {
+			return next
+		}
+		s = next
+	}
+}
+
 func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
@@ -651,7 +670,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	}
 	cleanMessages := make([]string, 0, len(messages))
 	for _, message := range messages {
-		val := strings.TrimSpace(message)
+		val := sanitizeParticipantPortraitMessage(message)
 		if val == "" {
 			continue
 		}
@@ -665,15 +684,16 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 		fmt.Fprintf(&batch, "%d) %s\n", i+1, message)
 	}
 	var userPrompt strings.Builder
-	if strings.TrimSpace(oldPortrait) == "" {
-		userPrompt.WriteString("Составь краткий портрет участника чата по его последним сообщениям.\n")
+	oldPortrait = strings.TrimSpace(oldPortrait)
+	if oldPortrait == "" {
+		userPrompt.WriteString("Составь подробный портрет участника чата по его последним сообщениям.\n")
 		userPrompt.WriteString("Верни только сам портрет на русском языке, без вводных и дисклеймеров.\n")
 	} else {
-		userPrompt.WriteString("Обнови портрет участника чата.\n")
-		userPrompt.WriteString("Учитывай старый портрет и новые сообщения.\n")
+		userPrompt.WriteString("Обнови подробный портрет участника чата.\n")
+		userPrompt.WriteString("Учитывай старый портрет и новые сообщения: сохраняй устойчивые нюансы из старого портрета и аккуратно добавляй новые наблюдения.\n")
 		userPrompt.WriteString("Верни только обновленный портрет на русском языке, без вводных и дисклеймеров.\n\n")
 		userPrompt.WriteString("Старый портрет:\n")
-		userPrompt.WriteString(strings.TrimSpace(oldPortrait))
+		userPrompt.WriteString(oldPortrait)
 		userPrompt.WriteString("\n\n")
 	}
 	userPrompt.WriteString("Новые сообщения участника:\n")
@@ -681,7 +701,10 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 
 	systemPrompt := "Ты анализируешь стиль общения участника чата. " +
 		"Пиши мягко и нейтрально, без категоричности. " +
-		"Формат: 4-8 коротких предложений про манеру общения, интересы, эмоциональные реакции и предпочтительный стиль ответа."
+		"Не считай обращения к боту Оле-ням/Оленям/Оленька частью стиля участника и не упоминай их. " +
+		"Портрет должен быть подробным, но без воды: 2-3 связных абзаца, примерно 8-14 предложений. " +
+		"Сохраняй конкретные нюансы: повторяющиеся темы и интересы, лексику, юмор, эмоциональные реакции, уязвимые места, границы, манеру реплаев и предпочтительный стиль ответа. " +
+		"Не превращай портрет в общие фразы; если данных мало, честно опиши только заметные признаки и не выдумывай."
 	payload := map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{
@@ -689,7 +712,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 			{"role": "user", "content": userPrompt.String()},
 		},
 		"temperature": 0.3,
-		"max_tokens":  500,
+		"max_tokens":  1000,
 	}
 	body, _ := json.Marshal(payload)
 

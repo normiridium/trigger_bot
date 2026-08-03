@@ -1427,7 +1427,6 @@ func settingsSchema() []settingField {
 		{Key: "USER_INDEX_MAX", Label: "Лимит пользователей в индексе", Type: "int", Description: "800"},
 		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
 		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
-		{Key: "OLENYAM_CONTEXT_MESSAGES", Label: "Контекст для GPT (сообщений)", Type: "int", Description: "4"},
 		{Key: "USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов на пользователя за 4 часа (0 = выкл)", Type: "int", Description: "30000"},
 		{Key: "USER_GPT_TOKEN_LOW_WARNING_THRESHOLD", Label: "Предупреждать при остатке GPT-токенов", Type: "int", Description: "0 = авто"},
 		{Key: "GPT_IMAGE_CONTEXT_MAX_MB", Label: "GPT: максимум картинки в контексте (МБ)", Type: "int", Description: "5"},

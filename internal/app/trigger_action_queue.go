@@ -10,7 +10,6 @@ type triggerActionTask struct {
 	deps                triggerActionDeps
 	msg                 *tgbotapi.Message
 	trigger             Trigger
-	recentBefore        string
 	userLimitLowTrigger *Trigger
 }
 
@@ -30,7 +29,7 @@ func newTriggerActionQueue(workers, capacity int) *triggerActionQueue {
 		go func() {
 			for task := range q.ch {
 				tr := task.trigger
-				handleTriggerActionForMessage(task.deps, task.msg, &tr, task.recentBefore, task.userLimitLowTrigger)
+				handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
 			}
 		}()
 	}
@@ -40,7 +39,7 @@ func newTriggerActionQueue(workers, capacity int) *triggerActionQueue {
 func (q *triggerActionQueue) Enqueue(task triggerActionTask) {
 	if q == nil {
 		tr := task.trigger
-		handleTriggerActionForMessage(task.deps, task.msg, &tr, task.recentBefore, task.userLimitLowTrigger)
+		handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
 		return
 	}
 	select {
@@ -53,7 +52,7 @@ func (q *triggerActionQueue) Enqueue(task triggerActionTask) {
 				log.Printf("trigger action queue overflow, fallback goroutine trigger=%d chat=%d", t.trigger.ID, msgChatID(t.msg))
 			}
 			tr := t.trigger
-			handleTriggerActionForMessage(t.deps, t.msg, &tr, t.recentBefore, t.userLimitLowTrigger)
+			handleTriggerActionForMessage(t.deps, t.msg, &tr, t.userLimitLowTrigger)
 		}(task)
 	}
 }
@@ -73,7 +72,7 @@ func defaultTriggerActionQueueSize() int {
 	return envInt("TRIGGER_ACTION_QUEUE", 256)
 }
 
-func enqueueTriggerAction(deps triggerActionDeps, q *triggerActionQueue, msg *tgbotapi.Message, tr *Trigger, recentBefore string, userLimitLowTrigger *Trigger) {
+func enqueueTriggerAction(deps triggerActionDeps, q *triggerActionQueue, msg *tgbotapi.Message, tr *Trigger, userLimitLowTrigger *Trigger) {
 	if msg == nil || tr == nil {
 		return
 	}
@@ -86,7 +85,6 @@ func enqueueTriggerAction(deps triggerActionDeps, q *triggerActionQueue, msg *tg
 		deps:                deps,
 		msg:                 msg,
 		trigger:             *tr,
-		recentBefore:        recentBefore,
 		userLimitLowTrigger: lowTriggerCopy,
 	}
 	q.Enqueue(task)

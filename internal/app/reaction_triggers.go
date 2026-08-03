@@ -263,7 +263,7 @@ func handleReactionCounts(deps triggerHandlerDeps, chatID int64, chat *rawChat, 
 			continue
 		}
 		tr.CapturingText = strconv.Itoa(winnerCount)
-		enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, &tr, "", nil)
+		enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, &tr, nil)
 		log.Printf("reaction trigger queued trigger=%d chat=%d msg=%d kind=%s count=%d threshold=%d support=%d hype=%d funny=%d sad=%d angry=%d",
 			tr.ID, chatID, messageID, kind, count, threshold, counts.Support, counts.Hype, counts.Funny, counts.Sad, counts.Angry)
 	}

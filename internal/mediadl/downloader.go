@@ -59,6 +59,7 @@ type MediaKind string
 type Downloader struct {
 	YTDLPBin            string
 	ProxySocks          string
+	TikTokProxyURL      string
 	AudioFormat         string
 	AudioQuality        string
 	ExtractorArgs       string
@@ -69,15 +70,51 @@ type Downloader struct {
 	MaxVideoDurationSec int
 }
 
-func (d Downloader) withVKProxyArgs(service Service, args []string) []string {
-	if service != ServiceVK {
-		return args
-	}
-	proxy := strings.TrimSpace(d.ProxySocks)
+func (d Downloader) withServiceProxyArgs(service Service, args []string) []string {
+	proxy := d.proxyURLForService(service)
 	if proxy == "" {
 		return args
 	}
-	return append([]string{"--proxy", "socks5://" + proxy}, args...)
+	return append([]string{"--proxy", proxy}, args...)
+}
+
+func (d Downloader) proxyURLForService(service Service) string {
+	switch service {
+	case ServiceVK:
+		return normalizeProxyURL(d.ProxySocks)
+	case ServiceTikTok:
+		return normalizeProxyURL(d.TikTokProxyURL)
+	default:
+		return ""
+	}
+}
+
+func normalizeProxyURL(raw string) string {
+	proxy := strings.TrimSpace(raw)
+	if proxy == "" {
+		return ""
+	}
+	if strings.Contains(proxy, "://") {
+		return proxy
+	}
+	return "socks5://" + proxy
+}
+
+func (d Downloader) httpClientForService(service Service) (*http.Client, error) {
+	proxy := d.proxyURLForService(service)
+	if proxy == "" {
+		return http.DefaultClient, nil
+	}
+	proxyURL, err := url.Parse(proxy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s proxy url: %w", service, err)
+	}
+	if proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, fmt.Errorf("invalid %s proxy url: %q", service, proxy)
+	}
+	return &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}, nil
 }
 
 func (d Downloader) ConfiguredMaxSizeMB() int {
@@ -295,14 +332,14 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		return DownloadResult{}, err
 	}
 	outTpl := filepath.Join(tmpDir, "%(title)s.%(ext)s")
-	args := d.buildGenericDownloadArgsForService(probe.Service, probe.SourceURL, outTpl)
+	args := d.withServiceProxyArgs(probe.Service, d.buildGenericDownloadArgsForService(probe.Service, probe.SourceURL, outTpl))
 	path, err := d.runDownload(ctx, args)
 	if err != nil && probe.Service == ServicePinterest && isYTDLPNoVideoFormats(err) && strings.TrimSpace(probe.Thumbnail) != "" {
 		path, err = d.downloadPinterestThumbnail(ctx, probe.Thumbnail, tmpDir)
 	}
 	if err != nil && probe.Service == ServiceTikTok && isYTDLPFormatUnavailable(err) {
 		// Fallback to generic auto-selection only when explicit AV merge is unavailable.
-		path, err = d.runDownload(ctx, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl))
+		path, err = d.runDownload(ctx, d.withServiceProxyArgs(probe.Service, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl)))
 	}
 	if err != nil && probe.Service == ServiceTikTok && isYTDLPTikTokNoDataBlocks(err) {
 		// Transient TikTok CDN glitch: force IPv4 and retry once.
@@ -310,7 +347,7 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 	}
 	if err != nil && probe.Service == ServiceTikTok && isYTDLPTikTokNoDataBlocks(err) {
 		// Last fallback: generic selector + IPv4.
-		path, err = d.runDownload(ctx, d.withTikTokRetryArgs(d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl)))
+		path, err = d.runDownload(ctx, d.withTikTokRetryArgs(d.withServiceProxyArgs(probe.Service, d.buildGenericDownloadArgs(probe.Service, probe.SourceURL, outTpl))))
 	}
 	if err != nil {
 		return DownloadResult{}, err
@@ -387,13 +424,13 @@ func (d Downloader) probeWithFormat(ctx context.Context, rawURL, formatSelector 
 		// Non-YouTube extractors often don't expose/accept height constraints for audio probing.
 		formatSelector = ""
 	}
-	args := d.withVKProxyArgs(service, d.buildProbeArgs(service, normURL, formatSelector))
+	args := d.withServiceProxyArgs(service, d.buildProbeArgs(service, normURL, formatSelector))
 	out, err := d.runJSON(ctx, args)
 	if err != nil {
 		if strings.TrimSpace(formatSelector) != "" && isYTDLPFormatUnavailable(err) {
 			// Some YouTube videos expose inconsistent format maps for selected clients.
 			// Retry metadata probe without explicit -f selector.
-			out, err = d.runJSON(ctx, d.withVKProxyArgs(service, d.buildProbeArgs(service, normURL, "")))
+			out, err = d.runJSON(ctx, d.withServiceProxyArgs(service, d.buildProbeArgs(service, normURL, "")))
 		}
 	}
 	if err == nil && service == ServiceYouTube && !hasPlayableFormats(out) {
@@ -852,7 +889,7 @@ func (d Downloader) audioFormatSelectorsForRetry() []string {
 
 func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service Service, url, outTpl string) (string, error) {
 	if service != ServiceYouTube {
-		return d.runDownload(ctx, d.withVKProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, "bestaudio/best", d.extractorArgs(), true)))
+		return d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, "bestaudio/best", d.extractorArgs(), true)))
 	}
 	type candidate struct {
 		format      string
@@ -897,7 +934,7 @@ func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service Serv
 		if attempts > 5 {
 			break
 		}
-		path, err := d.runDownload(ctx, d.withVKProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, c.format, c.extractor, c.includeAuth)))
+		path, err := d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, c.format, c.extractor, c.includeAuth)))
 		if err == nil {
 			return path, nil
 		}
@@ -909,7 +946,7 @@ func (d Downloader) downloadAudioWithFallbacks(ctx context.Context, service Serv
 	if !useAndroidNoAuth {
 		// Final compact fallback to reduce request spam.
 		for _, f := range []string{"bestaudio/best", "18/best"} {
-			path, err := d.runDownload(ctx, d.withVKProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, f, "youtube:player_client=android", false)))
+			path, err := d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildDownloadArgsWithOptions(service, url, outTpl, f, "youtube:player_client=android", false)))
 			if err == nil {
 				return path, nil
 			}
@@ -951,7 +988,7 @@ func (d Downloader) downloadVideoWithFallbacks(ctx context.Context, service Serv
 			continue
 		}
 		seen[s] = struct{}{}
-		path, err := d.runDownload(ctx, d.withVKProxyArgs(service, d.buildVideoDownloadArgsWithSelector(service, url, outTpl, s)))
+		path, err := d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildVideoDownloadArgsWithSelector(service, url, outTpl, s)))
 		if err == nil {
 			return path, nil
 		}
@@ -1013,7 +1050,7 @@ func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, servi
 		if attempts > 7 {
 			break
 		}
-		path, err := d.runDownload(ctx, d.withVKProxyArgs(service, d.buildVideoDownloadArgsWithOptions(service, url, outTpl, c.format, c.extractor, c.includeAuth)))
+		path, err := d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildVideoDownloadArgsWithOptions(service, url, outTpl, c.format, c.extractor, c.includeAuth)))
 		if err == nil {
 			return path, nil
 		}
@@ -1028,7 +1065,7 @@ func (d Downloader) downloadYouTubeVideoWithFallbacks(ctx context.Context, servi
 			fmt.Sprintf("best[height<=%d]/best", d.maxHeight()),
 			"best",
 		} {
-			path, err := d.runDownload(ctx, d.withVKProxyArgs(service, d.buildVideoDownloadArgsWithOptions(service, url, outTpl, s, "youtube:player_client=android", false)))
+			path, err := d.runDownload(ctx, d.withServiceProxyArgs(service, d.buildVideoDownloadArgsWithOptions(service, url, outTpl, s, "youtube:player_client=android", false)))
 			if err == nil {
 				return path, nil
 			}
@@ -1216,12 +1253,12 @@ func (d Downloader) downloadTikTokPhotoPost(ctx context.Context, rawURL string) 
 	if err != nil {
 		return DownloadResult{}, true, err
 	}
-	title, imageURL, err := fetchTikTokPhotoPostImage(ctx, normURL)
+	title, imageURL, err := d.fetchTikTokPhotoPostImage(ctx, normURL)
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return DownloadResult{}, true, err
 	}
-	path, err := d.downloadRemoteImage(ctx, imageURL, tmpDir, "tiktok-photo", normURL)
+	path, err := d.downloadRemoteImageForService(ctx, ServiceTikTok, imageURL, tmpDir, "tiktok-photo", normURL)
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return DownloadResult{}, true, err
@@ -1244,14 +1281,18 @@ func (d Downloader) downloadTikTokPhotoPost(ctx context.Context, rawURL string) 
 	}, true, nil
 }
 
-func fetchTikTokPhotoPostImage(ctx context.Context, rawURL string) (title string, imageURL string, err error) {
+func (d Downloader) fetchTikTokPhotoPostImage(ctx context.Context, rawURL string) (title string, imageURL string, err error) {
+	client, err := d.httpClientForService(ServiceTikTok)
+	if err != nil {
+		return "", "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -1404,7 +1445,22 @@ func stringFromMap(m map[string]any, key string) string {
 	return ""
 }
 
+func (d Downloader) downloadRemoteImageForService(ctx context.Context, service Service, rawURL, dir, baseName, referer string) (string, error) {
+	client, err := d.httpClientForService(service)
+	if err != nil {
+		return "", err
+	}
+	return d.downloadRemoteImageWithClient(ctx, client, rawURL, dir, baseName, referer)
+}
+
 func (d Downloader) downloadRemoteImage(ctx context.Context, rawURL, dir, baseName, referer string) (string, error) {
+	return d.downloadRemoteImageWithClient(ctx, http.DefaultClient, rawURL, dir, baseName, referer)
+}
+
+func (d Downloader) downloadRemoteImageWithClient(ctx context.Context, client *http.Client, rawURL, dir, baseName, referer string) (string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", errors.New("empty image url")
@@ -1419,7 +1475,7 @@ func (d Downloader) downloadRemoteImage(ctx context.Context, rawURL, dir, baseNa
 	if strings.TrimSpace(referer) != "" {
 		req.Header.Set("Referer", referer)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

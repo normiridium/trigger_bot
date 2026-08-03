@@ -301,7 +301,8 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `YTDLP_EXTRACTOR_ARGS` — дополнительные аргументы экстракторов `yt-dlp`.
 - `YTDLP_COOKIES_FILE` — путь к cookies-файлу для источников, где нужна авторизация.
 - `YTDLP_COOKIES_FROM_BROWSER` — импорт cookies из браузера.
-- `FIXIE_SOCKS_HOST` — SOCKS-прокси-хост для сетевых запросов (если используется).
+- `FIXIE_SOCKS_HOST` — legacy SOCKS-хост для VK-пути; не используется как общий прокси для всех сервисов.
+- `TIKTOK_PROXY_URL` — отдельный proxy URL только для TikTok (`socks5://127.0.0.1:10808`, `socks5h://...`, `http://...`). Если указать просто `host:port`, бот передаст его в `yt-dlp` как `socks5://host:port`.
 - `TRIGGER_BOT_TMP_DIR` — общий runtime tmp/cache корень бота; если не задан, Go будет использовать системный tmp. Рекомендуется держать внутри проекта или `/var/lib`, например `/home/appuser/trigger_admin_bot/var/tmp`.
 - `TRIGGER_BOT_TMP_CLEAN_ON_START` / `TRIGGER_BOT_TMP_MAX_AGE_SEC` — безопасная очистка старых bot-tmp файлов при старте. Чистятся только известные префиксы бота и только файлы старше TTL; минимум TTL — 1 час.
 
@@ -336,7 +337,6 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `USER_INDEX_MAX` — максимальный размер индекса пользователей чата.
 - `CHAT_RECENT_MAX_MESSAGES` / `CHAT_RECENT_MAX_AGE_SEC` — окно недавних сообщений для контекста.
 - `QS_HISTORY_MAX_MESSAGES` / `QS_SESSION_TTL_SEC` — история и TTL сессий quote-sticker.
-- `OLENYAM_CONTEXT_MESSAGES` — сколько последних сообщений давать в контекст Оле-ням.
 - `MOD_CONFIRM_TTL_SEC` — TTL inline-подтверждений модерации.
 - `DISALLOWED_CHAT_NOTICE_TTL_SEC` — TTL уведомления о запрещённом чате.
 - `LOG_TEXT_CLIP_CHARS` — длина обрезки текста в логах.

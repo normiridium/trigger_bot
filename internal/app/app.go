@@ -376,7 +376,7 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 			task.Msg.Chat.ID, task.Msg.MessageID, editWaited.Milliseconds(), editChanged, clipLogText(firstNonEmptyUserText(task.Msg), 200))
 	}
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
-	result, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText), task.RecentContext)
+	result, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText))
 	if err != nil {
 		log.Printf("gpt prompt failed: %s", sanitizeSecretText(err.Error()))
 		if isOpenAIInsufficientQuotaError(err) {
@@ -1848,6 +1848,7 @@ func Run() {
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:            strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		ProxySocks:          strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
+		TikTokProxyURL:      strings.TrimSpace(os.Getenv("TIKTOK_PROXY_URL")),
 		AudioFormat:         strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
 		AudioQuality:        strings.TrimSpace(os.Getenv("AUDIO_QUALITY")),
 		ExtractorArgs:       strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
@@ -2825,9 +2826,7 @@ func Run() {
 			return false
 		}
 
-		recentBefore := ""
 		if text != "" {
-			recentBefore = chatRecent.RecentText(msg.Chat.ID, envInt("OLENYAM_CONTEXT_MESSAGES", 4))
 			displayName := strings.TrimSpace(msg.From.FirstName)
 			if displayName == "" {
 				displayName = strings.TrimSpace(msg.From.UserName)
@@ -2882,7 +2881,7 @@ func Run() {
 					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
 				}
 			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, recentBefore, quotaLowWarningTrigger)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, quotaLowWarningTrigger)
 		}
 
 		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
@@ -2912,7 +2911,7 @@ func Run() {
 					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
 				}
 			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, recentBefore, quotaLowWarningTrigger)
+			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, quotaLowWarningTrigger)
 		}
 		if matchedAny {
 			continue
@@ -2928,7 +2927,7 @@ func Run() {
 				if autoTr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
 					continue
 				}
-				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, recentBefore, quotaLowWarningTrigger)
+				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, quotaLowWarningTrigger)
 				if debugTriggerLogEnabled {
 					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
 				}
@@ -3539,7 +3538,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 		return
 	}
 	tr.CapturingText = ""
-	enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, tr, "", nil)
+	enqueueTriggerAction(deps.triggerActionDeps, deps.ActionQueue, msg, tr, nil)
 	if deps.ChatRecent != nil {
 		deps.ChatRecent.Add(chatID, recentChatMessage{
 			MessageID: 0,
@@ -3550,7 +3549,7 @@ func handleNewMemberUpdate(deps triggerHandlerDeps, upd *rawChatMemberUpdated) {
 	}
 }
 
-func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message, tr *Trigger, recentBefore string, userLimitLowTrigger *Trigger) {
+func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message, tr *Trigger, userLimitLowTrigger *Trigger) {
 	if msg == nil || tr == nil {
 		return
 	}
@@ -3707,11 +3706,6 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		if deps.Portraits != nil {
 			deps.Portraits.ObserveMessage(msg)
 		}
-		ctx := ""
-		if isOlenyamTrigger(tr) {
-			ctx = recentBefore
-		}
-
 		trCopy := *tr
 		trCopy.ResponseText = []ResponseTextItem{{Text: resolvedTemplate}}
 		triggeredAt := time.Now()
@@ -3728,7 +3722,6 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			UserLimitLowTrigger: userLimitLowTrigger,
 			Msg:                 msg,
 			TriggeredAt:         triggeredAt,
-			RecentContext:       ctx,
 			TemplateLookup:      deps.TemplateLookup,
 			RecordGPTTokens:     deps.RecordGPTTokens,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
