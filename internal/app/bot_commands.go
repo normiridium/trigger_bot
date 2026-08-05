@@ -52,6 +52,7 @@ func adminBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdReadonly, Description: "Режим readonly в чате"},
 		{Command: cmdReloadAdmins, Description: "Обновить кеш админов"},
 		{Command: cmdClearChat, Description: "Очистить историю чата (через tg-ops-service)"},
+		{Command: cmdBalance, Description: "Показать расходы OpenAI"},
 	}
 }
 

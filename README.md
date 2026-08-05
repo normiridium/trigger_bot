@@ -212,6 +212,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `PATH` — путь поиска бинарников для systemd/ручного запуска; особенно важен для `go`, `ffmpeg`, `yt-dlp`, `node`.
 - `MONGO_URI` — URI подключения к MongoDB.
 - `OPENAI_API_KEY` — ключ OpenAI API.
+- `OPENAI_ADMIN_KEY` — Admin API key OpenAI для `/balance` (ключ с правом читать organization costs).
 - `OPENAI_MODEL` — модель OpenAI для текстовых GPT-сценариев.
 - `TELEGRAM_BOT_API_ENDPOINT` — кастомный endpoint Bot API, если используется локальный telegram-bot-api.
 - `TELEGRAM_BOT_FILE_ENDPOINT` — кастомный endpoint файлов Telegram; для OpenAI image/audio лучше использовать публичный Telegram API, а не локальный `127.0.0.1`.
@@ -221,6 +222,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `ADMIN_ENABLED` — включает/выключает web-админку.
 - `ADMIN_BIND` — адрес и порт bind для HTTP-сервера админки (например, `127.0.0.1:8080`).
 - `ADMIN_TOKEN` — токен авторизации для доступа в админ-панель.
+- `OWNER_ID` / `BOT_ADMIN_USER_IDS` — Telegram user ID владельца/дополнительных владельцев для чувствительных команд в личке, например `/balance`.
 
 ### Ограничение чатов
 - `ALLOWED_CHAT_IDS` — список chat ID, где боту разрешено отвечать в группах/супергруппах.

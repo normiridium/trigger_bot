@@ -51,14 +51,14 @@ func newChatSummaryTracker(store *Store, every int, max int) *chatSummaryTracker
 		max = 1000
 	}
 	t := &chatSummaryTracker{
-		store:  store,
-		every:  every,
-		max:    max,
-		queue:  make(chan chatSummaryTask, chatSummaryQueueSize),
-		stop:   make(chan struct{}),
-		buffer: make(map[int64][]string),
+		store:   store,
+		every:   every,
+		max:     max,
+		queue:   make(chan chatSummaryTask, chatSummaryQueueSize),
+		stop:    make(chan struct{}),
+		buffer:  make(map[int64][]string),
 		history: make(map[int64][]recentChatMessage),
-		seen:   make(map[string]time.Time),
+		seen:    make(map[string]time.Time),
 	}
 	t.wg.Add(1)
 	go t.worker()

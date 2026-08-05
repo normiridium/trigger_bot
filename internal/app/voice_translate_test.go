@@ -80,7 +80,14 @@ Response language is set to ru
 
 func TestVoiceTranslateUserErrorMessageForVOTFailure(t *testing.T) {
 	msg := voiceTranslateUserErrorMessage(assertErr("vot-cli reported failure (Error: Возникла ошибка при переводе)"))
-	if !strings.Contains(msg, "VOT не смог обработать") {
+	if !strings.Contains(msg, "VOT не смог обработать этот файл") {
+		t.Fatalf("unexpected user message: %q", msg)
+	}
+}
+
+func TestVoiceTranslateUserErrorMessageForNoSpeech(t *testing.T) {
+	msg := voiceTranslateUserErrorMessage(assertErr("vot-cli reported failure (Error: Не удалось перевести видео — похоже, в нём нет речи)"))
+	if !strings.Contains(msg, "не нашёл распознаваемую речь") {
 		t.Fatalf("unexpected user message: %q", msg)
 	}
 }

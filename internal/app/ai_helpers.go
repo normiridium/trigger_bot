@@ -31,6 +31,7 @@ func sanitizeSecretText(s string) string {
 	}
 	// Reuse existing token redaction for Telegram bot tokens in URLs/text.
 	s = redactTelegramToken(s)
+	s = regexp.MustCompile(`sk-[A-Za-z0-9_-]{20,}`).ReplaceAllString(s, "[redacted-openai-key]")
 	return s
 }
 
@@ -513,6 +514,17 @@ type chatGPTReplyResult struct {
 	Usage openAITokenUsage
 }
 
+func openAIChatTimeout() time.Duration {
+	sec := envInt("OPENAI_CHAT_TIMEOUT_SEC", 90)
+	if sec < 25 {
+		sec = 25
+	}
+	if sec > 300 {
+		sec = 300
+	}
+	return time.Duration(sec) * time.Second
+}
+
 func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTReplyResult, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
@@ -565,7 +577,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 25 * time.Second}
+	client := &http.Client{Timeout: openAIChatTimeout()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return chatGPTReplyResult{}, err

@@ -2292,23 +2292,9 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate cli failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cliErr)
 			}
-			// Fallback path: use VOT backend directly when local CLI is unavailable or failed.
-			backendRes, backendErr := runVOTBackendTranslate(cliSourceURL, srcLang, resLang)
-			if backendErr == nil && strings.TrimSpace(backendRes.translatedURL) != "" {
-				if dlErr := downloadFileToPath(backendRes.translatedURL, mp3Path); dlErr == nil {
-					providerUsed = strings.TrimSpace(backendRes.providerUsed)
-				} else {
-					backendErr = dlErr
-				}
-			}
-			if backendErr != nil || strings.TrimSpace(providerUsed) == "cache" {
-				msg := voiceTranslateUserErrorMessage(cliErr)
-				if debugTriggerLogEnabled && backendErr != nil {
-					log.Printf("voice translate backend fallback failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, backendErr)
-				}
-				reply(sendCtx, msg, false)
-				return
-			}
+			stopProgress()
+			reply(sendCtx, voiceTranslateUserErrorMessage(cliErr), false)
+			return
 		} else {
 			if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
 				mp3Path = cliOut
@@ -2389,11 +2375,15 @@ func voiceTranslateUserErrorMessage(err error) string {
 		maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
 		return fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB)
 	}
+	if strings.Contains(errText, "нет речи") ||
+		strings.Contains(errText, "no speech") {
+		return "VOT не нашёл распознаваемую речь в файле. Для музыки он часто не умеет отделять вокал от трека."
+	}
 	if strings.Contains(errText, "vot-cli reported failure") ||
 		strings.Contains(errText, "vot-cli subs reported failure") ||
 		strings.Contains(errText, "возникла ошибка при переводе") ||
 		strings.Contains(errText, "failed to request video translation") {
-		return "VOT не смог обработать этот ролик. Можно попробовать позже или взять другой источник."
+		return "VOT не смог обработать этот файл. Можно попробовать позже или взять другой источник."
 	}
 	return msg
 }

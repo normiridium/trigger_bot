@@ -1018,6 +1018,25 @@ func TestReplaceTGEmojiTagsWithFallback(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatTimeout(t *testing.T) {
+	t.Setenv("OPENAI_CHAT_TIMEOUT_SEC", "")
+	if got := openAIChatTimeout(); got != 90*time.Second {
+		t.Fatalf("unexpected default timeout: %s", got)
+	}
+	t.Setenv("OPENAI_CHAT_TIMEOUT_SEC", "5")
+	if got := openAIChatTimeout(); got != 25*time.Second {
+		t.Fatalf("unexpected min timeout: %s", got)
+	}
+	t.Setenv("OPENAI_CHAT_TIMEOUT_SEC", "600")
+	if got := openAIChatTimeout(); got != 300*time.Second {
+		t.Fatalf("unexpected max timeout: %s", got)
+	}
+	t.Setenv("OPENAI_CHAT_TIMEOUT_SEC", "120")
+	if got := openAIChatTimeout(); got != 120*time.Second {
+		t.Fatalf("unexpected configured timeout: %s", got)
+	}
+}
+
 func TestContainsTelegramHTMLMarkup(t *testing.T) {
 	if !containsTelegramHTMLMarkup(`Привет <b>мир</b>`) {
 		t.Fatalf("expected true for <b> tag")
@@ -1151,6 +1170,52 @@ func TestContainsMarkdownLiteMarkup(t *testing.T) {
 	}
 	if containsMarkdownLiteMarkup(`обычный текст`) {
 		t.Fatalf("expected false for plain text")
+	}
+}
+
+func TestContainsRichArticleMarkup(t *testing.T) {
+	positive := []string{
+		"# заголовок",
+		"- пункт списка",
+		"1. пункт списка",
+		"> цитата",
+		"```go\nfmt.Println(1)\n```",
+		"| A | B |\n|---|---|\n| 1 | 2 |",
+		"<details><summary>ещё</summary>текст</details>",
+		`$x^2 + y^2$`,
+		`$$E = mc^2$$`,
+		`\(\frac{a}{b}\)`,
+		`\[E = mc^2\]`,
+		`<tg-math>x^2</tg-math>`,
+	}
+	for _, in := range positive {
+		if !containsRichArticleMarkup(in) {
+			t.Fatalf("expected rich article for %q", in)
+		}
+	}
+
+	negative := []string{
+		"обычный текст",
+		"**просто жирный**",
+		"цена $100 и ещё $20",
+		"$100$",
+		`<tg-emoji emoji-id="123">🦌</tg-emoji> короткая реплика`,
+	}
+	for _, in := range negative {
+		if containsRichArticleMarkup(in) {
+			t.Fatalf("expected non-rich text for %q", in)
+		}
+	}
+}
+
+func TestResponseToRichMarkdownArticle_CustomEmoji(t *testing.T) {
+	in := `<tg-emoji emoji-id="123">🦌</tg-emoji> привет` + "\n# Заголовок"
+	got := responseToRichMarkdownArticle(in)
+	if !strings.Contains(got, `![🦌](tg://emoji?id=123)`) {
+		t.Fatalf("custom emoji must be converted to rich markdown image syntax: %q", got)
+	}
+	if !strings.Contains(got, "# Заголовок") {
+		t.Fatalf("heading must be preserved: %q", got)
 	}
 }
 

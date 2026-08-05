@@ -453,11 +453,22 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	sendMode := "markdown"
 	hasHTML := containsTelegramHTMLMarkup(out)
 	hasMarkdownLite := containsMarkdownLiteMarkup(out)
+	hasRichArticle := containsRichArticleMarkup(out)
 	if debugGPTLogEnabled {
-		log.Printf("gpt flow trigger=%d has_html=%v has_markdown_lite=%v", task.Trigger.ID, hasHTML, hasMarkdownLite)
+		log.Printf("gpt flow trigger=%d has_html=%v has_markdown_lite=%v has_rich_article=%v", task.Trigger.ID, hasHTML, hasMarkdownLite, hasRichArticle)
 	}
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.Msg.Chat.ID, ReplyTo: replyTo}
-	if hasHTML || hasMarkdownLite {
+	if hasRichArticle {
+		richOut := responseToRichMarkdownArticle(out)
+		if debugGPTLogEnabled {
+			log.Printf("gpt flow trigger=%d rich_article_len=%d rich_article_tgemoji=%d rich_article=%q",
+				task.Trigger.ID, len(richOut), countTGEmojiTags(richOut), clipText(richOut, 1400))
+		}
+		if ok := sendRichMarkdownArticle(sendCtx, richOut, task.Trigger.Preview); ok {
+			sent = true
+			sendMode = "rich_article"
+		}
+	} else if hasHTML || hasMarkdownLite {
 		htmlOut := markdownToTelegramHTMLLite(out)
 		if debugGPTLogEnabled {
 			log.Printf("gpt flow trigger=%d html_len=%d html_tgemoji=%d html=%q",
@@ -613,6 +624,10 @@ var tgEmojiCanonicalRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*>(.*?)</tg-emoji
 var tgEmojiAnyWithIDRe = regexp.MustCompile(`(?is)<tg-emoji[^>]*emoji-id\s*=\s*"?(?P<id>\d+)"?[^>]*>(?P<fallback>.*?)</tg-emoji>`)
 var tgEmojiTypoTagRe = regexp.MustCompile(`(?is)<\s*(/?)\s*tr-emoji\b`)
 var telegramHTMLTagRe = regexp.MustCompile(`(?is)<\s*/?\s*(b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a|tg-spoiler|tg-emoji)\b`)
+var richArticleLineHintRe = regexp.MustCompile("(?m)^\\s{0,3}(#{1,6}\\s+\\S|>\\s?|[-*+]\\s+(?:\\[[ xX]\\]\\s*)?\\S|\\d+[.)]\\s+\\S|---\\s*$|```)")
+var richArticleHTMLHintRe = regexp.MustCompile(`(?is)<\s*/?\s*(h[1-6]|ul|ol|li|table|thead|tbody|tfoot|tr|th|td|details|summary|footer|hr|aside|mark|sub|sup|tg-reference|tg-map|tg-collage|tg-slideshow|tg-math|tg-math-block)\b`)
+var richArticleMathHintRe = regexp.MustCompile(`(?s)(\$\$.*?\$\$|\\\(.*?\\\)|\\\[.*?\\\]|\$[^$\n]*(?:\\[A-Za-z]+|[A-Za-z]\s*[=+\-*/^_]|[=+\-*/^_{}])[^$\n]*\$)`)
+var richMarkdownTableSeparatorRe = regexp.MustCompile(`^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$`)
 var templateCallPattern = regexp.MustCompile(`\{\{\s*template\s+\"([^\"]+)\"\s*\}\}`)
 var supportedMediaURLRe = regexp.MustCompile(`https?://[^\s<>"']+`)
 var htmlTagStripRe = regexp.MustCompile(`(?is)<[^>]+>`)
@@ -657,6 +672,50 @@ func replaceTGEmojiTagsWithFallback(s string) string {
 			return "🙂"
 		}
 		return fallback
+	})
+}
+
+func containsRichArticleMarkup(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	if richArticleLineHintRe.MatchString(s) || richArticleHTMLHintRe.MatchString(s) || richArticleMathHintRe.MatchString(s) {
+		return true
+	}
+	return containsMarkdownTable(s)
+}
+
+func containsMarkdownTable(s string) bool {
+	lines := strings.Split(s, "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		if strings.Contains(lines[i], "|") && richMarkdownTableSeparatorRe.MatchString(lines[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func responseToRichMarkdownArticle(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return s
+	}
+	s = canonicalizeTGEmojiTags(s)
+	return tgEmojiAnyWithIDRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := tgEmojiAnyWithIDRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		id := strings.TrimSpace(sub[1])
+		fallback := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(sub[2], ""))
+		fallback = strings.TrimSpace(html.UnescapeString(fallback))
+		if id == "" {
+			return fallback
+		}
+		if fallback == "" {
+			fallback = "🙂"
+		}
+		fallback = strings.NewReplacer(`\`, `\\`, `]`, `\]`, "\n", " ").Replace(fallback)
+		return fmt.Sprintf("![%s](tg://emoji?id=%s)", fallback, id)
 	})
 }
 
@@ -2375,7 +2434,7 @@ func Run() {
 						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
 						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
 						cmdTranslateVoice, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
-						cmdReadonly, cmdReloadAdmins,
+						cmdReadonly, cmdReloadAdmins, cmdBalance,
 					}
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
@@ -2689,6 +2748,19 @@ func Run() {
 				continue
 			case cmdSummary, cmdSummaryAlias:
 				reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка чата отключена.", false)
+				continue
+			case cmdBalance:
+				if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Команда /balance доступна только админам.", false)
+					continue
+				}
+				costs, err := fetchOpenAICurrentMonthCosts(time.Now())
+				if err != nil {
+					log.Printf("openai balance failed chat=%d user=%d err=%v", msg.Chat.ID, msg.From.ID, err)
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось получить баланс OpenAI. Подробности в логах.", false)
+					continue
+				}
+				reply(cmdSendCtx.WithReply(msg.MessageID), formatOpenAIBalanceMessage(costs), false)
 				continue
 			case cmdClearChat:
 				if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {

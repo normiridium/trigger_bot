@@ -410,6 +410,50 @@ func sendHTML(ctx sendContext, html string, preview bool) bool {
 	return true
 }
 
+const telegramRichMessageTextLimit = 32768
+
+func sendRichMarkdownArticle(ctx sendContext, markdown string, preview bool) bool {
+	_ = preview
+	rawText := strings.TrimSpace(markdown)
+	markdown = normalizeTelegramLineBreaks(markdown)
+	markdown = sanitizeTelegramText(markdown)
+	markdown = strings.TrimSpace(markdown)
+	if markdown == "" {
+		if debugTriggerLogEnabled {
+			log.Printf("send rich article skipped chat=%d replyTo=%d: empty text", ctx.ChatID, ctx.ReplyTo)
+		}
+		return false
+	}
+	if len([]rune(markdown)) > telegramRichMessageTextLimit {
+		err := fmt.Errorf("rich markdown message exceeds Telegram limit: %d/%d characters", len([]rune(markdown)), telegramRichMessageTextLimit)
+		log.Printf("send rich article failed chat=%d replyTo=%d: %v", ctx.ChatID, ctx.ReplyTo, err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки статьи", err)
+		return false
+	}
+
+	m := tgbotapi.NewRichMessageMarkdown(ctx.ChatID, markdown)
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		log.Printf("send rich article failed chat=%d replyTo=%d: %v", ctx.ChatID, ctx.ReplyTo, err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки статьи", err)
+		return false
+	}
+	if debugTriggerLogEnabled {
+		log.Printf("send rich article ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(markdown, 120))
+	}
+	plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(replaceTGEmojiTagsWithFallback(rawText), " "))
+	if plain == "" {
+		plain = rawText
+	}
+	addOutgoingChatRecentMessage(ctx.ChatID, plain)
+	observeOutgoingBotPortrait(ctx.ChatID, plain)
+	return true
+}
+
 func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {
 	rawText := strings.TrimSpace(text)
 	text = normalizeTelegramLineBreaks(text)

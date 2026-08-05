@@ -137,4 +137,3 @@ func waitForMessageEditsSettled(msg *tgbotapi.Message, quietWindow time.Duration
 	waited = time.Since(start)
 	return waited, changed
 }
-
