@@ -742,8 +742,8 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 
 	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
 	stddraw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{R: 246, G: 241, B: 232, A: 255}), image.Point{}, stddraw.Src)
-	fillRoundedRect(canvas, image.Rect(boardX-44, boardY-24, boardX+boardSize+24, boardY+boardSize+38), 18, color.RGBA{R: 214, G: 201, B: 184, A: 255})
-	fillRoundedRect(canvas, image.Rect(boardX-38, boardY-20, boardX+boardSize+18, boardY+boardSize+32), 16, color.RGBA{R: 252, G: 249, B: 242, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-44, boardY-38, boardX+boardSize+44, boardY+boardSize+38), 18, color.RGBA{R: 214, G: 201, B: 184, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-38, boardY-32, boardX+boardSize+38, boardY+boardSize+32), 16, color.RGBA{R: 252, G: 249, B: 242, A: 255})
 	fillRoundedRect(canvas, image.Rect(boardX-6, boardY-6, boardX+boardSize+6, boardY+boardSize+6), 8, color.RGBA{R: 82, G: 60, B: 42, A: 255})
 
 	light := color.RGBA{R: 238, G: 216, B: 181, A: 255}
@@ -771,6 +771,9 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 	}
 	defer closeQuoteFace(pieceFace)
 
+	labelColor := color.RGBA{R: 93, G: 72, B: 52, A: 255}
+	labelMetrics := labelFace.Metrics()
+	labelBaselineOffset := (square-labelMetrics.Height.Ceil())/2 + labelMetrics.Ascent.Ceil()
 	for i := 0; i < 8; i++ {
 		fileIndex := i
 		rankIndex := i
@@ -779,12 +782,16 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 			rankIndex = 7 - i
 		}
 		file := string(rune('a' + fileIndex))
-		x := boardX + i*square + (square-quoteStringWidth(labelFace, file))/2
-		quoteDrawString(canvas, labelFace, file, x, boardY+boardSize+28, color.RGBA{R: 93, G: 72, B: 52, A: 255})
+		fileX := boardX + i*square + (square-quoteStringWidth(labelFace, file))/2
+		quoteDrawString(canvas, labelFace, file, fileX, boardY-14, labelColor)
+		quoteDrawString(canvas, labelFace, file, fileX, boardY+boardSize+28, labelColor)
 
 		rank := strconv.Itoa(8 - rankIndex)
-		y := boardY + i*square + square/2 + 7
-		quoteDrawString(canvas, labelFace, rank, boardX-34, y, color.RGBA{R: 93, G: 72, B: 52, A: 255})
+		rankY := boardY + i*square + labelBaselineOffset
+		leftRankX := boardX - 24 - quoteStringWidth(labelFace, rank)/2
+		rightRankX := boardX + boardSize + 24 - quoteStringWidth(labelFace, rank)/2
+		quoteDrawString(canvas, labelFace, rank, leftRankX, rankY, labelColor)
+		quoteDrawString(canvas, labelFace, rank, rightRankX, rankY, labelColor)
 	}
 
 	metrics := pieceFace.Metrics()
