@@ -737,13 +737,13 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 		boardSize = 480
 		square    = boardSize / 8
 		boardX    = 80
-		boardY    = 80
+		boardY    = 64
 	)
 
 	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
 	stddraw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{R: 246, G: 241, B: 232, A: 255}), image.Point{}, stddraw.Src)
-	fillRoundedRect(canvas, image.Rect(boardX-24, boardY-24, boardX+boardSize+24, boardY+boardSize+24), 18, color.RGBA{R: 214, G: 201, B: 184, A: 255})
-	fillRoundedRect(canvas, image.Rect(boardX-18, boardY-20, boardX+boardSize+18, boardY+boardSize+18), 16, color.RGBA{R: 252, G: 249, B: 242, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-44, boardY-24, boardX+boardSize+24, boardY+boardSize+38), 18, color.RGBA{R: 214, G: 201, B: 184, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-38, boardY-20, boardX+boardSize+18, boardY+boardSize+32), 16, color.RGBA{R: 252, G: 249, B: 242, A: 255})
 	fillRoundedRect(canvas, image.Rect(boardX-6, boardY-6, boardX+boardSize+6, boardY+boardSize+6), 8, color.RGBA{R: 82, G: 60, B: 42, A: 255})
 
 	light := color.RGBA{R: 238, G: 216, B: 181, A: 255}
@@ -779,14 +779,12 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 			rankIndex = 7 - i
 		}
 		file := string(rune('a' + fileIndex))
-		fileColor := richArticleChessCoordColor((7+i)%2 == 1)
-		x := boardX + i*square + square - quoteStringWidth(labelFace, file) - 5
-		quoteDrawString(canvas, labelFace, file, x, boardY+boardSize-6, fileColor)
+		x := boardX + i*square + (square-quoteStringWidth(labelFace, file))/2
+		quoteDrawString(canvas, labelFace, file, x, boardY+boardSize+28, color.RGBA{R: 93, G: 72, B: 52, A: 255})
 
 		rank := strconv.Itoa(8 - rankIndex)
-		rankColor := richArticleChessCoordColor(i%2 == 1)
-		y := boardY + i*square + labelFace.Metrics().Ascent.Ceil() + 4
-		quoteDrawString(canvas, labelFace, rank, boardX+5, y, rankColor)
+		y := boardY + i*square + square/2 + 7
+		quoteDrawString(canvas, labelFace, rank, boardX-34, y, color.RGBA{R: 93, G: 72, B: 52, A: 255})
 	}
 
 	metrics := pieceFace.Metrics()
@@ -968,13 +966,6 @@ func richArticleChessPieceColor(piece rune) color.Color {
 		return color.RGBA{R: 255, G: 253, B: 245, A: 255}
 	}
 	return color.RGBA{R: 28, G: 30, B: 36, A: 255}
-}
-
-func richArticleChessCoordColor(darkSquare bool) color.Color {
-	if darkSquare {
-		return color.RGBA{R: 246, G: 229, B: 200, A: 245}
-	}
-	return color.RGBA{R: 112, G: 76, B: 45, A: 245}
 }
 
 func validateRichArticleMermaidSource(src string) error {
