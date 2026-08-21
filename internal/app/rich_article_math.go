@@ -92,6 +92,14 @@ func renderRichArticleMediaBlocks(markdown string) (string, []richArticleRendere
 	if len(diagramAttachments) > 0 {
 		attachments = append(attachments, diagramAttachments...)
 	}
+
+	renderedMarkdown, fenAttachments, err := renderRichArticleFENLines(renderedMarkdown)
+	if err != nil {
+		return markdown, nil, err
+	}
+	if len(fenAttachments) > 0 {
+		attachments = append(attachments, fenAttachments...)
+	}
 	return renderedMarkdown, attachments, nil
 }
 
@@ -239,7 +247,7 @@ func richArticleOffsetInNonMathFence(offset int, fences []richArticleFenceRange)
 
 func richArticleFenceLangIsRenderedMedia(lang string) bool {
 	switch strings.ToLower(strings.TrimSpace(lang)) {
-	case "math", "latex", "tex", "mermaid", "mmd", "dot", "graphviz":
+	case "math", "latex", "tex", "mermaid", "mmd", "dot", "graphviz", "fen", "chess", "chessboard":
 		return true
 	default:
 		return false
@@ -252,6 +260,8 @@ func renderRichArticleFencePNG(lang, body string) ([]byte, error) {
 		return renderLatexBlockPNG(body)
 	case "mermaid", "mmd", "dot", "graphviz":
 		return renderRichArticleDiagramPNG(lang, body)
+	case "fen", "chess", "chessboard":
+		return renderRichArticleFENBoardPNG(body)
 	default:
 		return nil, fmt.Errorf("unsupported rendered fence language %q", lang)
 	}
@@ -302,6 +312,135 @@ func renderRichArticleDiagramBlocks(markdown string) (string, []richArticleRende
 	}
 	out.WriteString(markdown[last:])
 	return out.String(), attachments, nil
+}
+
+func renderRichArticleFENLines(markdown string) (string, []richArticleRenderedAttachment, error) {
+	if !strings.Contains(markdown, "/") {
+		return markdown, nil, nil
+	}
+
+	fences := richArticleFencedCodeRanges(markdown)
+	var out strings.Builder
+	out.Grow(len(markdown))
+	last := 0
+	pos := 0
+	attachments := []richArticleRenderedAttachment{}
+	nonce := nextRichArticleFormulaNonce()
+	for pos <= len(markdown) {
+		lineStart := pos
+		nextNewline := strings.IndexByte(markdown[pos:], '\n')
+		lineEnd := len(markdown)
+		if nextNewline >= 0 {
+			lineEnd = pos + nextNewline
+		}
+		if !richArticleRangeInFence(lineStart, lineEnd, fences) {
+			prefix, fen, ok := richArticleFENLineCandidate(markdown[lineStart:lineEnd])
+			if ok {
+				pngBytes, err := renderRichArticleFENBoardPNG(fen)
+				if err != nil {
+					return markdown, nil, err
+				}
+				n := len(attachments) + 1
+				id := richArticleRenderedFenceID("fen-line", fen, n, nonce)
+				attachment, err := newRichArticleRenderedAttachment(id, pngBytes)
+				if err != nil {
+					return markdown, nil, err
+				}
+				attachments = append(attachments, attachment)
+				out.WriteString(markdown[last:lineStart])
+				if prefix != "" {
+					out.WriteString(strings.TrimSpace(prefix))
+					out.WriteString("\n\n")
+				}
+				out.WriteString(richArticleRenderedDiagramReference(attachment))
+				last = lineEnd
+			}
+		}
+		if nextNewline < 0 {
+			break
+		}
+		pos = lineEnd + 1
+	}
+	if len(attachments) == 0 {
+		return markdown, nil, nil
+	}
+	out.WriteString(markdown[last:])
+	return out.String(), attachments, nil
+}
+
+func richArticleRangeInFence(start, end int, fences []richArticleFenceRange) bool {
+	for _, fence := range fences {
+		if start >= fence.Start && start < fence.End {
+			return true
+		}
+		if end > fence.Start && end <= fence.End {
+			return true
+		}
+	}
+	return false
+}
+
+func richArticleFENLineCandidate(line string) (prefix, fen string, ok bool) {
+	rest := strings.TrimSpace(line)
+	if rest == "" || !strings.Contains(rest, "/") {
+		return "", "", false
+	}
+	prefix, rest = richArticleStripFENLinePrefix(rest)
+	rest = richArticleStripFENLabel(rest)
+	if rest == "" || !strings.Contains(rest, "/") {
+		return "", "", false
+	}
+	if _, err := parseRichArticleFEN(rest); err != nil {
+		return "", "", false
+	}
+	return prefix, rest, true
+}
+
+func richArticleStripFENLinePrefix(s string) (prefix, rest string) {
+	fields := strings.Fields(s)
+	if len(fields) < 2 {
+		return "", s
+	}
+	marker := fields[0]
+	if richArticleFENListMarker(marker) {
+		return marker, strings.TrimSpace(strings.TrimPrefix(s, marker))
+	}
+	return "", s
+}
+
+func richArticleFENListMarker(s string) bool {
+	if s == "-" || s == "*" || s == "•" {
+		return true
+	}
+	if len(s) < 2 {
+		return false
+	}
+	last := s[len(s)-1]
+	if last != '.' && last != ')' {
+		return false
+	}
+	for _, ch := range s[:len(s)-1] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func richArticleStripFENLabel(s string) string {
+	lower := strings.ToLower(s)
+	for _, label := range []string{"fen", "фен"} {
+		if strings.HasPrefix(lower, label+":") {
+			return strings.TrimSpace(s[len(label)+1:])
+		}
+		if strings.HasPrefix(lower, label+" -") {
+			return strings.TrimSpace(s[len(label)+2:])
+		}
+		if strings.HasPrefix(lower, label+" —") {
+			return strings.TrimSpace(s[len(label)+len(" —"):])
+		}
+	}
+	return s
 }
 
 func renderRichArticleDiagramPNG(lang, src string) ([]byte, error) {
@@ -573,6 +712,253 @@ func renderGraphvizDiagramPNG(src string) ([]byte, error) {
 		return nil, fmt.Errorf("Graphviz renderer returned non-png output (%d bytes)", len(pngBytes))
 	}
 	return append([]byte(nil), pngBytes...), nil
+}
+
+type richArticleFENPosition struct {
+	Squares [8][8]rune
+}
+
+func renderRichArticleFENBoardPNG(src string) ([]byte, error) {
+	return renderRichArticleFENBoardPNGWithOrientation(src, true)
+}
+
+func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) ([]byte, error) {
+	pos, err := parseRichArticleFEN(src)
+	if err != nil {
+		return nil, err
+	}
+	if err := loadQuoteFonts(); err != nil {
+		return nil, fmt.Errorf("load chess board font: %w", err)
+	}
+
+	const (
+		canvasW   = 640
+		canvasH   = 640
+		boardSize = 480
+		square    = boardSize / 8
+		boardX    = 80
+		boardY    = 64
+	)
+
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
+	stddraw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{R: 246, G: 241, B: 232, A: 255}), image.Point{}, stddraw.Src)
+	fillRoundedRect(canvas, image.Rect(boardX-24, boardY-24, boardX+boardSize+24, boardY+boardSize+34), 18, color.RGBA{R: 214, G: 201, B: 184, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-18, boardY-20, boardX+boardSize+18, boardY+boardSize+26), 16, color.RGBA{R: 252, G: 249, B: 242, A: 255})
+	fillRoundedRect(canvas, image.Rect(boardX-6, boardY-6, boardX+boardSize+6, boardY+boardSize+6), 8, color.RGBA{R: 82, G: 60, B: 42, A: 255})
+
+	light := color.RGBA{R: 238, G: 216, B: 181, A: 255}
+	dark := color.RGBA{R: 168, G: 111, B: 68, A: 255}
+	for rank := 0; rank < 8; rank++ {
+		for file := 0; file < 8; file++ {
+			c := light
+			if (rank+file)%2 == 1 {
+				c = dark
+			}
+			x := boardX + file*square
+			y := boardY + rank*square
+			stddraw.Draw(canvas, image.Rect(x, y, x+square, y+square), image.NewUniform(c), image.Point{}, stddraw.Src)
+		}
+	}
+
+	labelFace, err := quoteFontFace(true, 18)
+	if err != nil {
+		return nil, fmt.Errorf("create chess coordinate font: %w", err)
+	}
+	defer closeQuoteFace(labelFace)
+	pieceFace, err := quoteFontFace(false, 48)
+	if err != nil {
+		return nil, fmt.Errorf("create chess piece font: %w", err)
+	}
+	defer closeQuoteFace(pieceFace)
+
+	labelColor := color.RGBA{R: 93, G: 72, B: 52, A: 255}
+	for i := 0; i < 8; i++ {
+		fileIndex := i
+		rankIndex := i
+		if !whiteBottom {
+			fileIndex = 7 - i
+			rankIndex = 7 - i
+		}
+		file := string(rune('a' + fileIndex))
+		x := boardX + i*square + (square-quoteStringWidth(labelFace, file))/2
+		quoteDrawString(canvas, labelFace, file, x, boardY+boardSize+28, labelColor)
+
+		rank := strconv.Itoa(8 - rankIndex)
+		y := boardY + i*square + square/2 + 7
+		quoteDrawString(canvas, labelFace, rank, boardX-34, y, labelColor)
+	}
+
+	metrics := pieceFace.Metrics()
+	ascent := metrics.Ascent.Ceil()
+	descent := metrics.Descent.Ceil()
+	for rank := 0; rank < 8; rank++ {
+		for file := 0; file < 8; file++ {
+			srcRank := rank
+			srcFile := file
+			if !whiteBottom {
+				srcRank = 7 - rank
+				srcFile = 7 - file
+			}
+			piece := richArticleChessPieceGlyph(pos.Squares[srcRank][srcFile])
+			if piece == "" {
+				continue
+			}
+			x := boardX + file*square + (square-quoteStringWidth(pieceFace, piece))/2
+			y := boardY + rank*square + (square+ascent-descent)/2
+			pieceColor := richArticleChessPieceColor(pos.Squares[srcRank][srcFile])
+			shadowColor := color.RGBA{R: 62, G: 45, B: 34, A: 110}
+			quoteDrawString(canvas, pieceFace, piece, x+2, y+3, shadowColor)
+			quoteDrawString(canvas, pieceFace, piece, x, y, pieceColor)
+		}
+	}
+
+	var out bytes.Buffer
+	if err := png.Encode(&out, canvas); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func parseRichArticleFEN(src string) (richArticleFENPosition, error) {
+	src = strings.TrimSpace(strings.ReplaceAll(src, "\r\n", "\n"))
+	var pos richArticleFENPosition
+	if src == "" {
+		return pos, fmt.Errorf("empty FEN position")
+	}
+	if len([]rune(src)) > 512 {
+		return pos, fmt.Errorf("FEN position is too long")
+	}
+	fields := strings.Fields(src)
+	if len(fields) == 0 {
+		return pos, fmt.Errorf("empty FEN position")
+	}
+	if len(fields) > 6 {
+		return pos, fmt.Errorf("invalid FEN position: expected at most 6 fields")
+	}
+	placement := fields[0]
+	ranks := strings.Split(placement, "/")
+	if len(ranks) != 8 {
+		return pos, fmt.Errorf("invalid FEN board: expected 8 ranks")
+	}
+	for rank, row := range ranks {
+		file := 0
+		for _, ch := range row {
+			if ch >= '1' && ch <= '8' {
+				file += int(ch - '0')
+				if file > 8 {
+					return pos, fmt.Errorf("invalid FEN board: rank %d has too many files", 8-rank)
+				}
+				continue
+			}
+			if !richArticleFENPieceAllowed(ch) {
+				return pos, fmt.Errorf("invalid FEN board: unsupported piece %q", ch)
+			}
+			if file >= 8 {
+				return pos, fmt.Errorf("invalid FEN board: rank %d has too many files", 8-rank)
+			}
+			pos.Squares[rank][file] = ch
+			file++
+		}
+		if file != 8 {
+			return pos, fmt.Errorf("invalid FEN board: rank %d has %d files", 8-rank, file)
+		}
+	}
+	if len(fields) >= 2 && fields[1] != "w" && fields[1] != "b" {
+		return pos, fmt.Errorf("invalid FEN side to move %q", fields[1])
+	}
+	if len(fields) >= 3 && !richArticleFENCastlingAllowed(fields[2]) {
+		return pos, fmt.Errorf("invalid FEN castling field %q", fields[2])
+	}
+	if len(fields) >= 4 && !richArticleFENEnPassantAllowed(fields[3]) {
+		return pos, fmt.Errorf("invalid FEN en passant field %q", fields[3])
+	}
+	if len(fields) >= 5 {
+		if n, err := strconv.Atoi(fields[4]); err != nil || n < 0 {
+			return pos, fmt.Errorf("invalid FEN halfmove clock %q", fields[4])
+		}
+	}
+	if len(fields) >= 6 {
+		if n, err := strconv.Atoi(fields[5]); err != nil || n <= 0 {
+			return pos, fmt.Errorf("invalid FEN fullmove number %q", fields[5])
+		}
+	}
+	return pos, nil
+}
+
+func richArticleFENPieceAllowed(ch rune) bool {
+	switch ch {
+	case 'K', 'Q', 'R', 'B', 'N', 'P', 'k', 'q', 'r', 'b', 'n', 'p':
+		return true
+	default:
+		return false
+	}
+}
+
+func richArticleFENCastlingAllowed(field string) bool {
+	if field == "-" {
+		return true
+	}
+	seen := map[rune]bool{}
+	for _, ch := range field {
+		if ch != 'K' && ch != 'Q' && ch != 'k' && ch != 'q' {
+			return false
+		}
+		if seen[ch] {
+			return false
+		}
+		seen[ch] = true
+	}
+	return len(seen) > 0
+}
+
+func richArticleFENEnPassantAllowed(field string) bool {
+	if field == "-" {
+		return true
+	}
+	if len(field) != 2 {
+		return false
+	}
+	file := field[0]
+	rank := field[1]
+	return file >= 'a' && file <= 'h' && (rank == '3' || rank == '6')
+}
+
+func richArticleChessPieceGlyph(piece rune) string {
+	switch piece {
+	case 'K':
+		return "♔"
+	case 'Q':
+		return "♕"
+	case 'R':
+		return "♖"
+	case 'B':
+		return "♗"
+	case 'N':
+		return "♘"
+	case 'P':
+		return "♙"
+	case 'k':
+		return "♚"
+	case 'q':
+		return "♛"
+	case 'r':
+		return "♜"
+	case 'b':
+		return "♝"
+	case 'n':
+		return "♞"
+	case 'p':
+		return "♟"
+	default:
+		return ""
+	}
+}
+
+func richArticleChessPieceColor(piece rune) color.Color {
+	if piece >= 'A' && piece <= 'Z' {
+		return color.RGBA{R: 252, G: 249, B: 238, A: 255}
+	}
+	return color.RGBA{R: 28, G: 30, B: 36, A: 255}
 }
 
 func validateRichArticleMermaidSource(src string) error {

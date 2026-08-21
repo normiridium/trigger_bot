@@ -1703,6 +1703,109 @@ func TestRenderRichArticleMediaBlocks_RendersGraphvizBlock(t *testing.T) {
 	}
 }
 
+func TestRenderRichArticleMediaBlocks_RendersFENBoard(t *testing.T) {
+	in := "Позиция:\n\n```fen\nrnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n```\n\nХод белых."
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render FEN board: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered FEN attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered FEN attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("FEN board placeholder missing: %q", got)
+	}
+	if strings.Contains(got, "```fen") || strings.Contains(got, "rnbqkbnr") {
+		t.Fatalf("FEN block must be replaced: %q", got)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_RendersNumberedFENLines(t *testing.T) {
+	in := "Позиции:\n\n1.   rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n2.   rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2\n\nТекст после."
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render numbered FEN lines: %v", err)
+	}
+	if len(attachments) != 2 {
+		t.Fatalf("expected 2 rendered FEN attachments, got %d", len(attachments))
+	}
+	for _, attachment := range attachments {
+		if !isPNGBytes(attachment.PNG) {
+			t.Fatalf("rendered numbered FEN attachment is not png")
+		}
+		if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachment.ID)) {
+			t.Fatalf("numbered FEN board placeholder missing: %q", got)
+		}
+	}
+	if strings.Contains(got, "rnbqkbnr") || strings.Contains(got, "rnbqkb1r") {
+		t.Fatalf("numbered FEN lines must be replaced: %q", got)
+	}
+	if !strings.Contains(got, "1.") || !strings.Contains(got, "2.") {
+		t.Fatalf("numbered FEN prefixes must be preserved: %q", got)
+	}
+}
+
+func TestParseRichArticleFENRejectsInvalidBoard(t *testing.T) {
+	for _, in := range []string{
+		"8/8/8/8/8/8/8 w - - 0 1",
+		"9/8/8/8/8/8/8/8 w - - 0 1",
+		"8/8/8/8/8/8/8/7X w - - 0 1",
+		"8/8/8/8/8/8/8/8 x - - 0 1",
+		"8/8/8/8/8/8/8/8 w KQkqK - 0 1",
+	} {
+		if _, err := parseRichArticleFEN(in); err == nil {
+			t.Fatalf("parseRichArticleFEN(%q) must fail", in)
+		}
+	}
+	if _, err := parseRichArticleFEN("8/8/8/8/8/8/8/8"); err != nil {
+		t.Fatalf("board-only FEN must be accepted: %v", err)
+	}
+}
+
+func TestChessArticleStateAndMove(t *testing.T) {
+	attachment := richArticleRenderedAttachment{ID: "chess_test"}
+	markdown := renderChessArticleMarkdown(attachment, chessInitialFEN, false, "старт", "@alice")
+	state, err := parseChessArticleState(markdown)
+	if err != nil {
+		t.Fatalf("parse chess article state: %v\n%s", err, markdown)
+	}
+	if state.FEN != chessInitialFEN {
+		t.Fatalf("unexpected parsed FEN:\n got %q\nwant %q", state.FEN, chessInitialFEN)
+	}
+	if state.WhiteBottom {
+		t.Fatalf("expected white orientation at top")
+	}
+	move, ok := parseChessMoveText("e2:e4")
+	if !ok {
+		t.Fatalf("expected move to parse")
+	}
+	pos, err := parseChessPositionFEN(state.FEN)
+	if err != nil {
+		t.Fatalf("parse initial FEN: %v", err)
+	}
+	next, err := applyChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("apply e2-e4: %v", err)
+	}
+	want := "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+	if got := next.FEN(); got != want {
+		t.Fatalf("unexpected FEN after e2-e4:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestApplyChessMoveRejectsWrongSide(t *testing.T) {
+	pos, err := parseChessPositionFEN(chessInitialFEN)
+	if err != nil {
+		t.Fatalf("parse initial FEN: %v", err)
+	}
+	if _, err := applyChessMove(pos, chessMove{From: "e7", To: "e5"}); err == nil {
+		t.Fatalf("black move on white turn must fail")
+	}
+}
+
 func TestRenderRichArticleMediaBlocks_RendersMathAndDiagram(t *testing.T) {
 	requireSystemLatexRenderer(t)
 	requireSystemGraphvizRenderer(t)

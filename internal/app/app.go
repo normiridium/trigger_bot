@@ -2460,7 +2460,7 @@ func Run() {
 						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
 						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
 						cmdTranslateVoice, cmdTranslateGPT, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
-						cmdReadonly, cmdReloadAdmins, cmdBalance,
+						cmdChess, cmdReadonly, cmdReloadAdmins, cmdBalance,
 					}
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
@@ -2783,6 +2783,10 @@ func Run() {
 			case cmdRoleplay:
 				handleRoleplayCommand(bot, msg, msg.CommandArguments())
 				continue
+			case cmdChess:
+				if handleChessCommand(bot, msg) {
+					continue
+				}
 			case cmdSummary, cmdSummaryAlias:
 				reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка чата отключена.", false)
 				continue
@@ -2847,6 +2851,9 @@ func Run() {
 			}
 		}
 		if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
+			continue
+		}
+		if handleChessMoveReply(bot, msg) {
 			continue
 		}
 		if isPrivateChat {

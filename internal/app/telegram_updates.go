@@ -237,13 +237,14 @@ func hydrateReplyToMessageTextFromRaw(msg *tgbotapi.Message, rawMsg *rawMessageW
 	text := extractRawMessageText(rawMsg.ReplyToMessage)
 	if text == "" {
 		if debugTriggerLogEnabled {
-			log.Printf("reply_text raw empty chat=%d msg=%d reply_msg=%d raw_text=%v raw_caption=%v raw_rich_message_bytes=%d",
+			log.Printf("reply_text raw empty chat=%d msg=%d reply_msg=%d raw_text=%v raw_caption=%v raw_rich_message_bytes=%d raw_rich_message=%q",
 				msg.Chat.ID,
 				msg.MessageID,
 				msg.ReplyToMessage.MessageID,
 				strings.TrimSpace(rawMsg.ReplyToMessage.Text) != "",
 				strings.TrimSpace(rawMsg.ReplyToMessage.Caption) != "",
 				len(rawMsg.ReplyToMessage.RichMessage),
+				clipLogText(normalizeRawRichText(string(rawMsg.ReplyToMessage.RichMessage)), 500),
 			)
 		}
 		return
@@ -338,15 +339,29 @@ func extractRichBlockText(raw json.RawMessage) string {
 func collectRichTextParts(v any, parts *[]string) {
 	switch x := v.(type) {
 	case map[string]any:
-		for _, key := range []string{"text", "markdown", "caption", "title", "subtitle", "alt"} {
-			if s, ok := x[key].(string); ok {
-				if s = normalizeRawRichText(s); s != "" {
-					*parts = append(*parts, s)
-				}
+		processed := make(map[string]bool)
+		for _, key := range []string{"markdown", "text", "caption", "html", "plain_text", "raw_text", "content", "value", "description", "title", "subtitle", "alt"} {
+			child, ok := richMapValueCI(x, key)
+			if !ok {
+				continue
+			}
+			s, ok := child.(string)
+			if !ok {
+				continue
+			}
+			processed[strings.ToLower(key)] = true
+			if key == "html" {
+				s = richHTMLToText(s)
+			} else {
+				s = normalizeRawRichText(s)
+			}
+			if s != "" {
+				*parts = append(*parts, s)
 			}
 		}
 		for key, child := range x {
-			if isDirectRichTextKey(key) || isIgnoredRichTextKey(key) {
+			lowerKey := strings.ToLower(strings.TrimSpace(key))
+			if processed[lowerKey] || isIgnoredRichTextKey(key) {
 				continue
 			}
 			collectRichTextParts(child, parts)
@@ -355,25 +370,40 @@ func collectRichTextParts(v any, parts *[]string) {
 		for _, child := range x {
 			collectRichTextParts(child, parts)
 		}
+	case string:
+		if s := normalizeRawRichText(x); richTextStringLooksUseful(s) {
+			*parts = append(*parts, s)
+		}
 	}
 }
 
-func isDirectRichTextKey(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "text", "markdown", "html", "caption", "title", "subtitle", "alt":
-		return true
-	default:
-		return false
+func richMapValueCI(m map[string]any, want string) (any, bool) {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for key, value := range m {
+		if strings.ToLower(strings.TrimSpace(key)) == want {
+			return value, true
+		}
 	}
+	return nil, false
 }
 
 func isIgnoredRichTextKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "type", "url", "href", "id", "file_id", "custom_emoji_id", "emoji", "parse_mode":
+	case "type", "url", "href", "id", "file_id", "custom_emoji_id", "emoji", "parse_mode", "media", "photo", "document", "video", "animation", "thumbnail", "thumb":
 		return true
 	default:
 		return false
 	}
+}
+
+func richTextStringLooksUseful(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(s), "fen:") || strings.Contains(s, "Ход:") || strings.Contains(s, "Очередь:") || strings.Contains(s, "Белые:") {
+		return true
+	}
+	return strings.ContainsAny(s, " \n\t")
 }
 
 func normalizeRawRichText(s string) string {

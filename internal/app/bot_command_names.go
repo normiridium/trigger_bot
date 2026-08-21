@@ -33,6 +33,7 @@ const (
 	cmdTranslateVoice    = "translate_voice"
 	cmdTranslateGPT      = "translate_gpt"
 	cmdRoleplay          = "roleplay"
+	cmdChess             = "chess"
 
 	cmdBan          = "ban"
 	cmdUnban        = "unban"

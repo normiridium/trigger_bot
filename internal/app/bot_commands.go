@@ -36,6 +36,7 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdTranslateVoice, Description: "Голосовой перевод (реплай на аудио/видео)"},
 		{Command: cmdTranslateGPT, Description: "GPT-перевод и озвучка (реплай на аудио/видео)"},
 		{Command: cmdRoleplay, Description: "Roleplay-действие по реплаю"},
+		{Command: cmdChess, Description: "Новая шахматная доска"},
 	}
 	if mtprotoSetupVisible.Load() {
 		out = append(out, tgbotapi.BotCommand{Command: cmdSetMTProto, Description: "Привязать чат к MTProto"})

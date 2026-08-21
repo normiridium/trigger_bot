@@ -67,3 +67,24 @@ func TestExtractRichMessageTextHTML(t *testing.T) {
 		t.Fatalf("unexpected rich html text: %q", got)
 	}
 }
+
+func TestExtractRichMessageTextNestedContentValue(t *testing.T) {
+	raw := json.RawMessage(`{
+		"blocks": [
+			{"type": "image", "media": {"type": "photo", "file_id": "ignored"}},
+			{"type": "paragraph", "content": [
+				{"type": "text", "value": "FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+				{"type": "text", "value": "Ход: старт (@DearestFaline)"},
+				{"type": "text", "value": "Белые: снизу"}
+			]}
+		]
+	}`)
+
+	got := extractRichMessageText(raw)
+	if !strings.Contains(got, "FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {
+		t.Fatalf("rich FEN text was not extracted: %q", got)
+	}
+	if strings.Contains(got, "ignored") {
+		t.Fatalf("media payload leaked into rich text: %q", got)
+	}
+}
