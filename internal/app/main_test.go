@@ -1810,6 +1810,51 @@ func TestChessArticleStateFindsInlineFEN(t *testing.T) {
 	}
 }
 
+func TestApplyChessMoveRussianKnightNotation(t *testing.T) {
+	move, ok := parseChessMoveText("Кf3")
+	if !ok {
+		t.Fatalf("expected Russian knight notation to parse")
+	}
+	pos, err := parseChessPositionFEN(chessInitialFEN)
+	if err != nil {
+		t.Fatalf("parse initial FEN: %v", err)
+	}
+	resolved, err := resolveChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("resolve Кf3: %v", err)
+	}
+	if resolved.From != "g1" || resolved.To != "f3" {
+		t.Fatalf("unexpected resolved move: %#v", resolved)
+	}
+	next, err := applyChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("apply Кf3: %v", err)
+	}
+	want := "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1"
+	if got := next.FEN(); got != want {
+		t.Fatalf("unexpected FEN after Кf3:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestApplyChessMoveEnglishKnightNotation(t *testing.T) {
+	move, ok := parseChessMoveText("Nf3")
+	if !ok {
+		t.Fatalf("expected English knight notation to parse")
+	}
+	pos, err := parseChessPositionFEN(chessInitialFEN)
+	if err != nil {
+		t.Fatalf("parse initial FEN: %v", err)
+	}
+	next, err := applyChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("apply Nf3: %v", err)
+	}
+	want := "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1"
+	if got := next.FEN(); got != want {
+		t.Fatalf("unexpected FEN after Nf3:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestApplyChessMoveRejectsWrongSide(t *testing.T) {
 	pos, err := parseChessPositionFEN(chessInitialFEN)
 	if err != nil {

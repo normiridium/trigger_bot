@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -27,8 +28,12 @@ type chessPosition struct {
 }
 
 type chessMove struct {
-	From string
-	To   string
+	From       string
+	To         string
+	Piece      rune
+	DisambFile byte
+	DisambRank byte
+	Notation   string
 }
 
 type chessArticleState struct {
@@ -74,13 +79,18 @@ func handleChessMoveReply(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) bool {
 		reportChatFailure(bot, msg.Chat.ID, "ошибка FEN в шахматной статье", err)
 		return true
 	}
-	next, err := applyChessMove(pos, move)
+	resolvedMove, err := resolveChessMove(pos, move)
 	if err != nil {
 		reply(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: msg.MessageID}, "Ход не применён: "+clipText(err.Error(), 200), false)
 		return true
 	}
-	if _, err := sendChessArticle(sendContext{Bot: bot, ChatID: msg.Chat.ID}, next.FEN(), state.WhiteBottom, move.From+"-"+move.To, chessUserLabel(msg.From)); err != nil {
-		log.Printf("chess send move failed chat=%d msg=%d move=%s-%s err=%v", msg.Chat.ID, msg.MessageID, move.From, move.To, err)
+	next, err := applyChessMove(pos, resolvedMove)
+	if err != nil {
+		reply(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: msg.MessageID}, "Ход не применён: "+clipText(err.Error(), 200), false)
+		return true
+	}
+	if _, err := sendChessArticle(sendContext{Bot: bot, ChatID: msg.Chat.ID}, next.FEN(), state.WhiteBottom, chessMoveDisplay(move, resolvedMove), chessUserLabel(msg.From)); err != nil {
+		log.Printf("chess send move failed chat=%d msg=%d move=%s-%s err=%v", msg.Chat.ID, msg.MessageID, resolvedMove.From, resolvedMove.To, err)
 		reportChatFailure(bot, msg.Chat.ID, "ошибка шахматной доски", err)
 		return true
 	}
@@ -210,11 +220,96 @@ func trimChessFENLabel(s string) string {
 }
 
 func parseChessMoveText(text string) (chessMove, bool) {
-	m := chessMoveRe.FindStringSubmatch(strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	m := chessMoveRe.FindStringSubmatch(text)
 	if len(m) != 3 {
+		return parseChessAlgebraicMoveText(text)
+	}
+	from := strings.ToLower(m[1])
+	to := strings.ToLower(m[2])
+	return chessMove{From: from, To: to, Notation: from + "-" + to}, true
+}
+
+func parseChessAlgebraicMoveText(text string) (chessMove, bool) {
+	s := strings.TrimSpace(text)
+	if s == "" {
 		return chessMove{}, false
 	}
-	return chessMove{From: strings.ToLower(m[1]), To: strings.ToLower(m[2])}, true
+	s = strings.TrimRight(s, "+#!?")
+	piece, rest, ok := parseChessAlgebraicPiece(s)
+	if !ok {
+		return chessMove{}, false
+	}
+	rest = strings.NewReplacer("x", "", "X", "", "х", "", "Х", "", "×", "", ":", "").Replace(strings.TrimSpace(rest))
+	if len(rest) < 2 {
+		return chessMove{}, false
+	}
+	target := strings.ToLower(rest[len(rest)-2:])
+	if _, _, ok := chessSquareIndex(target); !ok {
+		return chessMove{}, false
+	}
+	disamb := strings.ToLower(rest[:len(rest)-2])
+	if len(disamb) > 2 {
+		return chessMove{}, false
+	}
+	mv := chessMove{To: target, Piece: piece, Notation: s}
+	for i := 0; i < len(disamb); i++ {
+		ch := disamb[i]
+		switch {
+		case ch >= 'a' && ch <= 'h':
+			if mv.DisambFile != 0 {
+				return chessMove{}, false
+			}
+			mv.DisambFile = ch
+		case ch >= '1' && ch <= '8':
+			if mv.DisambRank != 0 {
+				return chessMove{}, false
+			}
+			mv.DisambRank = ch
+		default:
+			return chessMove{}, false
+		}
+	}
+	return mv, true
+}
+
+func parseChessAlgebraicPiece(s string) (rune, string, bool) {
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "кр") {
+		return 'K', s[len("кр"):], true
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError && size == 0 {
+		return 0, "", false
+	}
+	switch r {
+	case 'К', 'к':
+		return 'N', s[size:], true
+	case 'Ф', 'ф':
+		return 'Q', s[size:], true
+	case 'Л', 'л':
+		return 'R', s[size:], true
+	case 'С', 'с':
+		return 'B', s[size:], true
+	case 'N', 'n':
+		return 'N', s[size:], true
+	case 'B', 'b':
+		return 'B', s[size:], true
+	case 'R', 'r':
+		return 'R', s[size:], true
+	case 'Q', 'q':
+		return 'Q', s[size:], true
+	case 'K', 'k':
+		return 'K', s[size:], true
+	default:
+		if len(s) >= 2 {
+			target := strings.ToLower(s[len(s)-2:])
+			if _, _, ok := chessSquareIndex(target); ok {
+				return 'P', s, true
+			}
+		}
+		return 0, "", false
+	}
 }
 
 func parseChessPositionFEN(fen string) (chessPosition, error) {
@@ -264,6 +359,13 @@ func parseChessPositionFEN(fen string) (chessPosition, error) {
 }
 
 func applyChessMove(pos chessPosition, mv chessMove) (chessPosition, error) {
+	if strings.TrimSpace(mv.From) == "" {
+		var err error
+		mv, err = resolveChessMove(pos, mv)
+		if err != nil {
+			return pos, err
+		}
+	}
 	fromR, fromC, ok := chessSquareIndex(mv.From)
 	if !ok {
 		return pos, fmt.Errorf("неверная клетка %q", mv.From)
@@ -328,6 +430,67 @@ func applyChessMove(pos chessPosition, mv chessMove) (chessPosition, error) {
 		next.Side = 'w'
 	}
 	return next, nil
+}
+
+func resolveChessMove(pos chessPosition, mv chessMove) (chessMove, error) {
+	if strings.TrimSpace(mv.From) != "" {
+		return mv, nil
+	}
+	toR, toC, ok := chessSquareIndex(mv.To)
+	if !ok {
+		return mv, fmt.Errorf("неверная клетка %q", mv.To)
+	}
+	if mv.Piece == 0 {
+		return mv, fmt.Errorf("не указана фигура для хода %q", mv.Notation)
+	}
+	var candidates []string
+	for r := 0; r < 8; r++ {
+		for c := 0; c < 8; c++ {
+			piece := pos.Board[r][c]
+			if piece == 0 || chessPieceSide(piece) != pos.Side {
+				continue
+			}
+			if chessPieceKind(piece) != mv.Piece {
+				continue
+			}
+			from := chessSquareName(r, c)
+			if mv.DisambFile != 0 && from[0] != mv.DisambFile {
+				continue
+			}
+			if mv.DisambRank != 0 && from[1] != mv.DisambRank {
+				continue
+			}
+			target := pos.Board[toR][toC]
+			if target != 0 && chessPieceSide(target) == pos.Side {
+				continue
+			}
+			if chessMovePseudoLegal(pos, piece, r, c, toR, toC) {
+				candidates = append(candidates, from)
+			}
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return mv, fmt.Errorf("не нашла фигуру для хода %s", chessMoveDisplay(mv, mv))
+	case 1:
+		mv.From = candidates[0]
+		return mv, nil
+	default:
+		return mv, fmt.Errorf("неоднозначный ход %s: уточни начальную клетку", chessMoveDisplay(mv, mv))
+	}
+}
+
+func chessMoveDisplay(original, resolved chessMove) string {
+	if strings.TrimSpace(original.Notation) != "" && strings.TrimSpace(original.From) == "" {
+		return strings.TrimSpace(original.Notation)
+	}
+	if resolved.From != "" && resolved.To != "" {
+		return resolved.From + "-" + resolved.To
+	}
+	if original.From != "" && original.To != "" {
+		return original.From + "-" + original.To
+	}
+	return strings.TrimSpace(original.Notation)
 }
 
 func chessMovePseudoLegal(pos chessPosition, piece rune, fromR, fromC, toR, toC int) bool {
@@ -539,6 +702,13 @@ func chessPieceSide(piece rune) rune {
 		return 'w'
 	}
 	return 'b'
+}
+
+func chessPieceKind(piece rune) rune {
+	if piece >= 'a' && piece <= 'z' {
+		return piece - ('a' - 'A')
+	}
+	return piece
 }
 
 func chessSideName(side rune) string {
