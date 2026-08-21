@@ -1778,8 +1778,11 @@ func TestChessArticleStateAndMove(t *testing.T) {
 	if state.WhiteBottom {
 		t.Fatalf("expected white orientation at top")
 	}
-	if strings.Contains(markdown, "FEN:") || strings.Contains(markdown, "Белые:") {
+	if strings.Contains(markdown, "FEN:") || strings.Contains(markdown, "Белые:") || strings.Contains(markdown, "Ход:") {
 		t.Fatalf("chess article has redundant labels: %q", markdown)
+	}
+	if !strings.Contains(markdown, ": старт (@alice)") {
+		t.Fatalf("chess article move label is unexpected: %q", markdown)
 	}
 	move, ok := parseChessMoveText("e2:e4")
 	if !ok {
@@ -1810,6 +1813,18 @@ func TestChessArticleStateFindsInlineFEN(t *testing.T) {
 	}
 	if !state.WhiteBottom {
 		t.Fatalf("expected white orientation at bottom")
+	}
+}
+
+func TestChessUserLabelPrefersDisplayName(t *testing.T) {
+	got := chessUserLabel(&tgbotapi.User{
+		ID:        100,
+		FirstName: "Ann",
+		LastName:  "Vanderberg (она/её)",
+		UserName:  "ann_handle",
+	})
+	if got != "Ann Vanderberg (она/её)" {
+		t.Fatalf("expected display name instead of username, got %q", got)
 	}
 }
 

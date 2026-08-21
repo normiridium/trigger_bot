@@ -140,7 +140,7 @@ func renderChessArticleMarkdown(attachment richArticleRenderedAttachment, fen st
 		richArticleRenderedFormulaMarkdown(attachment.ID),
 		"",
 		richArticleInlineCodeLiteral(strings.TrimSpace(fen)),
-		"Ход: " + moveText + " (" + userLabel + ")",
+		": " + moveText + " (" + userLabel + ")",
 		"Очередь: " + side,
 	}, "\n")
 }
@@ -800,11 +800,11 @@ func chessUserLabel(user *tgbotapi.User) string {
 	if user == nil {
 		return "игрок"
 	}
-	if username := strings.TrimSpace(user.UserName); username != "" {
-		return "@" + username
-	}
 	if display := strings.TrimSpace(buildUserDisplayName(user)); display != "" {
 		return display
+	}
+	if username := strings.TrimSpace(user.UserName); username != "" {
+		return "@" + username
 	}
 	return "игрок"
 }
