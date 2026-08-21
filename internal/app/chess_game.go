@@ -18,6 +18,11 @@ const chessInitialFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 
 
 var chessMoveRe = regexp.MustCompile(`(?i)^\s*([a-h][1-8])\s*[-:]\s*([a-h][1-8])\s*$`)
 
+const (
+	chessWhiteBottomImageIDPrefix = "chess_wb_"
+	chessWhiteTopImageIDPrefix    = "chess_wt_"
+)
+
 type chessPosition struct {
 	Board    [8][8]rune
 	Side     rune
@@ -55,7 +60,7 @@ func handleChessCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) bool {
 	return true
 }
 
-func handleChessMoveReply(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) bool {
+func handleChessMoveReply(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, rawMsg *rawMessageWithEmoji) bool {
 	if bot == nil || msg == nil || msg.Chat == nil || msg.From == nil || msg.ReplyToMessage == nil {
 		return false
 	}
@@ -66,7 +71,7 @@ func handleChessMoveReply(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) bool {
 	if !ok {
 		return false
 	}
-	state, err := parseChessArticleState(firstNonEmptyUserText(msg.ReplyToMessage))
+	state, err := parseChessArticleStateFromReply(msg.ReplyToMessage, rawMsg)
 	if err != nil {
 		log.Printf("chess move ignored: reply has no chess state chat=%d msg=%d reply=%d err=%v",
 			msg.Chat.ID, msg.MessageID, msg.ReplyToMessage.MessageID, err)
@@ -103,12 +108,12 @@ func sendChessArticle(ctx sendContext, fen string, whiteBottom bool, moveText, u
 	if err != nil {
 		return tgbotapi.Message{}, err
 	}
-	id := richArticleRenderedFenceID("chess", fen+"\n"+strconv.FormatBool(whiteBottom)+"\n"+moveText+"\n"+userLabel, 1, "")
+	id := chessArticleImageID(fen, whiteBottom, moveText, userLabel)
 	attachment, err := newRichArticleRenderedAttachment(id, pngBytes)
 	if err != nil {
 		return tgbotapi.Message{}, err
 	}
-	markdown := renderChessArticleMarkdown(attachment, fen, whiteBottom, moveText, userLabel)
+	markdown := renderChessArticleMarkdown(attachment, fen, moveText, userLabel)
 	sent, err := sendRichMarkdownArticleWithMedia(ctx, markdown, []richArticleRenderedAttachment{attachment})
 	if err != nil {
 		return sent, err
@@ -117,7 +122,7 @@ func sendChessArticle(ctx sendContext, fen string, whiteBottom bool, moveText, u
 	return sent, nil
 }
 
-func renderChessArticleMarkdown(attachment richArticleRenderedAttachment, fen string, whiteBottom bool, moveText, userLabel string) string {
+func renderChessArticleMarkdown(attachment richArticleRenderedAttachment, fen string, moveText, userLabel string) string {
 	moveText = strings.TrimSpace(moveText)
 	if moveText == "" {
 		moveText = "старт"
@@ -126,10 +131,6 @@ func renderChessArticleMarkdown(attachment richArticleRenderedAttachment, fen st
 	if userLabel == "" {
 		userLabel = "игрок"
 	}
-	orientation := "снизу"
-	if !whiteBottom {
-		orientation = "сверху"
-	}
 	side := "белые"
 	if pos, err := parseChessPositionFEN(fen); err == nil && pos.Side == 'b' {
 		side = "чёрные"
@@ -137,16 +138,36 @@ func renderChessArticleMarkdown(attachment richArticleRenderedAttachment, fen st
 	return strings.Join([]string{
 		richArticleRenderedFormulaMarkdown(attachment.ID),
 		"",
-		"FEN: `" + strings.TrimSpace(fen) + "`",
+		richArticleInlineCodeLiteral(strings.TrimSpace(fen)),
 		"Ход: " + moveText + " (" + userLabel + ")",
 		"Очередь: " + side,
-		"Белые: " + orientation,
 	}, "\n")
+}
+
+func chessArticleImageID(fen string, whiteBottom bool, moveText, userLabel string) string {
+	prefix := chessWhiteBottomImageIDPrefix
+	if !whiteBottom {
+		prefix = chessWhiteTopImageIDPrefix
+	}
+	return prefix + richArticleRenderedFenceID("chess", fen+"\n"+strconv.FormatBool(whiteBottom)+"\n"+moveText+"\n"+userLabel, 1, "")
+}
+
+func parseChessArticleStateFromReply(replyMsg *tgbotapi.Message, rawMsg *rawMessageWithEmoji) (chessArticleState, error) {
+	st, err := parseChessArticleState(firstNonEmptyUserText(replyMsg))
+	if rawMsg != nil && rawMsg.ReplyToMessage != nil {
+		if whiteBottom, ok := extractChessWhiteBottomMarker(string(rawMsg.ReplyToMessage.RichMessage)); ok {
+			st.WhiteBottom = whiteBottom
+		}
+	}
+	return st, err
 }
 
 func parseChessArticleState(text string) (chessArticleState, error) {
 	var st chessArticleState
 	st.WhiteBottom = true
+	if whiteBottom, ok := extractChessWhiteBottomMarker(text); ok {
+		st.WhiteBottom = whiteBottom
+	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
@@ -173,6 +194,17 @@ func parseChessArticleState(text string) (chessArticleState, error) {
 		return st, err
 	}
 	return st, nil
+}
+
+func extractChessWhiteBottomMarker(text string) (bool, bool) {
+	switch {
+	case strings.Contains(text, chessWhiteTopImageIDPrefix):
+		return false, true
+	case strings.Contains(text, chessWhiteBottomImageIDPrefix):
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func extractChessFENFromText(text string) string {

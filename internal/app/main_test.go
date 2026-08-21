@@ -1766,8 +1766,8 @@ func TestParseRichArticleFENRejectsInvalidBoard(t *testing.T) {
 }
 
 func TestChessArticleStateAndMove(t *testing.T) {
-	attachment := richArticleRenderedAttachment{ID: "chess_test"}
-	markdown := renderChessArticleMarkdown(attachment, chessInitialFEN, false, "старт", "@alice")
+	attachment := richArticleRenderedAttachment{ID: chessArticleImageID(chessInitialFEN, false, "старт", "@alice")}
+	markdown := renderChessArticleMarkdown(attachment, chessInitialFEN, "старт", "@alice")
 	state, err := parseChessArticleState(markdown)
 	if err != nil {
 		t.Fatalf("parse chess article state: %v\n%s", err, markdown)
@@ -1777,6 +1777,9 @@ func TestChessArticleStateAndMove(t *testing.T) {
 	}
 	if state.WhiteBottom {
 		t.Fatalf("expected white orientation at top")
+	}
+	if strings.Contains(markdown, "FEN:") || strings.Contains(markdown, "Белые:") {
+		t.Fatalf("chess article has redundant labels: %q", markdown)
 	}
 	move, ok := parseChessMoveText("e2:e4")
 	if !ok {
@@ -1797,7 +1800,7 @@ func TestChessArticleStateAndMove(t *testing.T) {
 }
 
 func TestChessArticleStateFindsInlineFEN(t *testing.T) {
-	text := "карточка FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 Ход: старт (@alice) Белые: снизу"
+	text := "карточка rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 Ход: старт (@alice)"
 	state, err := parseChessArticleState(text)
 	if err != nil {
 		t.Fatalf("parse inline chess article state: %v", err)

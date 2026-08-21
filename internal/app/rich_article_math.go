@@ -799,14 +799,22 @@ func renderRichArticleFENBoardPNGWithOrientation(src string, whiteBottom bool) (
 				srcRank = 7 - rank
 				srcFile = 7 - file
 			}
-			piece := richArticleChessPieceGlyph(pos.Squares[srcRank][srcFile])
+			boardPiece := pos.Squares[srcRank][srcFile]
+			piece := richArticleChessPieceGlyph(boardPiece)
 			if piece == "" {
 				continue
 			}
 			x := boardX + file*square + (square-quoteStringWidth(pieceFace, piece))/2
 			y := boardY + rank*square + (square+ascent-descent)/2
-			pieceColor := richArticleChessPieceColor(pos.Squares[srcRank][srcFile])
+			pieceColor := richArticleChessPieceColor(boardPiece)
 			shadowColor := color.RGBA{R: 62, G: 45, B: 34, A: 110}
+			if boardPiece >= 'A' && boardPiece <= 'Z' {
+				outlineColor := color.RGBA{R: 96, G: 72, B: 50, A: 155}
+				for _, off := range [][2]int{{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}} {
+					quoteDrawString(canvas, pieceFace, piece, x+off[0], y+off[1], outlineColor)
+				}
+				shadowColor = color.RGBA{R: 62, G: 45, B: 34, A: 145}
+			}
 			quoteDrawString(canvas, pieceFace, piece, x+2, y+3, shadowColor)
 			quoteDrawString(canvas, pieceFace, piece, x, y, pieceColor)
 		}
@@ -956,7 +964,7 @@ func richArticleChessPieceGlyph(piece rune) string {
 
 func richArticleChessPieceColor(piece rune) color.Color {
 	if piece >= 'A' && piece <= 'Z' {
-		return color.RGBA{R: 252, G: 249, B: 238, A: 255}
+		return color.RGBA{R: 255, G: 253, B: 245, A: 255}
 	}
 	return color.RGBA{R: 28, G: 30, B: 36, A: 255}
 }

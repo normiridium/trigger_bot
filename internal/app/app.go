@@ -2853,7 +2853,7 @@ func Run() {
 		if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
 			continue
 		}
-		if handleChessMoveReply(bot, msg) {
+		if handleChessMoveReply(bot, msg, rawMsg) {
 			continue
 		}
 		if isPrivateChat {
