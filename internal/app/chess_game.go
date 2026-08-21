@@ -154,12 +154,59 @@ func parseChessArticleState(text string) (chessArticleState, error) {
 		}
 	}
 	if strings.TrimSpace(st.FEN) == "" {
+		st.FEN = extractChessFENFromText(text)
+	}
+	if strings.TrimSpace(st.FEN) == "" {
 		return st, errors.New("FEN line not found")
 	}
 	if _, err := parseChessPositionFEN(st.FEN); err != nil {
 		return st, err
 	}
 	return st, nil
+}
+
+func extractChessFENFromText(text string) string {
+	fields := strings.Fields(normalizeRawRichText(text))
+	for i := range fields {
+		start := cleanChessFENToken(fields[i])
+		start = trimChessFENLabel(start)
+		if start == "" || !strings.Contains(start, "/") {
+			continue
+		}
+		best := ""
+		for j := i; j < len(fields) && j < i+6; j++ {
+			candidateFields := make([]string, 0, j-i+1)
+			for k := i; k <= j; k++ {
+				token := cleanChessFENToken(fields[k])
+				if k == i {
+					token = trimChessFENLabel(token)
+				}
+				if token == "" {
+					continue
+				}
+				candidateFields = append(candidateFields, token)
+			}
+			candidate := strings.Join(candidateFields, " ")
+			if _, err := parseRichArticleFEN(candidate); err == nil {
+				best = candidate
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+	return ""
+}
+
+func cleanChessFENToken(s string) string {
+	return strings.Trim(s, "`'\"“”‘’.,;()[]{}<>")
+}
+
+func trimChessFENLabel(s string) string {
+	if len(s) >= len("fen:") && strings.EqualFold(s[:len("fen:")], "fen:") {
+		return strings.TrimSpace(s[len("fen:"):])
+	}
+	return s
 }
 
 func parseChessMoveText(text string) (chessMove, bool) {

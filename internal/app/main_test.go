@@ -1796,6 +1796,20 @@ func TestChessArticleStateAndMove(t *testing.T) {
 	}
 }
 
+func TestChessArticleStateFindsInlineFEN(t *testing.T) {
+	text := "карточка FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 Ход: старт (@alice) Белые: снизу"
+	state, err := parseChessArticleState(text)
+	if err != nil {
+		t.Fatalf("parse inline chess article state: %v", err)
+	}
+	if state.FEN != chessInitialFEN {
+		t.Fatalf("unexpected inline FEN:\n got %q\nwant %q", state.FEN, chessInitialFEN)
+	}
+	if !state.WhiteBottom {
+		t.Fatalf("expected white orientation at bottom")
+	}
+}
+
 func TestApplyChessMoveRejectsWrongSide(t *testing.T) {
 	pos, err := parseChessPositionFEN(chessInitialFEN)
 	if err != nil {
