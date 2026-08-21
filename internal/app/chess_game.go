@@ -38,6 +38,7 @@ type chessMove struct {
 	Piece      rune
 	DisambFile byte
 	DisambRank byte
+	CastleSide string
 	Notation   string
 }
 
@@ -253,6 +254,9 @@ func trimChessFENLabel(s string) string {
 
 func parseChessMoveText(text string) (chessMove, bool) {
 	text = strings.TrimSpace(text)
+	if move, ok := parseChessCastlingMoveText(text); ok {
+		return move, true
+	}
 	m := chessMoveRe.FindStringSubmatch(text)
 	if len(m) != 3 {
 		return parseChessAlgebraicMoveText(text)
@@ -260,6 +264,23 @@ func parseChessMoveText(text string) (chessMove, bool) {
 	from := strings.ToLower(m[1])
 	to := strings.ToLower(m[2])
 	return chessMove{From: from, To: to, Notation: from + "-" + to}, true
+}
+
+func parseChessCastlingMoveText(text string) (chessMove, bool) {
+	s := strings.TrimSpace(text)
+	if s == "" {
+		return chessMove{}, false
+	}
+	s = strings.TrimRight(s, "+#!?")
+	s = strings.NewReplacer("О", "O", "о", "O", "0", "O", "–", "-", "—", "-").Replace(s)
+	switch strings.ToUpper(s) {
+	case "O-O":
+		return chessMove{Piece: 'K', CastleSide: "king", Notation: text}, true
+	case "O-O-O":
+		return chessMove{Piece: 'K', CastleSide: "queen", Notation: text}, true
+	default:
+		return chessMove{}, false
+	}
 }
 
 func parseChessAlgebraicMoveText(text string) (chessMove, bool) {
@@ -468,6 +489,9 @@ func resolveChessMove(pos chessPosition, mv chessMove) (chessMove, error) {
 	if strings.TrimSpace(mv.From) != "" {
 		return mv, nil
 	}
+	if mv.CastleSide != "" {
+		return resolveChessCastlingMove(pos, mv)
+	}
 	toR, toC, ok := chessSquareIndex(mv.To)
 	if !ok {
 		return mv, fmt.Errorf("неверная клетка %q", mv.To)
@@ -510,6 +534,28 @@ func resolveChessMove(pos chessPosition, mv chessMove) (chessMove, error) {
 	default:
 		return mv, fmt.Errorf("неоднозначный ход %s: уточни начальную клетку", chessMoveDisplay(mv, mv))
 	}
+}
+
+func resolveChessCastlingMove(pos chessPosition, mv chessMove) (chessMove, error) {
+	switch pos.Side {
+	case 'w':
+		mv.From = "e1"
+		if mv.CastleSide == "queen" {
+			mv.To = "c1"
+		} else {
+			mv.To = "g1"
+		}
+	case 'b':
+		mv.From = "e8"
+		if mv.CastleSide == "queen" {
+			mv.To = "c8"
+		} else {
+			mv.To = "g8"
+		}
+	default:
+		return mv, fmt.Errorf("неверная сторона хода для рокировки")
+	}
+	return mv, nil
 }
 
 func chessMoveDisplay(original, resolved chessMove) string {

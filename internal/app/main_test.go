@@ -1858,6 +1858,51 @@ func TestApplyChessMoveEnglishKnightNotation(t *testing.T) {
 	}
 }
 
+func TestApplyChessMoveKingsideCastlingNotation(t *testing.T) {
+	move, ok := parseChessMoveText("0-0")
+	if !ok {
+		t.Fatalf("expected kingside castling notation to parse")
+	}
+	pos, err := parseChessPositionFEN("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+	if err != nil {
+		t.Fatalf("parse castling FEN: %v", err)
+	}
+	resolved, err := resolveChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("resolve 0-0: %v", err)
+	}
+	if resolved.From != "e1" || resolved.To != "g1" {
+		t.Fatalf("unexpected resolved castling move: %#v", resolved)
+	}
+	next, err := applyChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("apply 0-0: %v", err)
+	}
+	want := "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1"
+	if got := next.FEN(); got != want {
+		t.Fatalf("unexpected FEN after 0-0:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestApplyChessMoveQueensideCastlingNotation(t *testing.T) {
+	move, ok := parseChessMoveText("O-O-O")
+	if !ok {
+		t.Fatalf("expected queenside castling notation to parse")
+	}
+	pos, err := parseChessPositionFEN("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1")
+	if err != nil {
+		t.Fatalf("parse castling FEN: %v", err)
+	}
+	next, err := applyChessMove(pos, move)
+	if err != nil {
+		t.Fatalf("apply O-O-O: %v", err)
+	}
+	want := "2kr3r/8/8/8/8/8/8/R3K2R w KQ - 1 2"
+	if got := next.FEN(); got != want {
+		t.Fatalf("unexpected FEN after O-O-O:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestApplyChessMoveRejectsWrongSide(t *testing.T) {
 	pos, err := parseChessPositionFEN(chessInitialFEN)
 	if err != nil {
