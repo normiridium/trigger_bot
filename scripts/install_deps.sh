@@ -14,6 +14,11 @@ set -euo pipefail
 #   NODE_MAJOR=22              NodeSource major version when INSTALL_NODESOURCE=1
 #   INSTALL_YTDLP=0            skip yt-dlp GitHub release install
 #   INSTALL_VOT_CLI=1          npm install -g vot-cli (requires Node.js 18+)
+#   INSTALL_LATEX=1            install optional system LaTeX renderer for rich articles
+#   INSTALL_DIAGRAMS=1         install optional Mermaid/Graphviz renderers for rich articles
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -84,6 +89,43 @@ install_vot_cli() {
   fi
   log "Installing vot-cli globally via npm"
   "${SUDO[@]}" npm install -g vot-cli
+}
+
+install_latex_renderer() {
+  if [[ "${INSTALL_LATEX:-0}" != "1" ]]; then
+    return 0
+  fi
+  log "Installing optional system LaTeX renderer for rich articles"
+  apt_install \
+    texlive-latex-base \
+    texlive-latex-recommended \
+    texlive-latex-extra \
+    texlive-pictures \
+    texlive-lang-cyrillic \
+    texlive-plain-generic \
+    texlive-science \
+    texlive-humanities \
+    poppler-utils
+}
+
+install_diagram_renderers() {
+  if [[ "${INSTALL_DIAGRAMS:-0}" != "1" ]]; then
+    return 0
+  fi
+  log "Installing optional Mermaid/Graphviz renderers for rich articles"
+  apt_install \
+    graphviz \
+    chromium \
+    fonts-noto-color-emoji
+
+  command -v npm >/dev/null 2>&1 || err "npm is required for INSTALL_DIAGRAMS=1"
+  local major
+  major="$(node_major_version || true)"
+  if [[ -z "$major" || "$major" -lt 18 ]]; then
+    err "Mermaid CLI requires Node.js 18.19+ or newer. Current node major: ${major:-not installed}. Use INSTALL_NODESOURCE=1 NODE_MAJOR=22."
+  fi
+  log "Installing Mermaid CLI globally via npm without bundled Chromium"
+  PUPPETEER_SKIP_DOWNLOAD=true "${SUDO[@]}" npm install -g @mermaid-js/mermaid-cli
 }
 
 mongo_repo_defaults() {
@@ -169,6 +211,7 @@ packages=(
   aria2
   ffmpeg
   webp
+  librsvg2-bin
   python3
   python3-pip
   python3-venv
@@ -188,9 +231,11 @@ apt_install "${packages[@]}"
 install_ytdlp_release
 install_mongodb
 install_vot_cli
+install_latex_renderer
+install_diagram_renderers
 
 log "Installed tool versions"
-for cmd in ffmpeg ffprobe img2webp yt-dlp python3 node npm; do
+for cmd in ffmpeg ffprobe img2webp rsvg-convert yt-dlp python3 node npm pdflatex pdftocairo dot chromium mmdc; do
   if command -v "$cmd" >/dev/null 2>&1; then
     case "$cmd" in
       ffmpeg|ffprobe) "$cmd" -version 2>/dev/null | head -n 1 ;;
@@ -225,4 +270,6 @@ Optional examples:
   INSTALL_MONGODB=1 ./scripts/install_deps.sh
   INSTALL_NODESOURCE=1 NODE_MAJOR=22 ./scripts/install_deps.sh
   INSTALL_VOT_CLI=1 ./scripts/install_deps.sh
+  INSTALL_LATEX=1 ./scripts/install_deps.sh
+  INSTALL_DIAGRAMS=1 ./scripts/install_deps.sh
 DONE

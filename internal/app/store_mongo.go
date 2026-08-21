@@ -12,6 +12,7 @@ import (
 	"trigger-admin-bot/internal/model"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -76,12 +77,44 @@ type mongoCounterDoc struct {
 }
 
 type mongoTemplateDoc struct {
-	ID        int64  `bson:"id"`
-	Key       string `bson:"key"`
-	Title     string `bson:"title"`
-	Text      string `bson:"text"`
-	CreatedAt int64  `bson:"created_at"`
-	UpdatedAt int64  `bson:"updated_at"`
+	ID        int64       `bson:"id"`
+	Key       string      `bson:"key"`
+	Title     string      `bson:"title"`
+	Text      string      `bson:"text"`
+	CreatedAt interface{} `bson:"created_at"`
+	UpdatedAt interface{} `bson:"updated_at"`
+}
+
+func responseTemplateFromMongoDoc(d mongoTemplateDoc) ResponseTemplate {
+	return ResponseTemplate{
+		ID:        d.ID,
+		Key:       strings.TrimSpace(d.Key),
+		Title:     d.Title,
+		Text:      d.Text,
+		CreatedAt: mongoTimestampUnix(d.CreatedAt),
+		UpdatedAt: mongoTimestampUnix(d.UpdatedAt),
+	}
+}
+
+func mongoTimestampUnix(v interface{}) int64 {
+	switch t := v.(type) {
+	case nil:
+		return 0
+	case int64:
+		return t
+	case int32:
+		return int64(t)
+	case int:
+		return int64(t)
+	case float64:
+		return int64(t)
+	case primitive.DateTime:
+		return t.Time().Unix()
+	case time.Time:
+		return t.Unix()
+	default:
+		return 0
+	}
 }
 
 type mongoAdminAuthDoc struct {
@@ -943,14 +976,7 @@ func (m *mongoBackend) listTemplates() ([]ResponseTemplate, error) {
 		if err := cur.Decode(&d); err != nil {
 			return nil, err
 		}
-		out = append(out, ResponseTemplate{
-			ID:        d.ID,
-			Key:       strings.TrimSpace(d.Key),
-			Title:     d.Title,
-			Text:      d.Text,
-			CreatedAt: d.CreatedAt,
-			UpdatedAt: d.UpdatedAt,
-		})
+		out = append(out, responseTemplateFromMongoDoc(d))
 	}
 	return out, nil
 }
@@ -966,14 +992,7 @@ func (m *mongoBackend) getTemplate(id int64) (*ResponseTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := ResponseTemplate{
-		ID:        d.ID,
-		Key:       strings.TrimSpace(d.Key),
-		Title:     d.Title,
-		Text:      d.Text,
-		CreatedAt: d.CreatedAt,
-		UpdatedAt: d.UpdatedAt,
-	}
+	t := responseTemplateFromMongoDoc(d)
 	return &t, nil
 }
 
@@ -992,14 +1011,7 @@ func (m *mongoBackend) getTemplateByKey(key string) (*ResponseTemplate, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := ResponseTemplate{
-		ID:        d.ID,
-		Key:       strings.TrimSpace(d.Key),
-		Title:     d.Title,
-		Text:      d.Text,
-		CreatedAt: d.CreatedAt,
-		UpdatedAt: d.UpdatedAt,
-	}
+	t := responseTemplateFromMongoDoc(d)
 	return &t, nil
 }
 

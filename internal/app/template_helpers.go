@@ -29,13 +29,54 @@ import (
 )
 
 func normalizeTelegramLineBreaks(s string) string {
-	s = strings.ReplaceAll(s, "\\r\\n", "\n")
-	s = strings.ReplaceAll(s, "\\n", "\n")
-	s = strings.ReplaceAll(s, "\\r", "\n")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = normalizeEscapedLineBreaks(s)
 	s = strings.ReplaceAll(s, "<br>", "\n")
 	s = strings.ReplaceAll(s, "<br/>", "\n")
 	s = strings.ReplaceAll(s, "<br />", "\n")
 	return s
+}
+
+func normalizeEscapedLineBreaks(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'r':
+				if i+3 < len(s) && s[i+2] == '\\' && s[i+3] == 'n' {
+					out.WriteByte('\n')
+					i += 3
+					continue
+				}
+				if !isASCIIAlphaAt(s, i+2) {
+					out.WriteByte('\n')
+					i++
+					continue
+				}
+			case 'n':
+				if !isASCIIAlphaAt(s, i+2) {
+					out.WriteByte('\n')
+					i++
+					continue
+				}
+			}
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+func isASCIIAlphaAt(s string, idx int) bool {
+	if idx >= len(s) {
+		return false
+	}
+	c := s[idx]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 func escapeMarkdownV2Text(s string) string {
@@ -173,6 +214,25 @@ func resolveMessageImageURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string
 	return "", false
 }
 
+func resolveMessageSVGURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (fileURL, fileName string, ok bool) {
+	if bot == nil || msg == nil {
+		return "", "", false
+	}
+	if fileID, name := extractSVGFileID(msg); fileID != "" {
+		if u, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u), name, true
+		}
+	}
+	if msg.ReplyToMessage != nil {
+		if fileID, name := extractSVGFileID(msg.ReplyToMessage); fileID != "" {
+			if u, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(u) != "" {
+				return strings.TrimSpace(u), name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 func extractImageFileID(msg *tgbotapi.Message) string {
 	if msg == nil {
 		return ""
@@ -191,6 +251,9 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 		return strings.TrimSpace(best.FileID)
 	}
 	if msg.Document != nil {
+		if isSVGDocument(msg.Document) {
+			return ""
+		}
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Document.MimeType)), "image/") {
 			if maxBytes > 0 && msg.Document.FileSize > 0 && int64(msg.Document.FileSize) > maxBytes {
 				return ""
@@ -199,6 +262,29 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 		}
 	}
 	return ""
+}
+
+func extractSVGFileID(msg *tgbotapi.Message) (fileID, fileName string) {
+	if msg == nil || msg.Document == nil || !isSVGDocument(msg.Document) {
+		return "", ""
+	}
+	maxBytes := int64(gptImageContextMaxMB()) << 20
+	if maxBytes > 0 && msg.Document.FileSize > 0 && int64(msg.Document.FileSize) > maxBytes {
+		return "", ""
+	}
+	return strings.TrimSpace(msg.Document.FileID), strings.TrimSpace(msg.Document.FileName)
+}
+
+func isSVGDocument(doc *tgbotapi.Document) bool {
+	if doc == nil {
+		return false
+	}
+	mime := strings.ToLower(strings.TrimSpace(doc.MimeType))
+	if mime == "image/svg+xml" || mime == "image/svg" {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(doc.FileName))
+	return strings.HasSuffix(name, ".svg")
 }
 
 func gptImageContextMaxMB() int {
@@ -1407,6 +1493,9 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 	}
 	out, err := renderResponseTemplateWithFuncs(template, vars, ctx.TemplateLookup, funcs)
 	if err != nil {
+		if debugTriggerLogEnabled || debugGPTLogEnabled {
+			log.Printf("template render failed: %v template=%q", err, clipLogText(template, 500))
+		}
 		return restoreTrustedTemplateFragments(applySimpleTemplateVars(template, vars), vars)
 	}
 	return out

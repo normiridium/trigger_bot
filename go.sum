@@ -20,8 +20,8 @@ github.com/klauspost/compress v1.16.7/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQs
 github.com/mattn/go-runewidth v0.0.10/go.mod h1:RAqKPSqVFrSLVXbA8x7dzmKdmGzieGRCM46jaSJTDAk=
 github.com/montanaflynn/stats v0.7.1 h1:etflOAAHORrCC44V+aR6Ftzort912ZU+YLiSTuV8eaE=
 github.com/montanaflynn/stats v0.7.1/go.mod h1:etXPPgVO6n31NxCd9KQUMvCM+ve0ruNzt6R8Bnaayow=
-github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260805084820-93db1bcb90e7 h1:iKM7I96x/CP0aPQxA5uckHpw3dbLfStcLN/F3szGKeU=
-github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260805084820-93db1bcb90e7/go.mod h1:A2S0CWkNylc2phvKXWBBdD3K0iGnDBGbzRpISP2zBl8=
+github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260806124830-f724637b8b2c h1:dajZPJm33ag+c/hcGCJAPdKdgY0L8eWOLoybggDcJHg=
+github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260806124830-f724637b8b2c/go.mod h1:A2S0CWkNylc2phvKXWBBdD3K0iGnDBGbzRpISP2zBl8=
 github.com/normiridium/vk-music-bot-api v0.0.0-20260408213305-334de31d2621 h1:wikpYFvKRffpYvEnomgYhyww1H2+MOSsNthluSHLbG8=
 github.com/normiridium/vk-music-bot-api v0.0.0-20260408213305-334de31d2621/go.mod h1:PYyDMR8BKvIRKg40ManoPMekbV1/kEdmlnRG0Cfl8L4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

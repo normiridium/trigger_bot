@@ -8,7 +8,8 @@ import (
 func TestVoiceTranslateMixFiltersUseModerateDefaults(t *testing.T) {
 	dynamicFilter, staticFilter := voiceTranslateMixFilters()
 	for _, want := range []string{
-		"volume=1[a1mix]",
+		"apad,asplit=2",
+		"volume=1.2[a1mix]",
 		"volume=0.92[a0base]",
 		"threshold=0.06:ratio=3",
 	} {
@@ -18,7 +19,7 @@ func TestVoiceTranslateMixFiltersUseModerateDefaults(t *testing.T) {
 	}
 	for _, want := range []string{
 		"volume=0.8[a0]",
-		"volume=1[a1]",
+		"apad,volume=1.2[a1]",
 	} {
 		if !strings.Contains(staticFilter, want) {
 			t.Fatalf("static filter does not contain %q: %s", want, staticFilter)
@@ -38,6 +39,7 @@ func TestVoiceTranslateMixFiltersUseEnvOverrides(t *testing.T) {
 	t.Setenv("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", "1.05")
 	dynamicFilter, staticFilter := voiceTranslateMixFilters()
 	for _, want := range []string{
+		"apad,asplit=2",
 		"volume=1.1[a1mix]",
 		"volume=0.9[a0base]",
 		"threshold=0.04:ratio=3",
@@ -48,7 +50,7 @@ func TestVoiceTranslateMixFiltersUseEnvOverrides(t *testing.T) {
 	}
 	for _, want := range []string{
 		"volume=0.8[a0]",
-		"volume=1.05[a1]",
+		"apad,volume=1.05[a1]",
 	} {
 		if !strings.Contains(staticFilter, want) {
 			t.Fatalf("static filter does not contain override %q: %s", want, staticFilter)
@@ -89,6 +91,92 @@ func TestVoiceTranslateUserErrorMessageForNoSpeech(t *testing.T) {
 	msg := voiceTranslateUserErrorMessage(assertErr("vot-cli reported failure (Error: Не удалось перевести видео — похоже, в нём нет речи)"))
 	if !strings.Contains(msg, "не нашёл распознаваемую речь") {
 		t.Fatalf("unexpected user message: %q", msg)
+	}
+}
+
+func TestOpenAIGPTTranslateCacheProviderIncludesModelsAndVoice(t *testing.T) {
+	t.Setenv("GPT_TRANSLATE_TRANSCRIBE_MODEL", "whisper-test")
+	t.Setenv("GPT_TRANSLATE_MODEL", "gpt-test")
+	t.Setenv("GPT_TRANSLATE_TTS_MODEL", "tts-test")
+	t.Setenv("GPT_TRANSLATE_TTS_VOICE", "voice-test")
+	got := openAIGPTTranslateCacheProvider()
+	want := "openai-gpt:timed-dubbing-v4:whisper-test:gpt-test:tts-test:voice-test"
+	if got != want {
+		t.Fatalf("cache provider = %q, want %q", got, want)
+	}
+}
+
+func TestGroupTranscriptSegmentsForDubbingKeepsTimingGaps(t *testing.T) {
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_SEC", "4")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_GAP_SEC", "0.5")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MIN_SEC", "1.5")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MIN_CHARS", "6")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_CHARS", "120")
+	groups := groupTranscriptSegmentsForDubbing([]openAITranscriptSegment{
+		{Start: 0.0, End: 1.0, Text: "one"},
+		{Start: 1.2, End: 2.0, Text: "two"},
+		{Start: 3.0, End: 4.0, Text: "three"},
+	})
+	if len(groups) != 2 {
+		t.Fatalf("groups len = %d, want 2: %#v", len(groups), groups)
+	}
+	if groups[0].Index != 0 || groups[0].Start != 0 || groups[0].End != 2 || groups[0].Text != "one two" {
+		t.Fatalf("unexpected first group: %#v", groups[0])
+	}
+	if groups[1].Index != 1 || groups[1].Start != 3 || groups[1].End != 4 || groups[1].Text != "three" {
+		t.Fatalf("unexpected second group: %#v", groups[1])
+	}
+}
+
+func TestGroupTranscriptSegmentsForDubbingMergesTinyFragments(t *testing.T) {
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_SEC", "6")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_GAP_SEC", "0.3")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_STRONG_GAP_SEC", "2")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MIN_SEC", "2")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MIN_CHARS", "20")
+	t.Setenv("GPT_TRANSLATE_DUB_GROUP_MAX_CHARS", "200")
+	groups := groupTranscriptSegmentsForDubbing([]openAITranscriptSegment{
+		{Start: 0.0, End: 0.15, Text: "u"},
+		{Start: 0.75, End: 0.90, Text: "u"},
+		{Start: 1.35, End: 1.55, Text: "u"},
+		{Start: 1.80, End: 2.60, Text: "okay"},
+	})
+	if len(groups) != 1 {
+		t.Fatalf("groups len = %d, want 1: %#v", len(groups), groups)
+	}
+	if groups[0].Text != "u u u okay" {
+		t.Fatalf("unexpected merged text: %#v", groups[0])
+	}
+}
+
+func TestOpenAITTSWindowForGroupUsesGapBeforeNextPhrase(t *testing.T) {
+	groups := []openAITimedDubbingGroup{
+		{Start: 1, End: 2, Text: "one"},
+		{Start: 4, End: 5, Text: "two"},
+	}
+	if got := openAITTSWindowForGroup(groups, 0, 8); got != 3 {
+		t.Fatalf("window = %v, want 3", got)
+	}
+	if got := openAITTSWindowForGroup(groups, 1, 8); got != 4 {
+		t.Fatalf("last window = %v, want 4", got)
+	}
+}
+
+func TestVoiceTranslateTargetLangOpenAIUsesGPTEnv(t *testing.T) {
+	t.Setenv("GPT_TRANSLATE_RESLANG", "nl")
+	t.Setenv("VOICE_TRANSLATE_RESLANG", "ru")
+	if got := voiceTranslateTargetLang(voiceTranslateEngineOpenAI); got != "nl" {
+		t.Fatalf("openai target lang = %q, want nl", got)
+	}
+	if got := voiceTranslateTargetLang(voiceTranslateEngineVOT); got != "ru" {
+		t.Fatalf("vot target lang = %q, want ru", got)
+	}
+}
+
+func TestAtempoFilterForRatioChainsLargeRatio(t *testing.T) {
+	got := atempoFilterForRatio(5)
+	if !strings.Contains(got, "atempo=2") || !strings.Contains(got, "atempo=1.2500") {
+		t.Fatalf("unexpected atempo chain: %q", got)
 	}
 }
 

@@ -15,8 +15,11 @@ cd /home/appuser/trigger_admin_bot
 Базовые зависимости:
 - `ffmpeg`, `ffprobe` — обработка аудио/видео (конвертация, извлечение дорожек, проверка параметров медиафайлов).
 - `webp` (`img2webp`) — подготовка `.webp`-файлов, в том числе для стикеров и превью.
+- `librsvg2-bin` (`rsvg-convert`) — рендер SVG-ответов GPT в PNG перед отправкой в чат.
 - `yt-dlp` — скачивание медиа по ссылкам (YouTube, Instagram, Pinterest, SoundCloud, VK video и др.).
-- `nodejs` + `npm` — нужны `yt-dlp` для части YouTube-ссылок и для VOT/voice-translate CLI, если используется голосовой перевод.
+- `nodejs` + `npm` — нужны для VOT/voice-translate CLI, если он ставится через npm.
+- `pdflatex` + `pdftocairo` — опциональный системный рендер сложного LaTeX в rich article. Если их нет, LaTeX остаётся в статье обычным текстом.
+- `dot` + `mmdc` + `chromium` — опциональный рендер Graphviz/Mermaid-диаграмм в rich article.
 - `MongoDB` — основное хранилище триггеров, шаблонов, настроек, кешей и служебных данных бота.
 - `curl`/`ca-certificates` — сетевые проверки и загрузка внешних ресурсов.
 
@@ -26,11 +29,15 @@ cd /home/appuser/trigger_admin_bot
 INSTALL_MONGODB=1 ./scripts/install_deps.sh
 INSTALL_NODESOURCE=1 NODE_MAJOR=22 ./scripts/install_deps.sh
 INSTALL_VOT_CLI=1 ./scripts/install_deps.sh
+INSTALL_LATEX=1 ./scripts/install_deps.sh
+INSTALL_DIAGRAMS=1 ./scripts/install_deps.sh
 ```
 
 - `INSTALL_MONGODB=1` добавляет официальный MongoDB apt repository и запускает `mongod`.
 - `INSTALL_NODESOURCE=1` нужен, если distro Node.js слишком старый для VOT CLI.
 - `INSTALL_VOT_CLI=1` ставит `vot-cli` глобально через npm; нужен Node.js 18+.
+- `INSTALL_LATEX=1` ставит минимальный TeX Live набор для рендера сложного LaTeX/TikZ/pgfplots/химических формул в rich article (`texlive-latex-*`, `texlive-pictures`, `texlive-lang-cyrillic`, `texlive-plain-generic`, `texlive-science`, `texlive-humanities`, `poppler-utils`).
+- `INSTALL_DIAGRAMS=1` ставит Graphviz (`dot`), Chromium и Mermaid CLI (`mmdc`) для блоков ` ```dot `, ` ```graphviz `, ` ```mermaid ` и ` ```mmd ` в rich article.
 
 Дополнительно для превью `.tgs` в админке:
 - Установите `lottie_to_webp` или `lottie_to_webp.sh` в `PATH`, чтобы админка могла строить превью анимированных стикеров (`.tgs`).
@@ -196,12 +203,13 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `media_coub_download` — интерактивный Coub flow: видео, аудио, loop/сборка.
 - `media_x_download` — скачивание и отправка медиа из X (Twitter)-ссылок с отдельной иконкой в подписи.
 
-### Голосовой перевод (`/translate_voice`)
-- Работает reply-командой на `voice`, `audio`, `video` и часть media-сообщений.
-- Умеет отдавать перевод текстом, аудио, субтитрами, аудиомиксом и видеомиксом.
-- Кеширует результаты в MongoDB и `VOICE_TRANSLATE_TMP_DIR`, чтобы повторные действия не гоняли один и тот же файл заново.
-- Для share-ссылок нужен публичный base URL (`VOICE_TRANSLATE_PUBLIC_BASE_URL`) и корректный `WEB_STATIC_DIR`.
-- Для VOT-режима нужны `VOT_CLI_BIN` и при необходимости `VOICE_TRANSLATE_NODE_BIN`.
+### Голосовой перевод (`/translate_voice`, `/translate_gpt`)
+- `/translate_voice` работает через VOT: reply-команда на `voice`, `audio`, `video` и часть media-сообщений.
+- `/translate_gpt` работает отдельным OpenAI-пайплайном: транскрибация, GPT-перевод, TTS-озвучка и тот же набор выдачи.
+- Оба режима умеют отдавать перевод текстом, аудио, субтитрами, аудиомиксом и видеомиксом.
+- Результаты кешируются в MongoDB и `VOICE_TRANSLATE_TMP_DIR`, чтобы повторные действия не гоняли один и тот же файл заново.
+- Для `/translate_voice` нужны share-ссылки (`VOICE_TRANSLATE_PUBLIC_BASE_URL` + корректный `WEB_STATIC_DIR`) и `VOT_CLI_BIN`/`VOICE_TRANSLATE_NODE_BIN`.
+- Для `/translate_gpt` нужен `OPENAI_API_KEY`; VOT и публичная share-ссылка в этом режиме не используются.
 
 ## ⚙️ Важные переменные окружения
 
@@ -237,6 +245,16 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `GPT_HUMAN_PAUSE` и `GPT_HUMAN_PAUSE_*` — человекоподобная пауза перед GPT-ответом.
 - `GPT_LINK_CONTEXT_ENABLED`, `GPT_LINK_CONTEXT_MAX_URLS`, `GPT_LINK_CONTEXT_MAX_CHARS` — добавление содержимого ссылок в GPT-контекст.
 - `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_ORIENTATION_MODEL`, `AUDIO_TRANSCRIPTION_MODEL` — отдельные модели для web-search/orientation/transcription, если нужно переопределить `OPENAI_MODEL`.
+- `TRIGGER_BOT_PDFLATEX_BIN` — необязательный путь к `pdflatex` для рендера сложного LaTeX в rich article. Если пусто, используется `PATH`.
+- `TRIGGER_BOT_PDFTOCAIRO_BIN` — необязательный путь к `pdftocairo` для конвертации LaTeX PDF в PNG. Если пусто, используется `PATH`.
+- `TRIGGER_BOT_LATEX_TIMEOUT_MS` — таймаут рендера одной формулы через системный LaTeX; дефолт `15000`.
+- `TRIGGER_BOT_RICH_ARTICLE_IMAGE_WIDTH` — ширина PNG-холста для встроенных формул/диаграмм в rich article; дефолт `573`.
+- `TRIGGER_BOT_RSVG_CONVERT_BIN` — необязательный путь к `rsvg-convert` для рендера SVG-ответов GPT в PNG. Если пусто, используется `PATH`.
+- `GPT_SVG_RENDER_TIMEOUT_SEC`, `GPT_SVG_RENDER_MAX_BYTES`, `GPT_SVG_RENDER_MAX_DIM` — лимиты рендера SVG-ответов GPT; дефолты `15`, `262144`, `2048`.
+- `TRIGGER_BOT_GRAPHVIZ_BIN` — необязательный путь к `dot` для рендера Graphviz-диаграмм в rich article. Если пусто, используется `PATH`.
+- `TRIGGER_BOT_MERMAID_BIN` — необязательный путь к `mmdc` для рендера Mermaid-диаграмм в rich article. Если пусто, используется `PATH`.
+- `TRIGGER_BOT_CHROMIUM_BIN` — необязательный путь к `chromium`, который запускает Mermaid CLI. Если пусто, используется `PATH`.
+- `TRIGGER_BOT_DIAGRAM_TIMEOUT_MS` — таймаут рендера одной Mermaid/Graphviz-диаграммы; дефолт `20000`.
 
 ### Очистка чата и MTProto через tg-ops-service
 - `CLEAR_CHAT_OPS_URL` — базовый URL сервиса (например, `http://127.0.0.1:8089`).
@@ -311,7 +329,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 ### Голосовая транскрибация и перевод
 - `VOICE_TRANSCRIPTION_ENABLED` — включает авто-транскрибацию voice-сообщений для чата и trigger matching.
 - `AUDIO_TRANSCRIPTION_MODEL` — модель для расшифровки аудио.
-- `VOICE_TRANSLATE_PROVIDER` — провайдер голосового перевода (`vot`/fallback-логика зависит от сборки).
+- `VOICE_TRANSLATE_PROVIDER` — провайдер VOT-перевода для `/translate_voice`.
 - `VOICE_TRANSLATE_SRCLANG` / `VOICE_TRANSLATE_RESLANG` — языки исходной речи и результата для VOT.
 - `VOICE_TRANSLATE_TMP_DIR` — директория временных и кеш-файлов voice translate. Если пусто, используется `TRIGGER_BOT_TMP_DIR/voice`.
 - `VOICE_TRANSLATE_CACHE_TTL_SEC` / `VOICE_TRANSLATE_TMP_MAX_AGE_SEC` — TTL кеша и очистки tmp.
@@ -319,10 +337,18 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `VOICE_TRANSLATE_WORKERS` / `VOICE_TRANSLATE_QUEUE` — воркеры и очередь voice translate.
 - `VOICE_TRANSLATE_MAX_MB` — лимит результата для отправки.
 - `VOICE_TRANSLATE_PUBLIC_BASE_URL` / `VOICE_TRANSLATE_SHARE_TTL_SEC` — публичные ссылки на результаты, если включён share-flow.
-- `VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME` — баланс оригинала и озвучки в микшированном переводе; дефолт `0.92` и `1.00`.
+- `VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME` — баланс оригинала и озвучки в микшированном переводе; дефолт `0.92` и `1.20`.
 - `VOICE_TRANSLATE_MIX_DUCK_THRESHOLD` / `VOICE_TRANSLATE_MIX_DUCK_RATIO` — насколько сильно оригинал приглушается, когда активна озвучка; дефолт `0.06` и `3`.
-- `VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME` — запасной баланс, если динамический ducking не сработал; дефолт `0.80` и `1.00`.
+- `VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME` — запасной баланс, если динамический ducking не сработал; дефолт `0.80` и `1.20`.
 - `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к VOT CLI и Node.js.
+- `GPT_TRANSLATE_MODEL` — модель GPT-перевода для `/translate_gpt`; если пусто, используется `OPENAI_MODEL`, затем `gpt-4.1`.
+- `GPT_TRANSLATE_TRANSCRIBE_MODEL` — модель распознавания речи для `/translate_gpt`; если пусто, используется `AUDIO_TRANSCRIPTION_MODEL`, затем `whisper-1`.
+- `GPT_TRANSLATE_TTS_MODEL` / `GPT_TRANSLATE_TTS_VOICE` — модель и голос OpenAI TTS для `/translate_gpt`; дефолтный голос `marin`.
+- `GPT_TRANSLATE_RESLANG` — целевой язык `/translate_gpt`; если пусто, используется `VOICE_TRANSLATE_RESLANG`, затем `ru`.
+- `GPT_TRANSLATE_TIMEOUT_SEC` — таймаут OpenAI-запросов `/translate_gpt`; если пусто, используется `VOICE_TRANSLATE_TIMEOUT_SEC`.
+- `GPT_TRANSLATE_DUB_GROUP_MAX_SEC` / `GPT_TRANSLATE_DUB_GROUP_MAX_GAP_SEC` — верхняя длительность и обычная пауза для фразовых групп `/translate_gpt`; дефолт `14` и `1.2`.
+- `GPT_TRANSLATE_DUB_GROUP_STRONG_GAP_SEC` — пауза, которая всегда разрывает фразу; дефолт `2.4`.
+- `GPT_TRANSLATE_DUB_GROUP_MIN_SEC` / `GPT_TRANSLATE_DUB_GROUP_MIN_CHARS` / `GPT_TRANSLATE_DUB_GROUP_MAX_CHARS` — защита от озвучки одиночных коротких фрагментов; дефолт `2.2`, `28`, `520`.
 
 ### Roleplay inline
 - `ROLEPLAY_INLINE_THUMB_BASE_URL` — публичный base URL для картинок-превью inline-меню `/roleplay`; если пусто, используется `VOICE_TRANSLATE_PUBLIC_BASE_URL`.
@@ -375,7 +401,8 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `/clear_chat` — отправляет команду очистки в `tg_ops_service` (с подтверждением; для админов).
 - `/set_mtproto` — пошагово привязывает чат к MTProto в `tg_ops_service` (показывается только когда включено).
 - `/anon <текст>` — отправляет анонимное сообщение со стабильным псевдонимом.
-- `/translate_voice` — переводит voice/audio/video из reply: текст, аудио, субтитры, микс или видеомикс.
+- `/translate_voice` — переводит voice/audio/video через VOT из reply: текст, аудио, субтитры, микс или видеомикс.
+- `/translate_gpt` — переводит voice/audio/video через OpenAI из reply: текст, аудио, субтитры, микс или видеомикс.
 - `/emojiid` (`/emoji_id`) — показывает ID кастомного emoji.
   Использование: отправьте команду или кастомный emoji (лучше в личку боту).
 - `/stickerid` (`/sticker_id`) — показывает file ID стикера из сообщения.

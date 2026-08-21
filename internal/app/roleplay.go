@@ -385,11 +385,7 @@ func handleRoleplayInlineSentMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 	st.ActorID = msg.From.ID
 	st.ActorLink = buildUserLink(msg.From)
 	st.ActorTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID)
-	if strings.Contains(firstNonEmptyUserText(msg), "→ кого-то") && msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil && msg.ReplyToMessage.From.ID != msg.From.ID {
-		st.TargetID = msg.ReplyToMessage.From.ID
-		st.TargetLink = buildUserLink(msg.ReplyToMessage.From)
-		st.TargetTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, st.TargetID)
-	}
+	st = roleplayApplyReplyTarget(bot, st, msg)
 	defaultRoleplaySessions.update(st)
 
 	if st.TargetID == 0 || roleplayPlainText(st.TargetLink) == "кого-то" {
@@ -417,6 +413,22 @@ func handleRoleplayInlineSentMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 		return true
 	}
 	return true
+}
+
+func roleplayApplyReplyTarget(bot *tgbotapi.BotAPI, st roleplaySession, msg *tgbotapi.Message) roleplaySession {
+	if msg == nil || msg.From == nil || msg.Chat == nil || msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+		return st
+	}
+	if msg.ReplyToMessage.From.ID == 0 || msg.ReplyToMessage.From.ID == msg.From.ID {
+		return st
+	}
+	if st.TargetID != 0 || roleplayPlainText(st.TargetLink) != "кого-то" {
+		return st
+	}
+	st.TargetID = msg.ReplyToMessage.From.ID
+	st.TargetLink = buildUserLink(msg.ReplyToMessage.From)
+	st.TargetTag = roleplayMemberTag(bot, msg.Chat.ID, st.TargetID)
+	return st
 }
 
 func roleplaySessionIDFromMarkup(markup *tgbotapi.InlineKeyboardMarkup) string {

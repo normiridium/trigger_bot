@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,10 @@ TARGETS = {
         "tag_prefix": "tiktok",
         "config": "tiktok-vless-ru.json",
         "service": "sing-box-tiktok.service",
-        "probe_url": "https://www.tiktok.com/",
+        "probe_url": "https://vt.tiktok.com/",
+        "probe_follow_redirects": True,
+        "filter_outbounds_by_probe": True,
+        "prefer_profile_aliases": ["бс-0"],
     },
 }
 
@@ -158,13 +162,29 @@ def compatible_vless_reality(outbound: JSON) -> bool:
     )
 
 
-def selected_source(profiles: list[JSON], country: str, tag_prefix: str, max_outbounds: int) -> tuple[JSON, list[str]]:
+def selected_source(
+    profiles: list[JSON],
+    country: str,
+    tag_prefix: str,
+    max_outbounds: int,
+    prefer_profile_aliases: list[str] | None = None,
+) -> tuple[JSON, list[str]]:
     selected: list[JSON] = []
     matched_profiles: list[str] = []
+    candidates: list[tuple[JSON, str]] = []
+    preferred: list[tuple[JSON, str]] = []
+    aliases = [alias.strip().lower() for alias in (prefer_profile_aliases or []) if alias.strip()]
     for profile in profiles:
         name = profile_name(profile)
         if not country_matches(name, country):
             continue
+        item = (profile, name)
+        candidates.append(item)
+        if aliases and any(alias in name.lower() for alias in aliases):
+            preferred.append(item)
+    if preferred:
+        candidates = preferred
+    for profile, name in candidates:
         profile_had_compatible = False
         for outbound in profile.get("outbounds", []):
             if not isinstance(outbound, dict) or not compatible_vless_reality(outbound):
@@ -216,7 +236,73 @@ def convert_target(source: JSON, args: argparse.Namespace, target_name: str, tar
     for line in proc.stdout.splitlines():
         if line.startswith(("listen=", "converted=", "skipped=", "check=")):
             log(f"{target_name}: {line}")
+    probe_url = str(target.get("probe_url") or "").strip()
+    if probe_url:
+        converted = json.loads(output_path.read_text(encoding="utf-8"))
+        for outbound in converted.get("outbounds", []):
+            if isinstance(outbound, dict) and outbound.get("type") == "urltest":
+                outbound["url"] = probe_url
+                if env_bool(str(target.get("filter_outbounds_by_probe", "")), False):
+                    outbound["outbounds"] = filter_working_outbounds(converted, outbound, target_name, target, workdir, args)
+        output_path.write_text(json.dumps(converted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        run(["/usr/bin/sing-box", "check", "-c", str(output_path)])
     return output_path
+
+
+def filter_working_outbounds(
+    converted: JSON,
+    urltest: JSON,
+    target_name: str,
+    target: JSON,
+    workdir: Path,
+    args: argparse.Namespace,
+) -> list[str]:
+    tags = [tag for tag in urltest.get("outbounds", []) if isinstance(tag, str) and tag.strip()]
+    if len(tags) <= 1:
+        return tags
+
+    working: list[str] = []
+    probe_url = str(target["probe_url"])
+    base_port = int(target["listen_port"]) + 1000
+    for idx, tag in enumerate(tags):
+        probe_config = copy.deepcopy(converted)
+        probe_port = base_port + idx
+        probe_config["inbounds"][0]["listen_port"] = probe_port
+        for outbound in probe_config.get("outbounds", []):
+            if isinstance(outbound, dict) and outbound.get("tag") == urltest.get("tag"):
+                outbound["outbounds"] = [tag]
+                outbound["url"] = probe_url
+        probe_path = workdir / f"{target_name}-{tag}-probe.json"
+        probe_path.write_text(json.dumps(probe_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        proc = subprocess.Popen(
+            ["/usr/bin/sing-box", "-D", str(workdir), "-c", str(probe_path), "run"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            time.sleep(0.7)
+            ok = probe_proxy(
+                probe_port,
+                probe_url,
+                1,
+                args.probe_timeout,
+                follow_redirects=env_bool(str(target.get("probe_follow_redirects", "")), False),
+            )
+            if ok:
+                working.append(tag)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=2)
+
+    if not working:
+        raise SystemExit(f"{target_name}: no outbounds passed probe_url={probe_url}")
+    log(f"{target_name}: working_outbounds={','.join(working)}")
+    return working
 
 
 def install_config(candidate: Path, destination: Path, backup_suffix: str) -> Path | None:
@@ -240,23 +326,27 @@ def restart_user_service(service: str) -> None:
     log(f"{service}: restarted")
 
 
-def probe_proxy(port: int, url: str, attempts: int, timeout: int) -> bool:
+def probe_proxy(port: int, url: str, attempts: int, timeout: int, *, follow_redirects: bool = False) -> bool:
     for attempt in range(1, attempts + 1):
+        cmd = [
+            "curl",
+            "-sS",
+            "--max-time",
+            str(timeout),
+            "--socks5-hostname",
+            f"127.0.0.1:{port}",
+            url,
+            "-o",
+            "/dev/null",
+            "-w",
+            "http=%{http_code} total=%{time_total}",
+        ]
+        if follow_redirects:
+            cmd.insert(2, "-L")
+        else:
+            cmd.insert(2, "-I")
         proc = run(
-            [
-                "curl",
-                "-sS",
-                "-I",
-                "--max-time",
-                str(timeout),
-                "--proxy",
-                f"socks5://127.0.0.1:{port}",
-                url,
-                "-o",
-                "/dev/null",
-                "-w",
-                "http=%{http_code} total=%{time_total}",
-            ],
+            cmd,
             check=False,
         )
         line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
@@ -316,7 +406,13 @@ def main() -> None:
         for target_name in targets:
             target = TARGETS[target_name]
             country = env.get(str(target["country_env"]), str(target["country"]))
-            source, profile_names = selected_source(profiles, country, str(target["tag_prefix"]), args.max_outbounds)
+            source, profile_names = selected_source(
+                profiles,
+                country,
+                str(target["tag_prefix"]),
+                args.max_outbounds,
+                list(target.get("prefer_profile_aliases") or []),
+            )
             log(f"{target_name}: country={country} profiles={len(profile_names)} outbounds={len(source['outbounds'])}")
             for name in profile_names:
                 log(f"{target_name}: selected_profile={name}")
@@ -341,7 +437,13 @@ def main() -> None:
                 target = TARGETS[target_name]
                 if target_name not in installed:
                     continue
-                ok = probe_proxy(int(target["listen_port"]), str(target["probe_url"]), args.probe_attempts, args.probe_timeout)
+                ok = probe_proxy(
+                    int(target["listen_port"]),
+                    str(target["probe_url"]),
+                    args.probe_attempts,
+                    args.probe_timeout,
+                    follow_redirects=env_bool(str(target.get("probe_follow_redirects", "")), False),
+                )
                 if not ok:
                     destination, backup = installed[target_name]
                     restore_backup(destination, backup, str(target["service"]))

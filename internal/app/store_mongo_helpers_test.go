@@ -2,8 +2,10 @@ package app
 
 import (
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func TestResponseItemsFromRaw(t *testing.T) {
@@ -86,6 +88,21 @@ func TestMongoDBNameFromURI(t *testing.T) {
 		if got := mongoDBNameFromURI(tc.uri); got != tc.want {
 			t.Fatalf("mongoDBNameFromURI(%q) = %q, want %q", tc.uri, got, tc.want)
 		}
+	}
+}
+
+func TestMongoTimestampUnix(t *testing.T) {
+	when := time.Date(2026, 8, 5, 9, 52, 23, 0, time.UTC)
+	want := when.Unix()
+
+	if got := mongoTimestampUnix(want); got != want {
+		t.Fatalf("int64 timestamp = %d, want %d", got, want)
+	}
+	if got := mongoTimestampUnix(primitive.NewDateTimeFromTime(when)); got != want {
+		t.Fatalf("primitive.DateTime timestamp = %d, want %d", got, want)
+	}
+	if got := mongoTimestampUnix(when); got != want {
+		t.Fatalf("time.Time timestamp = %d, want %d", got, want)
 	}
 }
 

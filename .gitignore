@@ -2,6 +2,9 @@
 trigger_admin_bot
 trigger_admin_bot.disabled-*
 
+# node dependencies
+node_modules/
+
 # secrets
 .env
 cookies.txt

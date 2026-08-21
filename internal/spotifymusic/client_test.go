@@ -112,6 +112,37 @@ func TestDoJSON_Non2xxIncludesBody(t *testing.T) {
 	}
 }
 
+func TestEnsureToken_RetriesTransientRequestError(t *testing.T) {
+	calls := 0
+	c := New("id", "secret")
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, spotifyTimeoutError{}
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if string(raw) != "grant_type=client_credentials" {
+			t.Fatalf("unexpected token body: %q", string(raw))
+		}
+		body := `{"access_token":"tok","expires_in":3600}`
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+
+	token, err := c.ensureToken(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token != "tok" {
+		t.Fatalf("unexpected token: %q", token)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls, got %d", calls)
+	}
+}
+
 func TestGetTrack_EmptyID(t *testing.T) {
 	c := New("id", "secret")
 	_, err := c.GetTrack(context.Background(), " ")
@@ -119,6 +150,12 @@ func TestGetTrack_EmptyID(t *testing.T) {
 		t.Fatalf("expected empty track id error, got: %v", err)
 	}
 }
+
+type spotifyTimeoutError struct{}
+
+func (spotifyTimeoutError) Error() string   { return "i/o timeout" }
+func (spotifyTimeoutError) Timeout() bool   { return true }
+func (spotifyTimeoutError) Temporary() bool { return true }
 
 func TestExtractTrackID(t *testing.T) {
 	cases := []struct {

@@ -458,7 +458,19 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		log.Printf("gpt flow trigger=%d has_html=%v has_markdown_lite=%v has_rich_article=%v", task.Trigger.ID, hasHTML, hasMarkdownLite, hasRichArticle)
 	}
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.Msg.Chat.ID, ReplyTo: replyTo}
-	if hasRichArticle {
+	if svgSource, ok := extractFirstSVGFromGPTResponse(out); ok {
+		pngBytes, err := renderGPTSVGResponseToPNG(svgSource)
+		if err != nil {
+			log.Printf("gpt svg render failed trigger=%d chat=%d msg=%d err=%v svg=%q",
+				task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, err, clipText(svgSource, 900))
+			reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка рендера SVG", err)
+			return
+		}
+		if ok := sendPhoto(sendCtx, generatedImage{Bytes: pngBytes}, "", false); ok {
+			sent = true
+			sendMode = "svg_png"
+		}
+	} else if hasRichArticle {
 		richOut := responseToRichMarkdownArticle(out)
 		if debugGPTLogEnabled {
 			log.Printf("gpt flow trigger=%d rich_article_len=%d rich_article_tgemoji=%d rich_article=%q",
@@ -1291,10 +1303,13 @@ func buildTemplateLookup(store TriggerStorePort) func(string) string {
 	var mu sync.Mutex
 	cache := map[string]string{}
 	var lastLoad time.Time
-	load := func() {
+	load := func() bool {
 		items, err := store.ListTemplates()
 		if err != nil {
-			return
+			if debugTriggerLogEnabled || debugGPTLogEnabled {
+				log.Printf("template lookup load failed: %v", err)
+			}
+			return false
 		}
 		next := map[string]string{}
 		for _, it := range items {
@@ -1306,6 +1321,7 @@ func buildTemplateLookup(store TriggerStorePort) func(string) string {
 		}
 		cache = next
 		lastLoad = time.Now()
+		return true
 	}
 	return func(key string) string {
 		key = strings.TrimSpace(key)
@@ -1320,6 +1336,9 @@ func buildTemplateLookup(store TriggerStorePort) func(string) string {
 		if val == "" {
 			load()
 			val = cache[key]
+		}
+		if val == "" && (debugTriggerLogEnabled || debugGPTLogEnabled) {
+			log.Printf("template lookup miss key=%q cached_keys=%d last_load=%s", key, len(cache), lastLoad.Format(time.RFC3339))
 		}
 		mu.Unlock()
 		return val
@@ -1345,7 +1364,10 @@ func expandTemplateCalls(input string, lookup func(string) string) string {
 			}
 			val := lookup(key)
 			if val == "" {
-				return ""
+				if debugTriggerLogEnabled || debugGPTLogEnabled {
+					log.Printf("template expand miss key=%q", key)
+				}
+				return m
 			}
 			changed = true
 			return val
@@ -1934,6 +1956,9 @@ func Run() {
 	userGPTTokenLowThreshold := userGPTTokenLimitLowThreshold(userGPTTokenLimit)
 	if userGPTTokenLimit > 0 {
 		log.Printf("per-user GPT token limit enabled: %d tokens per 4h window (UTC), low warning threshold=%d", userGPTTokenLimit, userGPTTokenLowThreshold)
+		if ownerIDs := configuredBotOwnerIDsForLog(); ownerIDs != "" {
+			log.Printf("per-user GPT token limit excludes configured bot owners/admins: %s", ownerIDs)
+		}
 	} else {
 		log.Printf("per-user GPT token limit disabled")
 	}
@@ -2071,7 +2096,7 @@ func Run() {
 			MediaInteractive:  mediaInteractive,
 			TemplateLookup:    templateLookup,
 			RecordGPTTokens: func(userID int64, tokens int, now time.Time) (int, bool, error) {
-				if userGPTTokenLimit <= 0 || userID == 0 || tokens <= 0 {
+				if userGPTTokenLimit <= 0 || userID == 0 || tokens <= 0 || !userGPTTokenLimitApplies(userID) {
 					return 0, false, nil
 				}
 				before, err := store.UserGPTTokensRemaining(userID, now, userGPTTokenLimit)
@@ -2329,6 +2354,7 @@ func Run() {
 		}
 		trackMessageRevision(msg)
 		rawMsg := update.RawMessage
+		hydrateReplyToMessageTextFromRaw(msg, rawMsg)
 		senderChatPresent := msg != nil && msg.SenderChat != nil
 		if senderChatPresent {
 			// Telegram anonymous/channel-posted messages may come with From=nil or GroupAnonymousBot.
@@ -2433,7 +2459,7 @@ func Run() {
 						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
 						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
 						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
-						cmdTranslateVoice, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
+						cmdTranslateVoice, cmdTranslateGPT, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
 						cmdReadonly, cmdReloadAdmins, cmdBalance,
 					}
 					s = "Триггер-бот активен.\n\n" +
@@ -2706,14 +2732,24 @@ func Run() {
 				if handleAnonCommand(bot, msg) {
 					continue
 				}
-			case cmdTranslateVoice:
+			case cmdTranslateVoice, cmdTranslateGPT:
+				engine := voiceTranslateEngineVOT
+				usage := "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice."
+				needReply := "Нужен реплай на аудио/видео/voice."
+				menuTitle := "Действия с переводом:"
+				if cmd == cmdTranslateGPT {
+					engine = voiceTranslateEngineOpenAI
+					usage = "Использование: ответьте /translate_gpt на сообщение с аудио/видео/voice."
+					needReply = "Нужен реплай на аудио/видео/voice для GPT-перевода."
+					menuTitle = "Действия с GPT-переводом:"
+				}
 				if msg.ReplyToMessage == nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice.", false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), usage, false)
 					continue
 				}
 				srcMediaMsg, mediaInfo, mediaSize, mediaOK := detectReplyMediaSource(msg)
 				if !mediaOK {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Нужен реплай на аудио/видео/voice.", false)
+					reply(cmdSendCtx.WithReply(msg.MessageID), needReply, false)
 					continue
 				}
 				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
@@ -2733,10 +2769,11 @@ func Run() {
 					chatID:  msg.Chat.ID,
 					userID:  msg.From.ID,
 					replyTo: replyToID,
+					engine:  engine,
 					media:   mediaInfo,
 				})
-				menu := tgbotapi.NewMessage(msg.Chat.ID, "Действия с переводом:")
-				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo)
+				menu := tgbotapi.NewMessage(msg.Chat.ID, menuTitle)
+				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo, engine)
 				if replyToID > 0 {
 					menu.ReplyToMessageID = replyToID
 					menu.AllowSendingWithoutReply = true
@@ -2882,6 +2919,9 @@ func Run() {
 		var quotaLowWarningTrigger *Trigger
 		checkGPTTokenQuota := func() bool {
 			if userGPTTokenLimit <= 0 || msg.From == nil || msg.From.ID == 0 {
+				return true
+			}
+			if !userGPTTokenLimitApplies(msg.From.ID) {
 				return true
 			}
 			remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit)
@@ -3267,7 +3307,7 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 		if deps.SpotifyMusic == nil || !deps.SpotifyMusic.Enabled() {
 			return errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены")
 		}
-		searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		searchCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 		tracks, err := deps.SpotifyMusic.SearchTracks(searchCtx, query, 10)
 		cancel()
 		if err != nil {
@@ -3855,7 +3895,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			replyTo = msg.MessageID
 		}
 		if trackID, ok := spotifymusic.ExtractTrackID(query); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 			track, err := deps.SpotifyMusic.GetTrack(ctx, trackID)
 			cancel()
 			if err != nil {
@@ -3891,7 +3931,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		tracks, err := deps.SpotifyMusic.SearchTracks(ctx, query, 10)
 		cancel()
 		if err != nil {
@@ -4073,7 +4113,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка Spotify-музыки", errors.New("SPOTIPY_CLIENT_ID/SPOTIPY_CLIENT_SECRET не настроены"))
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 			track, err := deps.SpotifyMusic.GetTrack(ctx, trackID)
 			cancel()
 			if err != nil {

@@ -431,7 +431,39 @@ func sendRichMarkdownArticle(ctx sendContext, markdown string, preview bool) boo
 		return false
 	}
 
-	m := tgbotapi.NewRichMessageMarkdown(ctx.ChatID, markdown)
+	renderedMarkdown, attachments, err := renderRichArticleMediaBlocks(markdown)
+	if err != nil {
+		log.Printf("send rich article failed chat=%d replyTo=%d: render rich media blocks: %v", ctx.ChatID, ctx.ReplyTo, err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка рендера вложений для статьи", err)
+		return false
+	}
+	renderedMarkdown = sanitizeRichArticlePhotoLinks(renderedMarkdown, attachments)
+	if len([]rune(renderedMarkdown)) > telegramRichMessageTextLimit {
+		err := fmt.Errorf("rich markdown message exceeds Telegram limit after media sanitizing: %d/%d characters", len([]rune(renderedMarkdown)), telegramRichMessageTextLimit)
+		log.Printf("send rich article failed chat=%d replyTo=%d: %v", ctx.ChatID, ctx.ReplyTo, err)
+		reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки статьи", err)
+		return false
+	}
+	if len(attachments) > 0 {
+		sent, err := sendRichMarkdownArticleWithMedia(ctx, renderedMarkdown, attachments)
+		if err != nil {
+			log.Printf("send rich article failed chat=%d replyTo=%d media=%d: %v", ctx.ChatID, ctx.ReplyTo, len(attachments), err)
+			reportChatFailure(ctx.Bot, ctx.ChatID, "ошибка отправки статьи", err)
+			return false
+		}
+		if debugTriggerLogEnabled {
+			log.Printf("send rich article ok chat=%d msg=%d replyTo=%d media=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, len(attachments), clipText(renderedMarkdown, 120))
+		}
+		plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(replaceTGEmojiTagsWithFallback(rawText), " "))
+		if plain == "" {
+			plain = rawText
+		}
+		addOutgoingChatRecentMessage(ctx.ChatID, plain)
+		observeOutgoingBotPortrait(ctx.ChatID, plain)
+		return true
+	}
+
+	m := tgbotapi.NewRichMessageMarkdown(ctx.ChatID, renderedMarkdown)
 	if ctx.ReplyTo > 0 {
 		m.ReplyToMessageID = ctx.ReplyTo
 		m.AllowSendingWithoutReply = true
@@ -443,7 +475,7 @@ func sendRichMarkdownArticle(ctx sendContext, markdown string, preview bool) boo
 		return false
 	}
 	if debugTriggerLogEnabled {
-		log.Printf("send rich article ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(markdown, 120))
+		log.Printf("send rich article ok chat=%d msg=%d replyTo=%d text=%q", ctx.ChatID, sent.MessageID, ctx.ReplyTo, clipText(renderedMarkdown, 120))
 	}
 	plain := strings.TrimSpace(htmlTagStripRe.ReplaceAllString(replaceTGEmojiTagsWithFallback(rawText), " "))
 	if plain == "" {
@@ -452,6 +484,67 @@ func sendRichMarkdownArticle(ctx sendContext, markdown string, preview bool) boo
 	addOutgoingChatRecentMessage(ctx.ChatID, plain)
 	observeOutgoingBotPortrait(ctx.ChatID, plain)
 	return true
+}
+
+func sendRichMarkdownArticleWithMedia(ctx sendContext, markdown string, attachments []richArticleRenderedAttachment) (tgbotapi.Message, error) {
+	if ctx.Bot == nil {
+		return tgbotapi.Message{}, errors.New("telegram bot is nil")
+	}
+	media := make([]tgbotapi.InputRichMessageMedia, 0, len(attachments))
+	documents := make([]richArticleRenderedAttachment, 0)
+	for _, attachment := range attachments {
+		if strings.TrimSpace(attachment.ID) == "" || len(attachment.PNG) == 0 {
+			return tgbotapi.Message{}, errors.New("invalid rendered formula attachment")
+		}
+		if attachment.Document {
+			documents = append(documents, attachment)
+			continue
+		}
+		media = append(media, tgbotapi.NewInputRichMessageMediaPhoto(attachment.ID, tgbotapi.FileBytes{
+			Name:  attachment.FileName,
+			Bytes: attachment.PNG,
+		}))
+	}
+
+	var m tgbotapi.RichMessageConfig
+	if len(media) > 0 {
+		m = tgbotapi.NewRichMessageMarkdownWithMedia(ctx.ChatID, markdown, media)
+	} else {
+		m = tgbotapi.NewRichMessageMarkdown(ctx.ChatID, markdown)
+	}
+	if ctx.ReplyTo > 0 {
+		m.ReplyToMessageID = ctx.ReplyTo
+		m.AllowSendingWithoutReply = true
+	}
+	sent, err := ctx.Bot.Send(m)
+	if err != nil {
+		return tgbotapi.Message{}, err
+	}
+	if err := sendRichArticleFormulaDocuments(ctx, sent.MessageID, documents); err != nil {
+		return sent, err
+	}
+	return sent, nil
+}
+
+func sendRichArticleFormulaDocuments(ctx sendContext, replyTo int, documents []richArticleRenderedAttachment) error {
+	if len(documents) == 0 {
+		return nil
+	}
+	for _, attachment := range documents {
+		doc := tgbotapi.NewDocument(ctx.ChatID, tgbotapi.FileBytes{
+			Name:  attachment.FileName,
+			Bytes: attachment.PNG,
+		})
+		doc.Caption = "LaTeX PNG: " + attachment.FileName
+		if replyTo > 0 {
+			doc.ReplyToMessageID = replyTo
+			doc.AllowSendingWithoutReply = true
+		}
+		if _, err := ctx.Bot.Send(doc); err != nil {
+			return fmt.Errorf("send formula document %s: %w", attachment.FileName, err)
+		}
+	}
+	return nil
 }
 
 func sendMarkdownV2(ctx sendContext, text string, preview bool) bool {

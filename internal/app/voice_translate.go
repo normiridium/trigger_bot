@@ -38,11 +38,19 @@ type voiceTranslateTask struct {
 	ChatID  int64
 	ReplyTo int
 	Msg     *tgbotapi.Message
+	Engine  voiceTranslateEngine
 	Action  voiceTranslateAction
 	Media   replyMediaInfo
 	SrcLang string
 	ResLang string
 }
+
+type voiceTranslateEngine string
+
+const (
+	voiceTranslateEngineVOT    voiceTranslateEngine = "vot"
+	voiceTranslateEngineOpenAI voiceTranslateEngine = "openai"
+)
 
 type voiceTranslateAction string
 
@@ -95,6 +103,7 @@ type voiceTranslateOptionEntry struct {
 	chatID    int64
 	userID    int64
 	replyTo   int
+	engine    voiceTranslateEngine
 	media     replyMediaInfo
 	expiresAt time.Time
 }
@@ -242,6 +251,10 @@ func buildVoiceTranslateCacheKey(fileID string) string {
 }
 
 func buildVoiceTranslateCacheKeyWithLang(fileID, srcLang, resLang string) string {
+	return buildVoiceTranslateCacheKeyWithProvider(fileID, srcLang, resLang, "")
+}
+
+func buildVoiceTranslateCacheKeyWithProvider(fileID, srcLang, resLang, provider string) string {
 	if v := normalizeVOTLang(srcLang); v != "" {
 		srcLang = v
 	} else {
@@ -252,9 +265,12 @@ func buildVoiceTranslateCacheKeyWithLang(fileID, srcLang, resLang string) string
 	} else {
 		resLang = "ru"
 	}
-	provider := strings.ToLower(strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PROVIDER")))
+	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
-		provider = "yandex"
+		provider = strings.ToLower(strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_PROVIDER")))
+		if provider == "" {
+			provider = "yandex"
+		}
 	}
 	return strings.TrimSpace(fileID) + "|" + srcLang + "|" + resLang + "|" + provider
 }
@@ -1019,22 +1035,47 @@ func takeVoiceTranslateOption(token string, userID int64) (voiceTranslateOptionE
 	return v, true, ""
 }
 
-func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool) tgbotapi.InlineKeyboardMarkup {
+func normalizeVoiceTranslateEngine(engine voiceTranslateEngine) voiceTranslateEngine {
+	switch voiceTranslateEngine(strings.ToLower(strings.TrimSpace(string(engine)))) {
+	case voiceTranslateEngineOpenAI:
+		return voiceTranslateEngineOpenAI
+	default:
+		return voiceTranslateEngineVOT
+	}
+}
+
+func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool, engines ...voiceTranslateEngine) tgbotapi.InlineKeyboardMarkup {
+	engine := voiceTranslateEngineVOT
+	if len(engines) > 0 {
+		engine = normalizeVoiceTranslateEngine(engines[0])
+	}
+	audioLabel := "Скачать аудио"
+	mixLabel := "Аудиомикс"
+	videoLabel := "Видеомикс"
+	textLabel := "Перевод текст"
+	subsLabel := "Перевод субтитры"
+	if engine == voiceTranslateEngineOpenAI {
+		audioLabel = "GPT озвучка"
+		mixLabel = "GPT аудиомикс"
+		videoLabel = "GPT видеомикс"
+		textLabel = "GPT текст"
+		subsLabel = "GPT SRT"
+	}
 	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Скачать аудио", "vtr|"+string(voiceTranslateActionAudio)+"|"+token),
-			tgbotapi.NewInlineKeyboardButtonData("Аудиомикс", "vtr|"+string(voiceTranslateActionMix)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData(audioLabel, "vtr|"+string(voiceTranslateActionAudio)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData(mixLabel, "vtr|"+string(voiceTranslateActionMix)+"|"+token),
 		),
 	}
 	if hasVideo {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Видеомикс", "vtr|"+string(voiceTranslateActionVideo)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData(videoLabel, "vtr|"+string(voiceTranslateActionVideo)+"|"+token),
 		))
 	}
 	rows = append(rows,
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Перевод текст", "vtr|"+string(voiceTranslateActionText)+"|"+token),
-			tgbotapi.NewInlineKeyboardButtonData("Перевод субтитры", "vtr|"+string(voiceTranslateActionSubs)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData(textLabel, "vtr|"+string(voiceTranslateActionText)+"|"+token),
+			tgbotapi.NewInlineKeyboardButtonData(subsLabel, "vtr|"+string(voiceTranslateActionSubs)+"|"+token),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Отмена", "vtr|"+string(voiceTranslateActionCancel)+"|"+token),
@@ -1064,10 +1105,69 @@ var voiceTranslateSourceLangs = []voiceSourceLang{
 	{Code: "lv", Label: "🇱🇻 Latviešu"},
 }
 
-func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction) tgbotapi.InlineKeyboardMarkup {
+var gptTranslateSourceLangs = []voiceSourceLang{
+	{Code: "ru", Label: "🇷🇺 Русский"},
+	{Code: "en", Label: "🇺🇸 English"},
+	{Code: "nl", Label: "🇳🇱 Nederlands"},
+	{Code: "uk", Label: "🇺🇦 Українська"},
+	{Code: "be", Label: "Беларуская"},
+	{Code: "pl", Label: "🇵🇱 Polski"},
+	{Code: "de", Label: "🇩🇪 Deutsch"},
+	{Code: "fr", Label: "🇫🇷 Français"},
+	{Code: "es", Label: "🇪🇸 Español"},
+	{Code: "it", Label: "🇮🇹 Italiano"},
+	{Code: "pt", Label: "🇵🇹 Português"},
+	{Code: "tr", Label: "🇹🇷 Türkçe"},
+	{Code: "ja", Label: "🇯🇵 日本語"},
+	{Code: "ko", Label: "🇰🇷 한국어"},
+	{Code: "zh", Label: "🇨🇳 中文"},
+	{Code: "ar", Label: "🇸🇦 العربية"},
+	{Code: "he", Label: "🇮🇱 עברית"},
+	{Code: "fa", Label: "فارسی"},
+	{Code: "hi", Label: "🇮🇳 हिन्दी"},
+	{Code: "id", Label: "🇮🇩 Indonesia"},
+	{Code: "vi", Label: "🇻🇳 Tiếng Việt"},
+	{Code: "th", Label: "🇹🇭 ไทย"},
+	{Code: "kk", Label: "🇰🇿 Қазақша"},
+	{Code: "lt", Label: "🇱🇹 Lietuvių"},
+	{Code: "lv", Label: "🇱🇻 Latviešu"},
+	{Code: "et", Label: "🇪🇪 Eesti"},
+	{Code: "fi", Label: "🇫🇮 Suomi"},
+	{Code: "sv", Label: "🇸🇪 Svenska"},
+	{Code: "no", Label: "🇳🇴 Norsk"},
+	{Code: "da", Label: "🇩🇰 Dansk"},
+	{Code: "cs", Label: "🇨🇿 Čeština"},
+	{Code: "sk", Label: "🇸🇰 Slovenčina"},
+	{Code: "ro", Label: "🇷🇴 Română"},
+	{Code: "hu", Label: "🇭🇺 Magyar"},
+	{Code: "el", Label: "🇬🇷 Ελληνικά"},
+	{Code: "ka", Label: "🇬🇪 ქართული"},
+	{Code: "hy", Label: "🇦🇲 Հայերեն"},
+	{Code: "az", Label: "🇦🇿 Azərbaycanca"},
+}
+
+func voiceTranslateTargetLang(engine voiceTranslateEngine) string {
+	if normalizeVoiceTranslateEngine(engine) == voiceTranslateEngineOpenAI {
+		if v := normalizeVOTLang(envOr("GPT_TRANSLATE_RESLANG", "")); v != "" && v != "auto" {
+			return v
+		}
+	}
 	target := normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
 	if target == "" || target == "auto" {
 		target = "ru"
+	}
+	return target
+}
+
+func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction, engines ...voiceTranslateEngine) tgbotapi.InlineKeyboardMarkup {
+	engine := voiceTranslateEngineVOT
+	if len(engines) > 0 {
+		engine = normalizeVoiceTranslateEngine(engines[0])
+	}
+	target := voiceTranslateTargetLang(engine)
+	langs := voiceTranslateSourceLangs
+	if engine == voiceTranslateEngineOpenAI {
+		langs = gptTranslateSourceLangs
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
 	row := []tgbotapi.InlineKeyboardButton{
@@ -1075,9 +1175,9 @@ func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction)
 	}
 	rows = append(rows, row)
 	row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
-	for i, l := range voiceTranslateSourceLangs {
+	for i, l := range langs {
 		row = append(row, tgbotapi.NewInlineKeyboardButtonData(l.Label, "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|"+l.Code))
-		if len(row) == 4 || i == len(voiceTranslateSourceLangs)-1 {
+		if len(row) == 4 || i == len(langs)-1 {
 			rows = append(rows, row)
 			row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
 		}
@@ -1191,7 +1291,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 				cb.Message.Chat.ID,
 				cb.Message.MessageID,
 				"Выберите язык перевода:",
-				renderVoiceTranslateLangKeyboard(token, action),
+				renderVoiceTranslateLangKeyboard(token, action, entry.engine),
 			)
 			if _, err := bot.Send(edit); err != nil {
 				_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "не удалось показать языки"))
@@ -1206,7 +1306,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 				cb.Message.Chat.ID,
 				cb.Message.MessageID,
 				"Действия с переводом:",
-				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo),
+				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo, entry.engine),
 			)
 			_, _ = bot.Send(edit)
 		}
@@ -1233,22 +1333,24 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 		if srcLang == "" {
 			srcLang = "auto"
 		}
-		resLang := normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru"))
-		if resLang == "" || resLang == "auto" {
-			resLang = "ru"
-		}
+		resLang := voiceTranslateTargetLang(entry.engine)
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Запускаю..."))
 		task := voiceTranslateTask{
 			Bot:     bot,
 			ChatID:  entry.chatID,
 			ReplyTo: entry.replyTo,
+			Engine:  entry.engine,
 			Action:  runAction,
 			Media:   entry.media,
 			SrcLang: srcLang,
 			ResLang: resLang,
 		}
 		if !q.enqueue(task) {
-			reply(sendContext{Bot: bot, ChatID: entry.chatID, ReplyTo: entry.replyTo}, "Очередь голосового перевода переполнена, попробуйте чуть позже.", false)
+			queueName := "голосового перевода"
+			if normalizeVoiceTranslateEngine(entry.engine) == voiceTranslateEngineOpenAI {
+				queueName = "GPT-перевода"
+			}
+			reply(sendContext{Bot: bot, ChatID: entry.chatID, ReplyTo: entry.replyTo}, "Очередь "+queueName+" переполнена, попробуйте чуть позже.", false)
 			return true
 		}
 		if cb.Message != nil {
@@ -1736,7 +1838,31 @@ func getTelegramFileDirectURL(bot *tgbotapi.BotAPI, fileID string) (string, erro
 	), nil
 }
 
+type voiceTranslateMixProfile struct {
+	OriginalVolume         float64
+	TranslatedVolume       float64
+	DuckThreshold          float64
+	DuckRatio              float64
+	StaticOriginalVolume   float64
+	StaticTranslatedVolume float64
+}
+
+func defaultVoiceTranslateMixProfile() voiceTranslateMixProfile {
+	return voiceTranslateMixProfile{
+		OriginalVolume:         voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME", 0.92, 0.05, 3),
+		TranslatedVolume:       voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME", 1.20, 0.05, 5),
+		DuckThreshold:          voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_THRESHOLD", 0.06, 0.001, 1),
+		DuckRatio:              voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_RATIO", 3, 1, 30),
+		StaticOriginalVolume:   voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME", 0.80, 0.05, 3),
+		StaticTranslatedVolume: voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", 1.20, 0.05, 5),
+	}
+}
+
 func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo bool) (string, error) {
+	return mixTranslatedAudioWithSourceProfile(sourcePath, translatedMP3Path, hasVideo, defaultVoiceTranslateMixProfile())
+}
+
+func mixTranslatedAudioWithSourceProfile(sourcePath, translatedMP3Path string, hasVideo bool, profile voiceTranslateMixProfile) (string, error) {
 	ext := ".mp3"
 	if hasVideo {
 		ext = ".mp4"
@@ -1785,7 +1911,7 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 
 	// Keep original audio audible: translated speech is slightly boosted,
 	// while source audio is ducked only moderately when speech is active.
-	dynamicFilter, staticFilter := voiceTranslateMixFilters()
+	dynamicFilter, staticFilter := voiceTranslateMixFiltersForProfile(profile)
 	filter := dynamicFilter
 	if hasVideo {
 		mixWav, err := bottmp.CreateTemp("voice_mix_*.wav")
@@ -1836,7 +1962,6 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 			"-c:v", "copy",
 			"-c:a", "aac",
 			"-b:a", "160k",
-			"-shortest",
 			outPath,
 		)
 		if out, err := muxCmd.CombinedOutput(); err != nil {
@@ -1855,7 +1980,6 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 		"-map", "[mix]",
 		"-c:a", "libmp3lame",
 		"-b:a", "160k",
-		"-shortest",
 		outPath,
 	)
 	if out, err := mixCmd.CombinedOutput(); err != nil {
@@ -1869,7 +1993,6 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 			"-map", "[mix]",
 			"-c:a", "libmp3lame",
 			"-b:a", "160k",
-			"-shortest",
 			outPath,
 		)
 		if out2, err2 := mixCmd.CombinedOutput(); err2 != nil {
@@ -1884,7 +2007,6 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 				"-map", "[mix]",
 				"-c:a", "libmp3lame",
 				"-b:a", "160k",
-				"-shortest",
 				outPath,
 			)
 			if out3, err3 := plainCmd.CombinedOutput(); err3 != nil {
@@ -1896,23 +2018,21 @@ func mixTranslatedAudioWithSource(sourcePath, translatedMP3Path string, hasVideo
 }
 
 func voiceTranslateMixFilters() (dynamicFilter string, staticFilter string) {
-	origVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME", 0.92, 0.05, 3)
-	trVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME", 1.00, 0.05, 5)
-	duckThreshold := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_THRESHOLD", 0.06, 0.001, 1)
-	duckRatio := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_RATIO", 3, 1, 30)
-	staticOrigVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME", 0.80, 0.05, 3)
-	staticTrVol := voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", 1.00, 0.05, 5)
+	return voiceTranslateMixFiltersForProfile(defaultVoiceTranslateMixProfile())
+}
+
+func voiceTranslateMixFiltersForProfile(profile voiceTranslateMixProfile) (dynamicFilter string, staticFilter string) {
 	return fmt.Sprintf(
-			"[1:a]asplit=2[a1mix0][a1ctrl];[a1mix0]volume=%.4g[a1mix];[a1ctrl]highpass=f=150,lowpass=f=4200,agate=threshold=0.02:ratio=8:attack=10:release=180[ctrl];[0:a]volume=%.4g[a0base];[a0base][ctrl]sidechaincompress=threshold=%.4g:ratio=%.4g:attack=12:release=360[a0duck];[a0duck][a1mix]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
-			trVol,
-			origVol,
-			duckThreshold,
-			duckRatio,
+			"[1:a]apad,asplit=2[a1mix0][a1ctrl];[a1mix0]volume=%.4g[a1mix];[a1ctrl]highpass=f=150,lowpass=f=4200,agate=threshold=0.02:ratio=8:attack=10:release=180[ctrl];[0:a]volume=%.4g[a0base];[a0base][ctrl]sidechaincompress=threshold=%.4g:ratio=%.4g:attack=12:release=360[a0duck];[a0duck][a1mix]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			profile.TranslatedVolume,
+			profile.OriginalVolume,
+			profile.DuckThreshold,
+			profile.DuckRatio,
 		),
 		fmt.Sprintf(
-			"[0:a]volume=%.4g[a0];[1:a]volume=%.4g[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
-			staticOrigVol,
-			staticTrVol,
+			"[0:a]volume=%.4g[a0];[1:a]apad,volume=%.4g[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			profile.StaticOriginalVolume,
+			profile.StaticTranslatedVolume,
 		)
 }
 
@@ -1953,6 +2073,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if task.Bot == nil || task.ChatID == 0 {
 		return
 	}
+	engine := normalizeVoiceTranslateEngine(task.Engine)
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.ChatID, ReplyTo: task.ReplyTo}
 	progress, stopProgress := startMediaDownloadProgress(mediaDownloadTask{
 		SendCtx: sendCtx,
@@ -1977,7 +2098,6 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		reply(sendCtx, "Нужен реплай на аудио/видео/voice.", false)
 		return
 	}
-	cacheKey := buildVoiceTranslateCacheKey(mediaInfo.FileID)
 	srcLang := normalizeVOTLang(task.SrcLang)
 	if srcLang == "" {
 		srcLang = normalizeVOTLang(votLangFromEnv("VOICE_TRANSLATE_SRCLANG", "en"))
@@ -1989,7 +2109,11 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	if resLang == "" || resLang == "auto" {
 		resLang = votLangFromEnv("VOICE_TRANSLATE_RESLANG", "ru")
 	}
-	cacheKey = buildVoiceTranslateCacheKeyWithLang(mediaInfo.FileID, srcLang, resLang)
+	cacheProvider := ""
+	if engine == voiceTranslateEngineOpenAI {
+		cacheProvider = openAIGPTTranslateCacheProvider()
+	}
+	cacheKey := buildVoiceTranslateCacheKeyWithProvider(mediaInfo.FileID, srcLang, resLang, cacheProvider)
 	if n := sanitizeVoiceBaseName(mediaInfo.Name); n != "" {
 		setVoiceCacheBaseName(cacheKey, n)
 	}
@@ -2008,7 +2132,11 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 		return
 	}
 
-	workDir, err := bottmp.MkdirTemp("vot_backend_*")
+	workPrefix := "vot_backend_*"
+	if engine == voiceTranslateEngineOpenAI {
+		workPrefix = "gpt_translate_*"
+	}
+	workDir, err := bottmp.MkdirTemp(workPrefix)
 	if err != nil {
 		reply(sendCtx, "Не удалось подготовить задачу перевода. Попробуйте позже.", false)
 		return
@@ -2041,6 +2169,11 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	}
 	if err := downloadFileToPath(sourceURL, sourcePath); err != nil {
 		reply(sendCtx, "Не удалось скачать исходный файл для микширования.", false)
+		return
+	}
+
+	if engine == voiceTranslateEngineOpenAI {
+		processOpenAIVoiceTranslateTask(task, sendCtx, progress, mediaInfo, sourcePath, workDir, srcLang, resLang, cacheKey)
 		return
 	}
 

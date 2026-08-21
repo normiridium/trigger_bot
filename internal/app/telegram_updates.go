@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type rawMessageWithEmoji struct {
 	CaptionEntities []rawMessageEntity   `json:"caption_entities"`
 	Text            string               `json:"text"`
 	Caption         string               `json:"caption"`
+	RichMessage     json.RawMessage      `json:"rich_message"`
 	ReplyToMessage  *rawMessageWithEmoji `json:"reply_to_message"`
 }
 
@@ -223,6 +225,168 @@ func extractCustomEmojiFromRaw(rawMsg *rawMessageWithEmoji) ([]customEmojiHit, i
 		push(e, rawMsg.Caption)
 	}
 	return out, count
+}
+
+func hydrateReplyToMessageTextFromRaw(msg *tgbotapi.Message, rawMsg *rawMessageWithEmoji) {
+	if msg == nil || msg.ReplyToMessage == nil || rawMsg == nil || rawMsg.ReplyToMessage == nil {
+		return
+	}
+	if strings.TrimSpace(firstNonEmptyMessageContent(msg.ReplyToMessage)) != "" {
+		return
+	}
+	text := extractRawMessageText(rawMsg.ReplyToMessage)
+	if text == "" {
+		if debugTriggerLogEnabled {
+			log.Printf("reply_text raw empty chat=%d msg=%d reply_msg=%d raw_text=%v raw_caption=%v raw_rich_message_bytes=%d",
+				msg.Chat.ID,
+				msg.MessageID,
+				msg.ReplyToMessage.MessageID,
+				strings.TrimSpace(rawMsg.ReplyToMessage.Text) != "",
+				strings.TrimSpace(rawMsg.ReplyToMessage.Caption) != "",
+				len(rawMsg.ReplyToMessage.RichMessage),
+			)
+		}
+		return
+	}
+	cp := *msg.ReplyToMessage
+	cp.Text = text
+	msg.ReplyToMessage = &cp
+	if debugTriggerLogEnabled {
+		log.Printf("reply_text hydrated from raw chat=%d msg=%d reply_msg=%d len=%d",
+			msg.Chat.ID,
+			msg.MessageID,
+			msg.ReplyToMessage.MessageID,
+			len([]rune(text)),
+		)
+	}
+}
+
+func extractRawMessageText(rawMsg *rawMessageWithEmoji) string {
+	if rawMsg == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(rawMsg.Text); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(rawMsg.Caption); v != "" {
+		return v
+	}
+	return extractRichMessageText(rawMsg.RichMessage)
+}
+
+func extractRichMessageText(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil && len(obj) > 0 {
+		for _, key := range []string{"markdown", "text", "caption"} {
+			if v := rawJSONString(obj[key]); v != "" {
+				return normalizeRawRichText(v)
+			}
+		}
+		if v := rawJSONString(obj["html"]); v != "" {
+			return richHTMLToText(v)
+		}
+		if v := extractRichBlockText(obj["blocks"]); v != "" {
+			return v
+		}
+	}
+
+	var anyValue any
+	if err := json.Unmarshal(raw, &anyValue); err != nil {
+		return ""
+	}
+	var parts []string
+	collectRichTextParts(anyValue, &parts)
+	return normalizeRawRichText(strings.Join(parts, "\n"))
+}
+
+func rawJSONString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func richHTMLToText(s string) string {
+	s = replaceTGEmojiTagsWithFallback(s)
+	s = htmlTagStripRe.ReplaceAllString(s, " ")
+	s = html.UnescapeString(s)
+	return normalizeRawRichText(s)
+}
+
+func extractRichBlockText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var anyValue any
+	if err := json.Unmarshal(raw, &anyValue); err != nil {
+		return ""
+	}
+	var parts []string
+	collectRichTextParts(anyValue, &parts)
+	return normalizeRawRichText(strings.Join(parts, "\n"))
+}
+
+func collectRichTextParts(v any, parts *[]string) {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, key := range []string{"text", "markdown", "caption", "title", "subtitle", "alt"} {
+			if s, ok := x[key].(string); ok {
+				if s = normalizeRawRichText(s); s != "" {
+					*parts = append(*parts, s)
+				}
+			}
+		}
+		for key, child := range x {
+			if isDirectRichTextKey(key) || isIgnoredRichTextKey(key) {
+				continue
+			}
+			collectRichTextParts(child, parts)
+		}
+	case []any:
+		for _, child := range x {
+			collectRichTextParts(child, parts)
+		}
+	}
+}
+
+func isDirectRichTextKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "text", "markdown", "html", "caption", "title", "subtitle", "alt":
+		return true
+	default:
+		return false
+	}
+}
+
+func isIgnoredRichTextKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "type", "url", "href", "id", "file_id", "custom_emoji_id", "emoji", "parse_mode":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRawRichText(s string) string {
+	s = strings.ToValidUTF8(strings.TrimSpace(s), "")
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\u00A0", " ")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func sliceUTF16ByEntity(s string, offsetCU, lengthCU int) string {

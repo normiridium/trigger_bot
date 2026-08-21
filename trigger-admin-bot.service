@@ -11,6 +11,15 @@ EnvironmentFile=/home/faline/trigger_admin_bot/.env
 ExecStart=/home/faline/trigger_admin_bot/trigger_admin_bot
 Restart=always
 RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

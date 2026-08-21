@@ -31,6 +31,7 @@ const (
 	cmdSetMTProto        = "set_mtproto"
 	cmdAnon              = "anon"
 	cmdTranslateVoice    = "translate_voice"
+	cmdTranslateGPT      = "translate_gpt"
 	cmdRoleplay          = "roleplay"
 
 	cmdBan          = "ban"

@@ -7,11 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	spotifyHTTPTimeout    = 10 * time.Second
+	spotifyRequestRetries = 3
+	spotifyRetryDelay     = 250 * time.Millisecond
 )
 
 type Track struct {
@@ -33,7 +40,7 @@ type Client struct {
 
 func New(clientID, secret string) *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+		httpClient: &http.Client{Timeout: spotifyHTTPTimeout},
 		clientID:   strings.TrimSpace(clientID),
 		secret:     strings.TrimSpace(secret),
 	}
@@ -178,15 +185,17 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body io.Re
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -209,14 +218,16 @@ func (c *Client) ensureToken(ctx context.Context) (string, error) {
 	}
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://accounts.spotify.com/api/token", strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	auth := base64.StdEncoding.EncodeToString([]byte(c.clientID + ":" + c.secret))
-	req.Header.Set("Authorization", "Basic "+auth)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://accounts.spotify.com/api/token", strings.NewReader(form.Encode()))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", "Basic "+auth)
+		return req, nil
+	})
 	if err != nil {
 		return "", err
 	}
@@ -238,4 +249,62 @@ func (c *Client) ensureToken(ctx context.Context) (string, error) {
 	c.token = strings.TrimSpace(payload.AccessToken)
 	c.expiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
 	return c.token, nil
+}
+
+func (c *Client) doWithRetry(ctx context.Context, build func() (*http.Request, error)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= spotifyRequestRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, err
+		}
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.httpClient.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt == spotifyRequestRetries || ctx.Err() != nil || !isSpotifyRetryableRequestError(err) {
+			return nil, err
+		}
+		if err := sleepSpotifyRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func isSpotifyRetryableRequestError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "timeout") ||
+		strings.Contains(errText, "deadline exceeded") ||
+		strings.Contains(errText, "connection reset") ||
+		strings.Contains(errText, "connection refused") ||
+		strings.Contains(errText, "temporary failure")
+}
+
+func sleepSpotifyRetry(ctx context.Context, attempt int) error {
+	if attempt < 1 {
+		attempt = 1
+	}
+	timer := time.NewTimer(time.Duration(attempt) * spotifyRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

@@ -47,13 +47,17 @@ func isConfiguredBotOwner(userID int64) bool {
 	if userID == 0 {
 		return false
 	}
-	raw := strings.TrimSpace(os.Getenv("OWNER_ID"))
-	if extra := strings.TrimSpace(os.Getenv("BOT_ADMIN_USER_IDS")); extra != "" {
-		if raw != "" {
-			raw += ","
+	for _, id := range configuredBotOwnerIDs() {
+		if id == userID {
+			return true
 		}
-		raw += extra
 	}
+	return false
+}
+
+func configuredBotOwnerIDs() []int64 {
+	raw := configuredBotOwnerIDsRaw()
+	out := make([]int64, 0, 4)
 	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
 		switch r {
 		case ',', ';', ' ', '\n', '\r', '\t':
@@ -63,11 +67,38 @@ func isConfiguredBotOwner(userID int64) bool {
 		}
 	}) {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
-		if err == nil && id == userID {
-			return true
+		if err == nil && id != 0 {
+			out = append(out, id)
 		}
 	}
-	return false
+	return out
+}
+
+func configuredBotOwnerIDsForLog() string {
+	ids := configuredBotOwnerIDs()
+	if len(ids) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func configuredBotOwnerIDsRaw() string {
+	raw := strings.TrimSpace(os.Getenv("OWNER_ID"))
+	if extra := strings.TrimSpace(os.Getenv("BOT_ADMIN_USER_IDS")); extra != "" {
+		if raw != "" {
+			raw += ","
+		}
+		raw += extra
+	}
+	return raw
+}
+
+func userGPTTokenLimitApplies(userID int64) bool {
+	return userID != 0 && !isConfiguredBotOwner(userID)
 }
 
 func fetchOpenAICurrentMonthCosts(now time.Time) (openAICostSummary, error) {

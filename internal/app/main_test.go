@@ -1,8 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -507,6 +511,25 @@ func TestExtractImageFileID(t *testing.T) {
 	}
 }
 
+func TestExtractImageFileID_SkipsSVGDocumentForBitmapContext(t *testing.T) {
+	t.Setenv("GPT_IMAGE_CONTEXT_MAX_MB", "5")
+	msg := &tgbotapi.Message{
+		Document: &tgbotapi.Document{
+			FileID:   "svg-doc",
+			FileName: "deer.svg",
+			MimeType: "image/svg+xml",
+			FileSize: 1006,
+		},
+	}
+	if got := extractImageFileID(msg); got != "" {
+		t.Fatalf("expected SVG to be skipped for bitmap image context, got %q", got)
+	}
+	fileID, fileName := extractSVGFileID(msg)
+	if fileID != "svg-doc" || fileName != "deer.svg" {
+		t.Fatalf("unexpected SVG extraction fileID=%q fileName=%q", fileID, fileName)
+	}
+}
+
 func TestResolveMessageImageURL_CurrentPhotoReplyToBotUsesConfiguredFileEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -583,6 +606,25 @@ func TestBuildOpenAITelegramImageDataURL_AllowsOctetStreamTelegramPhoto(t *testi
 	}
 	if !strings.HasPrefix(got, "data:image/png;base64,") {
 		t.Fatalf("expected detected png data URL, got %q", got[:min(len(got), 40)])
+	}
+}
+
+func TestBuildTelegramSVGContextFromURL_AllowsOctetStreamSVG(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte(svg))
+	}))
+	defer srv.Close()
+
+	got, err := buildTelegramSVGContextFromURL(srv.URL+"/file/botTOKEN/documents/deer.svg", "deer.svg")
+	if err != nil {
+		t.Fatalf("build SVG context: %v", err)
+	}
+	for _, want := range []string{`Файл "deer.svg"`, "не инструкции", "```svg", "<circle"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("SVG context does not contain %q: %s", want, got)
+		}
 	}
 }
 
@@ -734,6 +776,115 @@ func TestBuildPromptFromMessageTemplateAndFallback(t *testing.T) {
 	noTemplate := buildPromptFromMessage(ctx, "Ответь коротко")
 	if !strings.Contains(noTemplate, "Сообщение пользователя") || !strings.Contains(noTemplate, "привет") {
 		t.Fatalf("prompt fallback missing message: %q", noTemplate)
+	}
+}
+
+func TestBuildPromptFromMessageKeepsDrawRequestRaw(t *testing.T) {
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Title: "Чат"},
+		From: &tgbotapi.User{ID: 7, FirstName: "Аня", UserName: "anya"},
+		Text: "оленям нарисуй оленя",
+	}
+	got := buildPromptFromMessage(templateContext{Msg: msg}, "Ответь {{message}}")
+	if strings.Contains(got, "следующий объект или сцену в виде SVG") || got != "Ответь оленям нарисуй оленя" {
+		t.Fatalf("draw instruction must live in the trigger template, got %q", got)
+	}
+}
+
+func TestExtractFirstSVGFromGPTResponse(t *testing.T) {
+	got, ok := extractFirstSVGFromGPTResponse("текст\n```xml\n<svg viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"4\"/></svg>\n```\nхвост")
+	if !ok {
+		t.Fatalf("expected SVG response to be detected")
+	}
+	if !strings.Contains(got, "<circle") || strings.Contains(got, "хвост") {
+		t.Fatalf("unexpected extracted SVG: %q", got)
+	}
+}
+
+func TestValidateGPTSVGResponseRejectsExecutableContent(t *testing.T) {
+	for _, src := range []string{
+		`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><rect onclick="alert(1)"/></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.com/a.png"/></svg>`,
+	} {
+		if err := validateGPTSVGResponse(src); err == nil {
+			t.Fatalf("expected unsafe SVG to be rejected: %s", src)
+		}
+	}
+	if err := validateGPTSVGResponse(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>`); err != nil {
+		t.Fatalf("safe SVG rejected: %v", err)
+	}
+}
+
+func TestValidateGPTSVGResponseAllowsInternalReferences(t *testing.T) {
+	src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">
+  <defs>
+    <linearGradient id="bg"><stop offset="0%" stop-color="#fff"/><stop offset="100%" stop-color="#eee"/></linearGradient>
+    <circle id="star" r="4" fill="gold"/>
+  </defs>
+  <rect width="100" height="80" fill="url(#bg)"/>
+  <use href="#star" x="20" y="20"/>
+  <use xlink:href="#star" x="40" y="30"/>
+</svg>`
+	if err := validateGPTSVGResponse(src); err != nil {
+		t.Fatalf("safe internal SVG refs rejected: %v", err)
+	}
+}
+
+func TestNormalizeGPTSVGForRenderDropsInvalidXMLComments(t *testing.T) {
+	src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">
+  <!-- Shelf details -- abstract -->
+  <rect width="100" height="80" fill="white"/>
+</svg>`
+	got := normalizeGPTSVGForRender(src)
+	if strings.Contains(got, "<!--") || strings.Contains(got, "-->") {
+		t.Fatalf("SVG comments must be stripped before rendering: %q", got)
+	}
+	if !strings.Contains(got, "<rect") {
+		t.Fatalf("rendered SVG content was removed: %q", got)
+	}
+}
+
+func TestGPTSVGRenderSizeUsesViewBoxForPercentDimensions(t *testing.T) {
+	width, height := gptSVGRenderSize(`<svg viewBox="0 0 1500 520" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"></svg>`)
+	if width != 1500 || height != 520 {
+		t.Fatalf("unexpected SVG render size from percentage dimensions: %dx%d", width, height)
+	}
+}
+
+func TestRenderGPTSVGResponseToPNGStripsInvalidXMLComments(t *testing.T) {
+	if _, err := systemDiagramBin("TRIGGER_BOT_RSVG_CONVERT_BIN", "rsvg-convert"); err != nil {
+		t.Skipf("rsvg-convert is not available: %v", err)
+	}
+	_, err := renderGPTSVGResponseToPNG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80" width="120" height="80">
+  <!-- Shelf details -- abstract -->
+  <rect width="120" height="80" fill="white"/>
+  <circle cx="60" cy="40" r="25" fill="#b17d4a"/>
+</svg>`)
+	if err != nil {
+		t.Fatalf("render SVG with invalid XML comment: %v", err)
+	}
+}
+
+func TestRenderGPTSVGResponseToPNGWithRsvgConvert(t *testing.T) {
+	if _, err := systemDiagramBin("TRIGGER_BOT_RSVG_CONVERT_BIN", "rsvg-convert"); err != nil {
+		t.Skipf("rsvg-convert is not available: %v", err)
+	}
+	longTmp := t.TempDir() + "/" + strings.Repeat("deep-render-path-", 5)
+	if err := os.MkdirAll(longTmp, 0o700); err != nil {
+		t.Fatalf("create long tmp dir: %v", err)
+	}
+	t.Setenv("TRIGGER_BOT_TMP_DIR", longTmp)
+	pngBytes, err := renderGPTSVGResponseToPNG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80" width="120" height="80"><rect width="120" height="80" fill="white"/><circle cx="60" cy="40" r="25" fill="#b17d4a"/></svg>`)
+	if err != nil {
+		t.Fatalf("render SVG: %v", err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("decode rendered PNG: %v", err)
+	}
+	if cfg.Width != 120 || cfg.Height != 80 {
+		t.Fatalf("unexpected rendered PNG size: %dx%d", cfg.Width, cfg.Height)
 	}
 }
 
@@ -1216,6 +1367,505 @@ func TestResponseToRichMarkdownArticle_CustomEmoji(t *testing.T) {
 	}
 	if !strings.Contains(got, "# Заголовок") {
 		t.Fatalf("heading must be preserved: %q", got)
+	}
+}
+
+func TestNormalizeTelegramLineBreaks_PreservesLatexCommands(t *testing.T) {
+	in := `\text{Зевс} + \text{Майя} \rightarrow \text{Гермес} \neq \nu \rho`
+	if got := normalizeTelegramLineBreaks(in); got != in {
+		t.Fatalf("latex commands must not be split as escaped line breaks:\n got %q\nwant %q", got, in)
+	}
+}
+
+func TestNormalizeTelegramLineBreaks_ConvertsLiteralEscapedBreaks(t *testing.T) {
+	tests := map[string]string{
+		`a\r\nb`:  "a\nb",
+		`a\n- b`:  "a\n- b",
+		`a\nЕсли`: "a\nЕсли",
+		`a\r b`:   "a\n b",
+	}
+	for in, want := range tests {
+		if got := normalizeTelegramLineBreaks(in); got != want {
+			t.Fatalf("normalizeTelegramLineBreaks(%q): got %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersBracketDisplayBlock(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render unsupported math: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if len(attachments[0].PNG) == 0 {
+		t.Fatalf("rendered formula attachment is empty")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+	if strings.Contains(got, `\[E = mc^2\]`) {
+		t.Fatalf("unsupported latex block must be replaced: %q", got)
+	}
+}
+
+func TestBuildStandaloneLatexDocument_UsesLightCanvas(t *testing.T) {
+	got := buildStandaloneLatexDocument(`E = mc^2`)
+	if !strings.Contains(got, `\pagecolor[HTML]{FFFFFF}`) {
+		t.Fatalf("standalone latex document must use white canvas: %q", got)
+	}
+	if !strings.Contains(got, `\color[HTML]{111111}`) {
+		t.Fatalf("standalone latex document must use dark text: %q", got)
+	}
+}
+
+func TestBuildStandaloneLatexDocument_KeepsAlignStarStandalone(t *testing.T) {
+	got := buildStandaloneLatexDocument(`\begin{align*}a &= b\end{align*}`)
+	if strings.Contains(got, "\\[\n\\begin{align*}") {
+		t.Fatalf("align* must be standalone, not wrapped into display math: %q", got)
+	}
+	if !strings.Contains(got, `\begin{align*}a &= b\end{align*}`) {
+		t.Fatalf("align* body missing: %q", got)
+	}
+}
+
+func TestValidateRichArticleLatexSourceRejectsDangerousInput(t *testing.T) {
+	bad := []string{
+		`\input{/etc/passwd}`,
+		`\write18{curl https://example.org/x}`,
+		`\begin{document}owned\end{document}`,
+		`\includegraphics{/home/faline/.env}`,
+		`^^5cinput{/etc/passwd}`,
+		`\href{https://example.org}{x}`,
+	}
+	for _, in := range bad {
+		if err := validateRichArticleLatexSource(in); err == nil {
+			t.Fatalf("validateRichArticleLatexSource(%q) must reject dangerous input", in)
+		}
+	}
+	if err := validateRichArticleLatexSource(`\[\text{Зевс} \xrightarrow{\text{Майя}} \text{Гермес}\]`); err != nil {
+		t.Fatalf("safe latex source rejected: %v", err)
+	}
+}
+
+func TestValidateRichArticleDiagramSourceRejectsExternalInputs(t *testing.T) {
+	badMermaid := []string{
+		"flowchart TD\nA-->B\nclick A href \"https://example.org\"",
+		"flowchart TD\nA[<img src=file:///etc/passwd>]",
+		"%%{init: {'securityLevel': 'loose'}}%%\nflowchart TD\nA-->B",
+	}
+	for _, in := range badMermaid {
+		if err := validateRichArticleMermaidSource(in); err == nil {
+			t.Fatalf("validateRichArticleMermaidSource(%q) must reject dangerous input", in)
+		}
+	}
+	if err := validateRichArticleMermaidSource("flowchart TD\nA[Оленька] --> B[PNG]"); err != nil {
+		t.Fatalf("safe mermaid source rejected: %v", err)
+	}
+
+	badGraphviz := []string{
+		`digraph G { A [image="/etc/passwd"]; }`,
+		`digraph G { A [URL="https://example.org"]; }`,
+		`digraph G { imagepath="/home/faline"; }`,
+	}
+	for _, in := range badGraphviz {
+		if err := validateRichArticleGraphvizSource(in); err == nil {
+			t.Fatalf("validateRichArticleGraphvizSource(%q) must reject dangerous input", in)
+		}
+	}
+	if err := validateRichArticleGraphvizSource(`digraph G { A[label="Оленька"]; A -> B; }`); err != nil {
+		t.Fatalf("safe graphviz source rejected: %v", err)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersUnsupportedDollarBlock(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n$$\\begin{array}{cc}a&b\\\\c&d\\end{array}$$\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render unsupported math: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersChemistryAlignBlock(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[\n\\begin{align*}\n&\\text{L-триптофан} \\xrightarrow{\\text{триптофан-гидроксилаза}} \\text{5-гидрокситриптофан} \\\\\n&\\text{C}_{11}\\text{H}_{12}\\text{N}_2\\text{O}_2 \\xrightarrow{\\text{+O}_2,~\\text{tetrahydrobiopterin}} \\text{C}_{11}\\text{H}_{12}\\text{N}_2\\text{O}_3 \\\\\n\\\\\n&\\text{5-гидрокситриптофан} \\xrightarrow{\\text{декарбоксилаза}} \\text{серотонин} \\\\\n&\\text{C}_{11}\\text{H}_{12}\\text{N}_2\\text{O}_3 \\xrightarrow{\\text{-CO}_2} \\text{C}_{10}\\text{H}_{12}\\text{N}_2\\text{O}\n\\end{align*}\n\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render chemistry align math: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered chemistry attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersXRightArrowBlock(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[\\text{Уран} \\xrightarrow{\\text{+Гея}} \\text{Кронос}\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render xrightarrow math: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered xrightarrow attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersTikZTree(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[\\begin{tikzpicture}\\Tree [.Геномика [.Эволюция ] ]\\end{tikzpicture}\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render tikz tree: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered tikz attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersPGFPlotsAxis(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[\n\\begin{tikzpicture}\n\\begin{axis}[axis lines=middle,xlabel=$x$,ylabel={$y$}]\n\\addplot[domain=-2:2,samples=100,color=blue]{x^2};\n\\end{axis}\n\\end{tikzpicture}\n\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render pgfplots axis: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered pgfplots attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered pgfplots attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_RendersForestDollarBlock(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n$$\\begin{forest}[Зевс[Афина][Аполлон][Артемида]]\\end{forest}$$\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render forest tree: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered forest attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("formula placeholder missing: %q", got)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_RendersMermaidBlock(t *testing.T) {
+	requireSystemMermaidRenderer(t)
+	in := "До\n\n```mermaid\nflowchart TD\n  A[Оленька] --> B{Диаграмма?}\n  B -->|да| C[PNG]\n```\n\nПосле"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render mermaid diagram: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered diagram attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered mermaid attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("diagram placeholder missing: %q", got)
+	}
+	if strings.Contains(got, "```mermaid") {
+		t.Fatalf("mermaid block must be replaced: %q", got)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_RendersLatexFenceAsOneImage(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n```latex\n\\[A \\xrightarrow{1} B\\]\n\n% многоступенчатый вариант\n\\[C \\xrightarrow{2} D\\]\n```\n\nПосле"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render latex fence: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered latex fence attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered latex fence attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("latex fence placeholder missing: %q", got)
+	}
+	if strings.Contains(got, "```latex") || strings.Contains(got, `\[A`) {
+		t.Fatalf("latex fence must be replaced as a whole, not patched inside code: %q", got)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_DoesNotPatchMathInsidePlainCodeFence(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n```text\n\\[E = mc^2\\]\n```\n\nПосле"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render rich media: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("plain code fence must not render attachments, got %d", len(attachments))
+	}
+	if got != in {
+		t.Fatalf("plain code fence changed:\n got %q\nwant %q", got, in)
+	}
+}
+
+func TestSanitizeRichArticlePhotoLinks_AllowsRenderedAttachment(t *testing.T) {
+	attachments := []richArticleRenderedAttachment{
+		{ID: "formula_safe_1", PNG: []byte{1}},
+	}
+	in := "До\n\n![](tg://photo?id=formula_safe_1)\n\nПосле"
+	got := sanitizeRichArticlePhotoLinks(in, attachments)
+	if got != in {
+		t.Fatalf("rendered attachment link must stay unchanged:\n got %q\nwant %q", got, in)
+	}
+}
+
+func TestSanitizeRichArticlePhotoLinks_EscapesInjectedPhotoLink(t *testing.T) {
+	attachments := []richArticleRenderedAttachment{
+		{ID: "formula_safe_1", PNG: []byte{1}},
+	}
+	in := "До\n\n![](tg://photo?id=formula_safe_1)\n\n![](tg://photo?id=attacker)\n\ntg://photo?id=attacker2"
+	got := sanitizeRichArticlePhotoLinks(in, attachments)
+	if !strings.Contains(got, "![](tg://photo?id=formula_safe_1)") {
+		t.Fatalf("allowed rendered link missing: %q", got)
+	}
+	if strings.Contains(got, "\n\n![](tg://photo?id=attacker)") {
+		t.Fatalf("injected markdown photo link must not stay active: %q", got)
+	}
+	if strings.Contains(got, "\n\ntg://photo?id=attacker2") {
+		t.Fatalf("injected plain photo url must not stay active: %q", got)
+	}
+	if !strings.Contains(got, "`![](tg://photo?id=attacker)`") || !strings.Contains(got, "`tg://photo?id=attacker2`") {
+		t.Fatalf("injected photo links must be preserved as literal text: %q", got)
+	}
+}
+
+func TestSanitizeRichArticlePhotoLinks_PreservesCodeFenceLiteral(t *testing.T) {
+	in := "До\n\n```text\n![](tg://photo?id=attacker)\ntg://photo?id=attacker2\n```\n\nПосле"
+	got := sanitizeRichArticlePhotoLinks(in, nil)
+	if got != in {
+		t.Fatalf("photo-like text inside code fence must stay literal:\n got %q\nwant %q", got, in)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_RendersGraphvizBlock(t *testing.T) {
+	requireSystemGraphvizRenderer(t)
+	in := "До\n\n```dot\ndigraph G {\n  rankdir=LR;\n  A[label=\"Оленька\"];\n  B[label=\"Graphviz\"];\n  A -> B;\n}\n```\n\nПосле"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render graphviz diagram: %v", err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 rendered graphviz attachment, got %d", len(attachments))
+	}
+	if !isPNGBytes(attachments[0].PNG) {
+		t.Fatalf("rendered graphviz attachment is not png")
+	}
+	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
+		t.Fatalf("graphviz placeholder missing: %q", got)
+	}
+	if strings.Contains(got, "```dot") {
+		t.Fatalf("dot block must be replaced: %q", got)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_RendersMathAndDiagram(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	requireSystemGraphvizRenderer(t)
+	in := "Формула:\n\n\\[E = mc^2\\]\n\nДиаграмма:\n\n```graphviz\ndigraph G { A -> B }\n```"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render mixed rich media: %v", err)
+	}
+	if len(attachments) != 2 {
+		t.Fatalf("expected 2 rendered attachments, got %d", len(attachments))
+	}
+	for _, attachment := range attachments {
+		if !isPNGBytes(attachment.PNG) {
+			t.Fatalf("attachment %s is not png", attachment.ID)
+		}
+		if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachment.ID)) {
+			t.Fatalf("placeholder for %s missing: %q", attachment.ID, got)
+		}
+	}
+}
+
+func TestRichArticleFormulaDimensionsNeedDocument(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+		bytes  int
+		want   bool
+	}{
+		{name: "ordinary inline formula", width: 900, height: 180, bytes: 40_000, want: false},
+		{name: "wide genealogy tree", width: 8457, height: 1386, bytes: 319_449, want: true},
+		{name: "too tall diagram", width: 900, height: 5000, bytes: 120_000, want: true},
+		{name: "telegram photo dimension sum", width: 7000, height: 4000, bytes: 300_000, want: true},
+		{name: "telegram photo bytes", width: 1200, height: 900, bytes: telegramPhotoMaxBytes + 1, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := richArticleFormulaDimensionsNeedDocument(tt.width, tt.height, tt.bytes)
+			if got != tt.want {
+				t.Fatalf("richArticleFormulaDimensionsNeedDocument(%d, %d, %d) = %v, want %v", tt.width, tt.height, tt.bytes, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRichArticleInlineImagePNG_PadsToArticleWidth(t *testing.T) {
+	t.Setenv("TRIGGER_BOT_RICH_ARTICLE_IMAGE_WIDTH", "573")
+	in := testPNG(t, 120, 32, color.RGBA{R: 240, G: 240, B: 240, A: 255})
+
+	out, err := normalizeRichArticleInlineImagePNG(in)
+	if err != nil {
+		t.Fatalf("normalize rich article image: %v", err)
+	}
+
+	cfg, err := png.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode normalized png config: %v", err)
+	}
+	if cfg.Width != 573 || cfg.Height != 32 {
+		t.Fatalf("normalized image size = %dx%d, want 573x32", cfg.Width, cfg.Height)
+	}
+}
+
+func TestNormalizeRichArticleInlineImagePNG_ScalesWideImageToArticleWidth(t *testing.T) {
+	t.Setenv("TRIGGER_BOT_RICH_ARTICLE_IMAGE_WIDTH", "573")
+	in := testPNG(t, 1146, 200, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+
+	out, err := normalizeRichArticleInlineImagePNG(in)
+	if err != nil {
+		t.Fatalf("normalize rich article image: %v", err)
+	}
+
+	cfg, err := png.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode normalized png config: %v", err)
+	}
+	if cfg.Width != 573 || cfg.Height != 100 {
+		t.Fatalf("normalized wide image size = %dx%d, want 573x100", cfg.Width, cfg.Height)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_UsesUniqueMediaIDs(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
+	_, first, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("first render unsupported math: %v", err)
+	}
+	_, second, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("second render unsupported math: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected one attachment for each render, got %d and %d", len(first), len(second))
+	}
+	if first[0].ID == second[0].ID {
+		t.Fatalf("formula media ids must be unique across sends, got %q", first[0].ID)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_KeepsSimpleDollarBlockNative(t *testing.T) {
+	in := "До\n\n$$E = mc^2$$\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("render unsupported math: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("simple formula should stay native, got %d attachments", len(attachments))
+	}
+	if got != in {
+		t.Fatalf("simple formula changed: %q", got)
+	}
+}
+
+func TestRenderUnsupportedRichArticleMath_KeepsRawWhenSystemLatexMissing(t *testing.T) {
+	t.Setenv("TRIGGER_BOT_PDFLATEX_BIN", "/definitely/missing/pdflatex")
+	t.Setenv("TRIGGER_BOT_PDFTOCAIRO_BIN", "/definitely/missing/pdftocairo")
+	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
+	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	if err != nil {
+		t.Fatalf("missing system renderer must not fail rich article rendering: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("missing system renderer must not attach formulas, got %d", len(attachments))
+	}
+	if got != in {
+		t.Fatalf("missing system renderer must keep raw latex: %q", got)
+	}
+}
+
+func testPNG(t *testing.T, width, height int, fill color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		t.Fatalf("encode test png: %v", err)
+	}
+	return out.Bytes()
+}
+
+func requireSystemLatexRenderer(t *testing.T) {
+	t.Helper()
+	if !systemLatexRendererAvailable() {
+		t.Skip("system LaTeX renderer is not installed")
+	}
+}
+
+func requireSystemMermaidRenderer(t *testing.T) {
+	t.Helper()
+	if !systemMermaidRendererAvailable() {
+		t.Skip("system Mermaid renderer is not installed")
+	}
+}
+
+func requireSystemGraphvizRenderer(t *testing.T) {
+	t.Helper()
+	if !systemGraphvizRendererAvailable() {
+		t.Skip("system Graphviz renderer is not installed")
 	}
 }
 

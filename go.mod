@@ -32,4 +32,4 @@ require (
 	golang.org/x/text v0.40.0
 )
 
-replace github.com/go-telegram-bot-api/telegram-bot-api/v5 => github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260805084820-93db1bcb90e7
+replace github.com/go-telegram-bot-api/telegram-bot-api/v5 => github.com/normiridium/telegram-bot-api/v5 v5.5.2-0.20260806124830-f724637b8b2c

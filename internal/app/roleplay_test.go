@@ -94,6 +94,57 @@ func TestRoleplayInlineTargetFromQuery(t *testing.T) {
 	}
 }
 
+func TestRoleplayApplyReplyTargetForInlineDefaultTarget(t *testing.T) {
+	st := roleplaySession{
+		ActorID:     10,
+		ActorLink:   "Оленька",
+		TargetLink:  "кого-то",
+		Inline:      true,
+		ActionIndex: 2,
+	}
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Type: "supergroup"},
+		From: &tgbotapi.User{ID: 10, FirstName: "Оленька"},
+		ReplyToMessage: &tgbotapi.Message{
+			From: &tgbotapi.User{ID: 20, FirstName: "Максим Тимченко"},
+		},
+	}
+
+	got := roleplayApplyReplyTarget(nil, st, msg)
+	if got.TargetID != 20 {
+		t.Fatalf("reply target was not applied: %#v", got)
+	}
+	if plain := roleplayPlainText(got.TargetLink); plain != "Максим Тимченко" {
+		t.Fatalf("unexpected target link/plain text: %q from %q", plain, got.TargetLink)
+	}
+	if text, _ := roleplayInlineProposalContent(got); !strings.Contains(text, "погладить → Максим Тимченко") {
+		t.Fatalf("proposal must use reply target, got %q", text)
+	}
+}
+
+func TestRoleplayApplyReplyTargetDoesNotOverrideExplicitTarget(t *testing.T) {
+	st := roleplaySession{
+		ActorID:     10,
+		ActorLink:   "Оленька",
+		TargetID:    30,
+		TargetLink:  "Фрешка",
+		Inline:      true,
+		ActionIndex: 2,
+	}
+	msg := &tgbotapi.Message{
+		Chat: &tgbotapi.Chat{ID: -1001, Type: "supergroup"},
+		From: &tgbotapi.User{ID: 10, FirstName: "Оленька"},
+		ReplyToMessage: &tgbotapi.Message{
+			From: &tgbotapi.User{ID: 20, FirstName: "Максим Тимченко"},
+		},
+	}
+
+	got := roleplayApplyReplyTarget(nil, st, msg)
+	if got.TargetID != 30 || roleplayPlainText(got.TargetLink) != "Фрешка" {
+		t.Fatalf("explicit target must not be overridden: %#v", got)
+	}
+}
+
 func TestRoleplayInlineThumbURL(t *testing.T) {
 	t.Setenv("ROLEPLAY_INLINE_THUMB_BASE_URL", "https://bot.example.test/")
 	got := roleplayInlineThumbURL(roleplayActions[0])

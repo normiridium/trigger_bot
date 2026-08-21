@@ -63,6 +63,20 @@ func TestParseOpenAICostPayloadStats(t *testing.T) {
 	}
 }
 
+func TestUserGPTTokenLimitSkipsConfiguredBotOwners(t *testing.T) {
+	t.Setenv("OWNER_ID", "1519741912")
+	t.Setenv("BOT_ADMIN_USER_IDS", "42, 77")
+
+	for _, userID := range []int64{1519741912, 42, 77} {
+		if userGPTTokenLimitApplies(userID) {
+			t.Fatalf("configured owner/admin %d must be excluded from GPT token limit", userID)
+		}
+	}
+	if !userGPTTokenLimitApplies(12345) {
+		t.Fatalf("regular user must stay limited")
+	}
+}
+
 func assertFloatNear(t *testing.T, got, want float64) {
 	t.Helper()
 	if math.Abs(got-want) > 0.000001 {
