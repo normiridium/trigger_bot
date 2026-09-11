@@ -1532,7 +1532,7 @@ func TestRenderRichArticleMediaBlocks_SeparatesNativeDisplayFormulaFromParagraph
 	if len(attachments) != 0 {
 		t.Fatalf("simple display formula should stay native, got %d attachments", len(attachments))
 	}
-	want := "3. Подстановка:\n\n$$\\frac{d\\tau}{dt} = \\sqrt{1-\\frac{88.5}{108.5}}\n= \\sqrt{0.185}\n\\approx 0.43$$\n\nОтвет"
+	want := "3. Подстановка:\n\n$$\\frac{d\\tau}{dt} = \\sqrt{1-\\frac{88.5}{108.5}} = \\sqrt{0.185} \\approx 0.43$$\n\nОтвет"
 	if got != want {
 		t.Fatalf("display formula must occupy its own Markdown block:\n got %q\nwant %q", got, want)
 	}
@@ -1542,6 +1542,13 @@ func TestNormalizeRichArticleDisplayMathSpacing_PreservesCodeFence(t *testing.T)
 	in := "До\n\n```text\nпример $$x = 1$$ внутри кода\n```\n\nПосле"
 	if got := normalizeRichArticleDisplayMathSpacing(in); got != in {
 		t.Fatalf("display delimiters inside code fence changed:\n got %q\nwant %q", got, in)
+	}
+}
+
+func TestNormalizeRichArticleDisplayMathSpacing_PreservesRenderedFormulaLines(t *testing.T) {
+	in := "$$\\begin{matrix}\na & b \\\\ c & d\n\\end{matrix}$$"
+	if got := normalizeRichArticleDisplayMathSpacing(in); got != in {
+		t.Fatalf("rendered formula lines changed:\n got %q\nwant %q", got, in)
 	}
 }
 

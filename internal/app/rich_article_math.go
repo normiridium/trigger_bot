@@ -185,8 +185,12 @@ func normalizeRichArticleDisplayMathSpacing(markdown string) string {
 		if out.Len() > 0 {
 			out.WriteString("\n\n")
 		}
+		body := strings.TrimSpace(richArticleMathBlockBody(markdown, loc))
+		if !richArticleUnsupportedLatexRe.MatchString(body) {
+			body = strings.Join(strings.Fields(body), " ")
+		}
 		out.WriteString("$$")
-		out.WriteString(strings.TrimSpace(richArticleMathBlockBody(markdown, loc)))
+		out.WriteString(body)
 		out.WriteString("$$")
 
 		last = loc[1]
