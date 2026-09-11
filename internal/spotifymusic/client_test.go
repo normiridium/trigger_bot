@@ -112,6 +112,21 @@ func TestDoJSON_Non2xxIncludesBody(t *testing.T) {
 	}
 }
 
+func TestDoJSON_PremiumRequiredError(t *testing.T) {
+	c := New("id", "secret")
+	c.token = "tok"
+	c.expiresAt = time.Now().Add(5 * time.Minute)
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := "Active premium subscription required for the owner of the app."
+		return &http.Response{StatusCode: 403, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+
+	err := c.doJSON(context.Background(), http.MethodGet, "https://example.test", nil, &struct{}{})
+	if !IsPremiumRequiredError(err) {
+		t.Fatalf("expected premium-required error, got %v", err)
+	}
+}
+
 func TestEnsureToken_RetriesTransientRequestError(t *testing.T) {
 	calls := 0
 	c := New("id", "secret")

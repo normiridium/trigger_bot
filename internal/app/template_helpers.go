@@ -322,6 +322,8 @@ var participantPortraitResolverMu sync.RWMutex
 var participantPortraitResolver func(chatID, userID int64) string
 var participantPortraitRemainingResolverMu sync.RWMutex
 var participantPortraitRemainingResolver func(chatID, userID int64) int
+var gptLimitResolverMu sync.RWMutex
+var gptLimitResolver func(chatID, userID int64) gptLimitTemplateInfo
 var botPortraitResolverMu sync.RWMutex
 var botPortraitResolver func(chatID int64) string
 var chatContextResolverMu sync.RWMutex
@@ -365,6 +367,12 @@ type replyAudioDetails struct {
 	Text   string
 }
 
+type gptLimitTemplateInfo struct {
+	Remaining    int
+	Limit        int
+	LowThreshold int
+}
+
 var replyAudioDetailsCache = struct {
 	mu    sync.RWMutex
 	items map[string]cachedReplyAudioDetails
@@ -382,6 +390,25 @@ func setParticipantPortraitRemainingResolver(fn func(chatID, userID int64) int) 
 	participantPortraitRemainingResolverMu.Lock()
 	participantPortraitRemainingResolver = fn
 	participantPortraitRemainingResolverMu.Unlock()
+}
+
+func setGPTLimitResolver(fn func(chatID, userID int64) gptLimitTemplateInfo) {
+	gptLimitResolverMu.Lock()
+	gptLimitResolver = fn
+	gptLimitResolverMu.Unlock()
+}
+
+func resolveGPTLimitInfo(chatID, userID int64) gptLimitTemplateInfo {
+	if chatID == 0 || userID == 0 {
+		return gptLimitTemplateInfo{}
+	}
+	gptLimitResolverMu.RLock()
+	fn := gptLimitResolver
+	gptLimitResolverMu.RUnlock()
+	if fn == nil {
+		return gptLimitTemplateInfo{}
+	}
+	return fn(chatID, userID)
 }
 
 func setBotPortraitResolver(fn func(chatID int64) string) {
@@ -1526,6 +1553,12 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 		}
 		prepareTrustedTemplateFragment(vars, "user_link", "__trusted_user_link_html", "__TRUSTED_USER_LINK_HTML_99DBF0C9__")
 		prepareTrustedTemplateFragment(vars, "reply_user_link", "__trusted_reply_user_link_html", "__TRUSTED_REPLY_USER_LINK_HTML_1C4C4B0A__")
+		if ctx.Msg.Chat != nil && ctx.Msg.From != nil {
+			limitInfo := resolveGPTLimitInfo(ctx.Msg.Chat.ID, ctx.Msg.From.ID)
+			vars["gpt_4h_remaining"] = limitInfo.Remaining
+			vars["gpt_4h_limit"] = limitInfo.Limit
+			vars["gpt_4h_low_threshold"] = limitInfo.LowThreshold
+		}
 		if ctx.Bot != nil && ctx.Msg.Chat != nil {
 			vars["admins"] = resolveChatAdmins(ctx.Bot, ctx.Msg.Chat.ID)
 		}
@@ -2560,6 +2593,7 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 	chatTitle := strings.TrimSpace(msg.Chat.Title)
 	userPortrait := resolveParticipantPortrait(msg.Chat.ID, msg.From.ID)
 	userPortraitRemaining := strconv.Itoa(resolveParticipantPortraitRemaining(msg.Chat.ID, msg.From.ID))
+	limitInfo := resolveGPTLimitInfo(msg.Chat.ID, msg.From.ID)
 	botPortrait := resolveBotPortrait(msg.Chat.ID)
 
 	return map[string]string{
@@ -2574,6 +2608,9 @@ func buildMessageTemplateReplacements(bot *tgbotapi.BotAPI, msg *tgbotapi.Messag
 		"{{user_portrait}}":           userPortrait,
 		"{{user_portrait_remaining}}": userPortraitRemaining,
 		"{{bot_portrait}}":            botPortrait,
+		"{{gpt_4h_remaining}}":        strconv.Itoa(limitInfo.Remaining),
+		"{{gpt_4h_limit}}":            strconv.Itoa(limitInfo.Limit),
+		"{{gpt_4h_low_threshold}}":    strconv.Itoa(limitInfo.LowThreshold),
 		"{{user_link}}":               buildUserLink(msg.From),
 		"{{chat_id}}":                 strconv.FormatInt(msg.Chat.ID, 10),
 		"{{chat_title}}":              chatTitle,

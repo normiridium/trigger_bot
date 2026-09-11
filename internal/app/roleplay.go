@@ -36,18 +36,19 @@ type roleplayAction struct {
 }
 
 type roleplaySession struct {
-	ID          string
-	ChatID      int64
-	ActorID     int64
-	TargetID    int64
-	ActorLink   string
-	ActorTag    string
-	TargetLink  string
-	TargetTag   string
-	Inline      bool
-	ActionIndex int
-	SourceMsgID int
-	CreatedAt   time.Time
+	ID           string
+	ChatID       int64
+	ActorID      int64
+	TargetID     int64
+	ActorLink    string
+	ActorTag     string
+	TargetLink   string
+	TargetTag    string
+	Inline       bool
+	AdultAllowed bool
+	ActionIndex  int
+	SourceMsgID  int
+	CreatedAt    time.Time
 }
 
 type roleplaySessionManager struct {
@@ -273,6 +274,54 @@ func withRoleplayDeclines(actions []roleplayAction) []roleplayAction {
 	return actions
 }
 
+func roleplayChatAllowsAdult(chat *tgbotapi.Chat) bool {
+	if chat == nil {
+		return false
+	}
+	title := strings.ToLower(strings.TrimSpace(chat.Title))
+	if title == "" {
+		return false
+	}
+	compact := strings.ReplaceAll(title, " ", "")
+	if strings.Contains(compact, "18+") {
+		return true
+	}
+	for _, marker := range []string{"🍓", "клубнич", "секс", "порно", "хорни", "horny", "sex", "porno"} {
+		if strings.Contains(title, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func roleplayActionRequiresAdultChat(a roleplayAction) bool {
+	switch strings.ToLower(strings.TrimSpace(a.Command)) {
+	case "засосать",
+		"отлизать",
+		"отсосать",
+		"выебать",
+		"шлёпнуть",
+		"трахнуть",
+		"отдаться",
+		"секс",
+		"раздеть",
+		"связать",
+		"наказать",
+		"доминировать",
+		"раздеться",
+		"придушить",
+		"заткнуть",
+		"выпороть":
+		return true
+	default:
+		return false
+	}
+}
+
+func roleplayAdultChatOnlyText() string {
+	return "Эта roleplay-команда доступна только в чатах с adult-маркером в названии: 🍓, 18+, секс, порно, хорни, horny, sex или porno."
+}
+
 func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args string) bool {
 	if msg == nil || msg.From == nil {
 		return true
@@ -281,6 +330,8 @@ func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args str
 		reply(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: msg.MessageID}, "Roleplay работает в группах: ответьте командой на сообщение участника.", false)
 		return true
 	}
+	adultAllowed := roleplayChatAllowsAdult(msg.Chat)
+	args = strings.TrimSpace(args)
 	targetID := int64(0)
 	targetLink := "кого-то"
 	targetTag := ""
@@ -301,18 +352,18 @@ func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args str
 	}
 
 	st := defaultRoleplaySessions.create(roleplaySession{
-		ChatID:      msg.Chat.ID,
-		ActorID:     msg.From.ID,
-		TargetID:    targetID,
-		ActorLink:   buildUserLink(msg.From),
-		ActorTag:    getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID),
-		TargetLink:  targetLink,
-		TargetTag:   targetTag,
-		ActionIndex: -1,
-		SourceMsgID: msg.MessageID,
+		ChatID:       msg.Chat.ID,
+		ActorID:      msg.From.ID,
+		TargetID:     targetID,
+		ActorLink:    buildUserLink(msg.From),
+		ActorTag:     getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID),
+		TargetLink:   targetLink,
+		TargetTag:    targetTag,
+		AdultAllowed: adultAllowed,
+		ActionIndex:  -1,
+		SourceMsgID:  msg.MessageID,
 	})
 
-	args = strings.TrimSpace(args)
 	if args == "" {
 		return sendRoleplayPicker(bot, st, 0, replyToID)
 	}
@@ -322,37 +373,21 @@ func handleRoleplayCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, args str
 		reply(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: msg.MessageID}, "Не нашла такое действие. Напиши /roleplay без аргументов, там будет список.", false)
 		return true
 	}
+	if roleplayActionRequiresAdultChat(roleplayActions[idx]) && !adultAllowed {
+		reply(sendContext{Bot: bot, ChatID: msg.Chat.ID, ReplyTo: msg.MessageID}, roleplayAdultChatOnlyText(), false)
+		return true
+	}
 	st.ActionIndex = idx
 	defaultRoleplaySessions.update(st)
 	return sendRoleplayProposal(bot, st, replyToID, false)
-}
-
-func sendRoleplayInlineHint(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
-	if bot == nil || msg == nil || msg.Chat == nil {
-		return
-	}
-	text := fmt.Sprintf("Открой inline-меню: начни вводить @%s и выбери действие.\nЕсли отвечаешь на сообщение участника — Telegram отправит выбранный roleplay ответом.", bot.Self.UserName)
-	m := tgbotapi.NewMessage(msg.Chat.ID, text)
-	m.ReplyToMessageID = msg.MessageID
-	m.AllowSendingWithoutReply = true
-	sw := ""
-	m.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{
-		Text:                         "Открыть inline-меню",
-		SwitchInlineQueryCurrentChat: &sw,
-	}))
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("roleplay inline hint send failed chat=%d: %v", msg.Chat.ID, err)
-		reportChatFailure(bot, msg.Chat.ID, "ошибка roleplay", err)
-		return
-	}
-	deleteRoleplayCommandMessage(bot, msg.Chat.ID, msg.MessageID)
 }
 
 func handleRoleplayInlineQuery(bot *tgbotapi.BotAPI, q *tgbotapi.InlineQuery) bool {
 	if bot == nil || q == nil || strings.TrimSpace(q.ID) == "" || q.From == nil {
 		return false
 	}
-	results := roleplayInlineResults(q, 50)
+	results, stats := roleplayInlineResultsWithStats(q, 50)
+	log.Printf("roleplay inline query user=%d chat_type=%q query=%q results=%d adult_hidden=%d", q.From.ID, q.ChatType, stats.Query, len(results), stats.AdultHidden)
 	conf := tgbotapi.InlineConfig{
 		InlineQueryID: q.ID,
 		Results:       results,
@@ -385,9 +420,15 @@ func handleRoleplayInlineSentMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message
 	st.ActorID = msg.From.ID
 	st.ActorLink = buildUserLink(msg.From)
 	st.ActorTag = getChatMemberTagRaw(bot.Token, msg.Chat.ID, msg.From.ID)
+	st.AdultAllowed = roleplayChatAllowsAdult(msg.Chat)
 	st = roleplayApplyReplyTarget(bot, st, msg)
 	defaultRoleplaySessions.update(st)
 
+	if st.ActionIndex >= 0 && st.ActionIndex < len(roleplayActions) && roleplayActionRequiresAdultChat(roleplayActions[st.ActionIndex]) && !st.AdultAllowed {
+		defaultRoleplaySessions.delete(st.ID)
+		editRoleplayAdultDenied(bot, st, msg.MessageID)
+		return true
+	}
 	if st.TargetID == 0 || roleplayPlainText(st.TargetLink) == "кого-то" {
 		return true
 	}
@@ -470,6 +511,10 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 		answerRoleplayCallback(bot, cb, "Чат не совпадает")
 		return true
 	}
+	if cb.Message != nil && cb.Message.Chat != nil {
+		st.AdultAllowed = roleplayChatAllowsAdult(cb.Message.Chat)
+		defaultRoleplaySessions.update(st)
+	}
 
 	switch action {
 	case "page":
@@ -496,6 +541,10 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 			answerRoleplayCallback(bot, cb, "Некорректный выбор")
 			return true
 		}
+		if roleplayActionRequiresAdultChat(roleplayActions[idx]) && !st.AdultAllowed {
+			answerRoleplayCallback(bot, cb, roleplayAdultChatOnlyText())
+			return true
+		}
 		st.ActionIndex = idx
 		defaultRoleplaySessions.update(st)
 		if roleplayTargetIsBot(bot, st) {
@@ -516,6 +565,10 @@ func handleRoleplayCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery) bo
 		st = next
 		if st.ActionIndex < 0 || st.ActionIndex >= len(roleplayActions) {
 			answerRoleplayCallback(bot, cb, "Действие не выбрано")
+			return true
+		}
+		if roleplayActionRequiresAdultChat(roleplayActions[st.ActionIndex]) && !st.AdultAllowed {
+			answerRoleplayCallback(bot, cb, roleplayAdultChatOnlyText())
 			return true
 		}
 		answerRoleplayCallback(bot, cb, "Принято")
@@ -590,7 +643,7 @@ func sendRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, page, replyTo 
 	m.DisableWebPagePreview = true
 	m.ReplyToMessageID = replyTo
 	m.AllowSendingWithoutReply = true
-	m.ReplyMarkup = roleplayPickerKeyboard(st.ID, page)
+	m.ReplyMarkup = roleplayPickerKeyboard(st.ID, page, st.AdultAllowed)
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("roleplay picker send failed chat=%d: %v", st.ChatID, err)
 		reportChatFailure(bot, st.ChatID, "ошибка roleplay", err)
@@ -603,7 +656,7 @@ func sendRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, page, replyTo 
 }
 
 func editRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, msgID, page int) {
-	edit := tgbotapi.NewEditMessageTextAndMarkup(st.ChatID, msgID, roleplayPickerText(st), roleplayPickerKeyboard(st.ID, page))
+	edit := tgbotapi.NewEditMessageTextAndMarkup(st.ChatID, msgID, roleplayPickerText(st), roleplayPickerKeyboard(st.ID, page, st.AdultAllowed))
 	edit.ParseMode = tgbotapi.ModeHTML
 	if _, err := bot.Request(edit); err != nil {
 		log.Printf("roleplay picker edit failed chat=%d msg=%d: %v", st.ChatID, msgID, err)
@@ -612,6 +665,10 @@ func editRoleplayPicker(bot *tgbotapi.BotAPI, st roleplaySession, msgID, page in
 
 func sendRoleplayProposal(bot *tgbotapi.BotAPI, st roleplaySession, replyTo int, editExisting bool) bool {
 	_ = editExisting
+	if st.ActionIndex >= 0 && st.ActionIndex < len(roleplayActions) && roleplayActionRequiresAdultChat(roleplayActions[st.ActionIndex]) && !st.AdultAllowed {
+		reply(sendContext{Bot: bot, ChatID: st.ChatID, ReplyTo: replyTo}, roleplayAdultChatOnlyText(), false)
+		return false
+	}
 	if roleplayTargetIsBot(bot, st) {
 		return sendRoleplayAutoDecision(bot, st, replyTo)
 	}
@@ -687,6 +744,14 @@ func editRoleplayProposal(bot *tgbotapi.BotAPI, st roleplaySession, msgID int) {
 	}
 }
 
+func editRoleplayAdultDenied(bot *tgbotapi.BotAPI, st roleplaySession, msgID int) {
+	edit := tgbotapi.NewEditMessageText(st.ChatID, msgID, roleplayAdultChatOnlyText())
+	edit.DisableWebPagePreview = true
+	if _, err := bot.Request(edit); err != nil {
+		log.Printf("roleplay adult denial edit failed chat=%d msg=%d: %v", st.ChatID, msgID, err)
+	}
+}
+
 func editRoleplayFinal(bot *tgbotapi.BotAPI, st roleplaySession, msgID int, declined bool) {
 	text := roleplayFinalText(st, declined)
 	edit := tgbotapi.NewEditMessageText(st.ChatID, msgID, text)
@@ -713,14 +778,25 @@ func editRoleplayInlineFinal(bot *tgbotapi.BotAPI, st roleplaySession, inlineMes
 }
 
 func roleplayInlineResults(q *tgbotapi.InlineQuery, limit int) []interface{} {
+	results, _ := roleplayInlineResultsWithStats(q, limit)
+	return results
+}
+
+type roleplayInlineResultStats struct {
+	Query       string
+	AdultHidden int
+}
+
+func roleplayInlineResultsWithStats(q *tgbotapi.InlineQuery, limit int) ([]interface{}, roleplayInlineResultStats) {
 	if q == nil || q.From == nil {
-		return nil
+		return nil, roleplayInlineResultStats{}
 	}
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
 	query := normalizeRoleplayInlineQuery(q.Query)
-	matched := roleplayInlineMatches(query, limit)
+	matched, adultHidden := roleplayInlineMatches(query, limit, roleplayInlineAdultEnabled())
+	stats := roleplayInlineResultStats{Query: query, AdultHidden: adultHidden}
 	results := make([]interface{}, 0, len(matched))
 	for _, idx := range matched {
 		a := roleplayActions[idx]
@@ -744,7 +820,11 @@ func roleplayInlineResults(q *tgbotapi.InlineQuery, limit int) []interface{} {
 		article.ReplyMarkup = &kb
 		results = append(results, article)
 	}
-	return results
+	return results, stats
+}
+
+func roleplayInlineAdultEnabled() bool {
+	return envBool("ROLEPLAY_INLINE_ADULT_ENABLED", false)
 }
 
 func roleplayInlineArticleResult(id, title, messageText string, entities []tgbotapi.MessageEntity, description string) tgbotapi.InlineQueryResultArticle {
@@ -768,15 +848,20 @@ func normalizeRoleplayInlineQuery(raw string) string {
 	return strings.TrimSpace(s)
 }
 
-func roleplayInlineMatches(query string, limit int) []int {
+func roleplayInlineMatches(query string, limit int, adultAllowed bool) ([]int, int) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if limit <= 0 {
 		limit = 50
 	}
 	seen := make(map[int]bool)
 	result := make([]int, 0, limit)
+	adultHidden := 0
 	add := func(i int) bool {
 		if i < 0 || i >= len(roleplayActions) || seen[i] {
+			return len(result) >= limit
+		}
+		if !adultAllowed && roleplayActionRequiresAdultChat(roleplayActions[i]) {
+			adultHidden++
 			return len(result) >= limit
 		}
 		seen[i] = true
@@ -789,13 +874,13 @@ func roleplayInlineMatches(query string, limit int) []int {
 				break
 			}
 		}
-		return result
+		return result, adultHidden
 	}
 	for i, a := range roleplayActions {
 		cmd := strings.ToLower(a.Command)
 		if strings.HasPrefix(cmd, query) || strings.HasPrefix(query, cmd) {
 			if add(i) {
-				return result
+				return result, adultHidden
 			}
 		}
 	}
@@ -803,11 +888,11 @@ func roleplayInlineMatches(query string, limit int) []int {
 		cmd := strings.ToLower(a.Command)
 		if strings.Contains(cmd, query) || strings.Contains(query, cmd) {
 			if add(i) {
-				return result
+				return result, adultHidden
 			}
 		}
 	}
-	return result
+	return result, adultHidden
 }
 
 func roleplayInlineTargetHTML(query string, a roleplayAction) string {
@@ -1017,23 +1102,25 @@ func roleplayFinalText(st roleplaySession, declined bool) string {
 	return fmt.Sprintf("%s | %s %s %s", roleplayEmojiHTML(a), st.ActorLink, html.EscapeString(roleplayActionResult(a, st.ActorTag)), st.TargetLink)
 }
 
-func roleplayPickerKeyboard(id string, page int) tgbotapi.InlineKeyboardMarkup {
+func roleplayPickerKeyboard(id string, page int, adultAllowed bool) tgbotapi.InlineKeyboardMarkup {
 	if page < 0 {
 		page = 0
 	}
-	totalPages := (len(roleplayActions) + roleplayPageSize - 1) / roleplayPageSize
+	indexes := roleplayVisibleActionIndexes(adultAllowed)
+	totalPages := (len(indexes) + roleplayPageSize - 1) / roleplayPageSize
 	if page >= totalPages {
 		page = totalPages - 1
 	}
 	start := page * roleplayPageSize
 	end := start + roleplayPageSize
-	if end > len(roleplayActions) {
-		end = len(roleplayActions)
+	if end > len(indexes) {
+		end = len(indexes)
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, roleplayPageSize+2)
 	for i := start; i < end; i++ {
-		a := roleplayActions[i]
-		btn := tgbotapi.NewInlineKeyboardButtonDataIcon(a.Command, fmt.Sprintf("rp|pick|%s|%d", id, i), a.EmojiID)
+		actionIndex := indexes[i]
+		a := roleplayActions[actionIndex]
+		btn := tgbotapi.NewInlineKeyboardButtonDataIcon(a.Command, fmt.Sprintf("rp|pick|%s|%d", id, actionIndex), a.EmojiID)
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
 	}
 	if totalPages > 1 {
@@ -1055,6 +1142,17 @@ func roleplayPickerKeyboard(id string, page int) tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardButtonDataStyled("Отмена", "rp|decline|"+id, tgbotapi.ButtonStyleDanger),
 	))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func roleplayVisibleActionIndexes(adultAllowed bool) []int {
+	out := make([]int, 0, len(roleplayActions))
+	for i, action := range roleplayActions {
+		if !adultAllowed && roleplayActionRequiresAdultChat(action) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
 }
 
 func roleplayConfirmKeyboard(id string) tgbotapi.InlineKeyboardMarkup {

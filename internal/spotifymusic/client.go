@@ -21,6 +21,8 @@ const (
 	spotifyRetryDelay     = 250 * time.Millisecond
 )
 
+var ErrPremiumRequired = errors.New("spotify premium subscription required for app owner")
+
 type Track struct {
 	ID          string
 	Title       string
@@ -202,7 +204,11 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body io.Re
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("spotify api error (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		body := strings.TrimSpace(string(raw))
+		if resp.StatusCode == http.StatusForbidden && isPremiumRequiredBody(body) {
+			return fmt.Errorf("%w: %s", ErrPremiumRequired, body)
+		}
+		return fmt.Errorf("spotify api error (%d): %s", resp.StatusCode, body)
 	}
 	if out == nil {
 		return nil
@@ -234,7 +240,11 @@ func (c *Client) ensureToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("spotify token error (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		body := strings.TrimSpace(string(raw))
+		if resp.StatusCode == http.StatusForbidden && isPremiumRequiredBody(body) {
+			return "", fmt.Errorf("%w: %s", ErrPremiumRequired, body)
+		}
+		return "", fmt.Errorf("spotify token error (%d): %s", resp.StatusCode, body)
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
@@ -293,6 +303,14 @@ func isSpotifyRetryableRequestError(err error) bool {
 		strings.Contains(errText, "connection reset") ||
 		strings.Contains(errText, "connection refused") ||
 		strings.Contains(errText, "temporary failure")
+}
+
+func IsPremiumRequiredError(err error) bool {
+	return errors.Is(err, ErrPremiumRequired) || (err != nil && isPremiumRequiredBody(err.Error()))
+}
+
+func isPremiumRequiredBody(s string) bool {
+	return strings.Contains(strings.ToLower(s), "active premium subscription required")
 }
 
 func sleepSpotifyRetry(ctx context.Context, attempt int) error {

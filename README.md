@@ -352,6 +352,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 
 ### Roleplay inline
 - `ROLEPLAY_INLINE_THUMB_BASE_URL` — публичный base URL для картинок-превью inline-меню `/roleplay`; если пусто, используется `VOICE_TRANSLATE_PUBLIC_BASE_URL`.
+- `ROLEPLAY_INLINE_ADULT_ENABLED` — показывать adult-действия в глобальном inline-списке; по умолчанию выключено. Ограничение выполнения по adult-маркеру в названии чата сохраняется.
 - Превью генерируются командой `./scripts/generate_roleplay_previews.py` в `static/roleplay/` из Telegram custom emoji.
 
 ### Quote sticker

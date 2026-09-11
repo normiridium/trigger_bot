@@ -1,6 +1,12 @@
 package vkaudio
 
-import "testing"
+import (
+	"net/http/cookiejar"
+	"net/url"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestNormalizeVKWebBaseDefaultsToVKRU(t *testing.T) {
 	got, err := normalizeVKWebBase("")
@@ -44,6 +50,59 @@ func TestVKLoginBase(t *testing.T) {
 	for _, tc := range tests {
 		if got := vkLoginBase(tc.base); got != tc.want {
 			t.Fatalf("vkLoginBase(%q)=%q, want %q", tc.base, got, tc.want)
+		}
+	}
+}
+
+func TestLoadNetscapeCookiesAliasesVKDomains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cookies.txt")
+	body := "# Netscape HTTP Cookie File\n" +
+		".vk.com\tTRUE\t/\tTRUE\t2147483647\tremixsid\tfrom-com\n" +
+		".vk.ru\tTRUE\t/\tTRUE\t2147483647\tremixlang\tru\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loadNetscapeCookies(jar, path); err != nil {
+		t.Fatalf("load cookies: %v", err)
+	}
+	u, _ := url.Parse("https://vk.ru/")
+	got := map[string]string{}
+	for _, ck := range jar.Cookies(u) {
+		got[ck.Name] = ck.Value
+	}
+	if got["remixsid"] != "from-com" {
+		t.Fatalf("expected vk.com remixsid alias on vk.ru, got %q", got["remixsid"])
+	}
+	if got["remixlang"] != "ru" {
+		t.Fatalf("expected original vk.ru cookie, got %q", got["remixlang"])
+	}
+}
+
+func TestLoadNetscapeCookiesKeepsNativeVKDomainValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cookies.txt")
+	body := "# Netscape HTTP Cookie File\n" +
+		".vk.com\tTRUE\t/\tTRUE\t2147483647\tremixsid\tfrom-com\n" +
+		".vk.ru\tTRUE\t/\tTRUE\t2147483647\tremixsid\tfrom-ru\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loadNetscapeCookies(jar, path); err != nil {
+		t.Fatalf("load cookies: %v", err)
+	}
+	u, _ := url.Parse("https://vk.ru/")
+	for _, ck := range jar.Cookies(u) {
+		if ck.Name == "remixsid" && ck.Value != "from-ru" {
+			t.Fatalf("native vk.ru cookie must win, got %q", ck.Value)
 		}
 	}
 }

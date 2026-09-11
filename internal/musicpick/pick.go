@@ -147,7 +147,13 @@ func HandleChoiceCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, repo
 	err := process(ctx, req, provider)
 	cancel()
 	if err != nil {
-		reportFailure(report, req.ChatID, "ошибка обработки выбора музыкального сервиса", err)
+		title := "ошибка обработки выбора музыкального сервиса"
+		if titled, ok := err.(interface{ ChatFailureTitle() string }); ok {
+			if customTitle := strings.TrimSpace(titled.ChatFailureTitle()); customTitle != "" {
+				title = customTitle
+			}
+		}
+		reportFailure(report, req.ChatID, title, err)
 		return true
 	}
 	if cb.Message != nil {

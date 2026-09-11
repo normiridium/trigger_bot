@@ -40,8 +40,11 @@ type richArticleFenceRange struct {
 
 var richArticleFenceBlockRe = regexp.MustCompile("(?ms)^```[ \t]*([[:alnum:]_-]*)[^\\n]*\\n(.*?)\\n```[ \t]*$")
 var richArticleMathBlockRe = regexp.MustCompile("(?s)(\\\\\\[(.*?)\\\\\\]|\\$\\$(.*?)\\$\\$|```math\\s*\\n(.*?)\\n```)")
+var richArticleInlineMathRe = regexp.MustCompile(`\$([^$\n]+)\$`)
+var richArticleAlternativeMathDelimiterRe = regexp.MustCompile(`(?s)\\\[(.*?)\\\]|\\\((.*?)\\\)`)
+var richArticleBareListMarkerRe = regexp.MustCompile(`^(?:[0-9]+[.)]|[-*+])$`)
 var richArticleDiagramBlockRe = regexp.MustCompile("(?is)```\\s*(mermaid|mmd|dot|graphviz)\\s*\\n(.*?)\\n```")
-var richArticleUnsupportedLatexRe = regexp.MustCompile(`(?is)\\begin\{(array|cases|aligned|gathered|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|split|tikzpicture|tikzcd|forest|scope)\}|\\Tree\b|\\(boxed|ce|substack|textbf)\b`)
+var richArticleUnsupportedLatexRe = regexp.MustCompile(`(?is)\\begin\{(array|cases|aligned|gathered|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|split|tikzpicture|tikzcd|forest|scope)\}|\\Tree\b|\\(boxed|ce|substack|textbf|xrightarrow|xleftarrow|overrightarrow|overleftarrow|rightarrow|leftarrow|leftrightarrow|Rightarrow|Leftarrow|Leftrightarrow|uparrow|downarrow|updownarrow|Uparrow|Downarrow|Updownarrow|swarrow|searrow|nearrow|nwarrow|mapsto)\b`)
 var richArticleStandaloneLatexEnvRe = regexp.MustCompile(`(?is)^\\begin\{(align\*?|alignat\*?|flalign\*?|gather\*?|multline\*?|equation\*?|tikzpicture|tikzcd|forest)\}`)
 var richArticleTGPhotoMarkdownLinkRe = regexp.MustCompile(`!?\[[^\]\n]*\]\(\s*tg://photo\?id=([A-Za-z0-9_.:-]+)\s*\)`)
 var richArticleTGPhotoPlainURLRe = regexp.MustCompile(`tg://photo\?id=([A-Za-z0-9_.:-]+)`)
@@ -72,6 +75,7 @@ const (
 )
 
 func renderRichArticleMediaBlocks(markdown string) (string, []richArticleRenderedAttachment, error) {
+	markdown = normalizeRichArticleMathDelimiters(markdown)
 	renderedMarkdown, attachments, err := renderRichArticleFencedMediaBlocks(markdown)
 	if err != nil {
 		return markdown, nil, err
@@ -83,6 +87,14 @@ func renderRichArticleMediaBlocks(markdown string) (string, []richArticleRendere
 	}
 	if len(mathAttachments) > 0 {
 		attachments = append(attachments, mathAttachments...)
+	}
+
+	renderedMarkdown, inlineMathAttachments, err := renderUnsupportedRichArticleInlineMath(renderedMarkdown)
+	if err != nil {
+		return markdown, nil, err
+	}
+	if len(inlineMathAttachments) > 0 {
+		attachments = append(attachments, inlineMathAttachments...)
 	}
 
 	renderedMarkdown, diagramAttachments, err := renderRichArticleDiagramBlocks(renderedMarkdown)
@@ -101,6 +113,48 @@ func renderRichArticleMediaBlocks(markdown string) (string, []richArticleRendere
 		attachments = append(attachments, fenAttachments...)
 	}
 	return renderedMarkdown, attachments, nil
+}
+
+// Telegram Rich Markdown uses dollar delimiters for native formulas. Models
+// also commonly emit the equivalent LaTeX delimiters, so normalize only those
+// delimiters while leaving formula bodies and fenced code untouched.
+func normalizeRichArticleMathDelimiters(markdown string) string {
+	if !strings.Contains(markdown, `\(`) && !strings.Contains(markdown, `\[`) {
+		return markdown
+	}
+	matches := richArticleAlternativeMathDelimiterRe.FindAllStringSubmatchIndex(markdown, -1)
+	if len(matches) == 0 {
+		return markdown
+	}
+
+	fences := richArticleFencedCodeRanges(markdown)
+	var out strings.Builder
+	out.Grow(len(markdown))
+	last := 0
+	for _, loc := range matches {
+		if len(loc) < 6 || loc[0] < last || richArticleRangeInFence(loc[0], loc[1], fences) {
+			continue
+		}
+		out.WriteString(markdown[last:loc[0]])
+		switch {
+		case loc[2] >= 0:
+			out.WriteString("$$")
+			out.WriteString(strings.TrimSpace(markdown[loc[2]:loc[3]]))
+			out.WriteString("$$")
+		case loc[4] >= 0:
+			out.WriteByte('$')
+			out.WriteString(strings.TrimSpace(markdown[loc[4]:loc[5]]))
+			out.WriteByte('$')
+		default:
+			out.WriteString(markdown[loc[0]:loc[1]])
+		}
+		last = loc[1]
+	}
+	if last == 0 {
+		return markdown
+	}
+	out.WriteString(markdown[last:])
+	return out.String()
 }
 
 func renderRichArticleFencedMediaBlocks(markdown string) (string, []richArticleRenderedAttachment, error) {
@@ -151,6 +205,71 @@ func renderRichArticleFencedMediaBlocks(markdown string) (string, []richArticleR
 	}
 	out.WriteString(markdown[last:])
 	return out.String(), attachments, nil
+}
+
+func renderUnsupportedRichArticleInlineMath(markdown string) (string, []richArticleRenderedAttachment, error) {
+	if !strings.Contains(markdown, "$") {
+		return markdown, nil, nil
+	}
+	matches := richArticleInlineMathRe.FindAllStringSubmatchIndex(markdown, -1)
+	if len(matches) == 0 {
+		return markdown, nil, nil
+	}
+
+	fences := richArticleFencedCodeRanges(markdown)
+	var out strings.Builder
+	out.Grow(len(markdown))
+	last := 0
+	attachments := make([]richArticleRenderedAttachment, 0, len(matches))
+	nonce := nextRichArticleFormulaNonce()
+	for _, loc := range matches {
+		if len(loc) < 4 || loc[0] < last || richArticleRangeInFence(loc[0], loc[1], fences) {
+			continue
+		}
+		// A match inside $$...$$ is a native display formula handled above.
+		if (loc[0] > 0 && markdown[loc[0]-1] == '$') || (loc[1] < len(markdown) && markdown[loc[1]] == '$') {
+			continue
+		}
+		body := strings.TrimSpace(markdown[loc[2]:loc[3]])
+		if !richArticleUnsupportedLatexRe.MatchString(body) {
+			continue
+		}
+		pngBytes, err := renderLatexBlockPNG(body)
+		if err != nil {
+			if errors.Is(err, errRichArticleLatexRendererUnavailable) {
+				continue
+			}
+			return markdown, nil, err
+		}
+		id := richArticleRenderedFormulaID(body, len(attachments)+1, nonce)
+		attachment, err := newRichArticleRenderedAttachment(id, pngBytes)
+		if err != nil {
+			return markdown, nil, err
+		}
+		attachments = append(attachments, attachment)
+		out.WriteString(richArticleInlineMediaPrefix(markdown[last:loc[0]]))
+		out.WriteString("\n\n")
+		out.WriteString(richArticleRenderedFormulaReference(attachment))
+		out.WriteString("\n\n")
+		last = loc[1]
+	}
+	if len(attachments) == 0 {
+		return markdown, nil, nil
+	}
+	out.WriteString(markdown[last:])
+	return out.String(), attachments, nil
+}
+
+func richArticleInlineMediaPrefix(prefix string) string {
+	lineStart := strings.LastIndexByte(prefix, '\n') + 1
+	linePrefix := prefix[lineStart:]
+	marker := strings.TrimSpace(linePrefix)
+	if !richArticleBareListMarkerRe.MatchString(marker) {
+		return prefix
+	}
+	// Rich Markdown media must be a separate block. Keeping a bare list marker
+	// before it creates an empty list item in which Telegram drops the image.
+	return prefix[:lineStart] + "**" + marker + "**"
 }
 
 func renderUnsupportedRichArticleMath(markdown string) (string, []richArticleRenderedAttachment, error) {
@@ -459,9 +578,7 @@ func shouldRenderRichArticleMathBlock(full, body string) bool {
 	if body == "" {
 		return false
 	}
-	if strings.HasPrefix(full, `\[`) {
-		return true
-	}
+	_ = full
 	return richArticleUnsupportedLatexRe.MatchString(body)
 }
 

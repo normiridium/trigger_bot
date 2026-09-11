@@ -34,6 +34,123 @@ func TestApplyCapturingTemplate(t *testing.T) {
 	}
 }
 
+func TestTriggerHelpHTMLItemIncludesCleanedRegex(t *testing.T) {
+	pattern := `^<tag>&` + strings.Repeat("очень-длинное-условие ", 8) + `$`
+	got := triggerHelpHTMLItem(Trigger{
+		ID:        15,
+		Title:     "Ролеплей <глаголы>",
+		MatchType: MatchTypeRegex,
+		MatchText: pattern,
+	})
+	if !strings.Contains(got, "<b>Ролеплей &lt;глаголы&gt;:</b>") {
+		t.Fatalf("title is not HTML-escaped: %q", got)
+	}
+	if !strings.Contains(got, "</b> <code>tag очень длинное условие") {
+		t.Fatalf("cleaned regex is not included: %q", got)
+	}
+	if strings.Contains(got, "\n") || strings.Contains(got, "Regex:") {
+		t.Fatalf("trigger and condition must be rendered on one line without a label: %q", got)
+	}
+	condition := strings.TrimSuffix(strings.SplitN(got, "<code>", 2)[1], "</code>")
+	if strings.ContainsAny(condition, `^&<>-$`) {
+		t.Fatalf("regex punctuation was not removed: %q", got)
+	}
+}
+
+func TestCleanRegexForHelp(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{
+			name:    "bot address and bracket groups",
+			pattern: `^\s*(?:(?:@olenyam_bot|оле[- ]?ням)[\s,.:!?—–-]*)?обнять\s+всех\s*[.!?…]*$`,
+			want:    "olenyam bot оле ням обнять всех",
+		},
+		{
+			name:    "word roots and quantifiers",
+			pattern: `^[^\n]{0,100}правила\s+чата`,
+			want:    "правила чата",
+		},
+		{
+			name:    "URL classes and digits",
+			pattern: `https?://example\.com/[A-Za-z0-9_-]+/track/123`,
+			want:    "https example com track",
+		},
+		{
+			name:    "emoji alternatives",
+			pattern: `^\s*((?:☠? ?уби|🤗? ?обня|☠? ?уби))ть\s*$`,
+			want:    "☠ уби 🤗 обня ть",
+		},
+		{
+			name:    "duplicate words keep first occurrence order",
+			pattern: `(?:слово|другое|слово|третье|другое)`,
+			want:    "слово другое третье",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cleanRegexForHelp(tc.pattern); got != tc.want {
+				t.Fatalf("cleanRegexForHelp(%q)=%q want=%q", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTriggerHelpHTMLItemOmitsRegexForOtherMatchTypes(t *testing.T) {
+	got := triggerHelpHTMLItem(Trigger{
+		ID:        7,
+		Title:     "Полное совпадение",
+		MatchType: MatchTypeFull,
+		MatchText: "привет",
+	})
+	if strings.Contains(got, "<code>") || strings.Contains(got, ":</b>") {
+		t.Fatalf("non-regex trigger must not have a regex condition: %q", got)
+	}
+}
+
+func TestShowTriggerInHelpOmitsVoiceReactions(t *testing.T) {
+	reactionTypes := []MatchType{
+		MatchTypeSupportReactions,
+		MatchTypeHypeReactions,
+		MatchTypeFunnyReactions,
+		MatchTypeSadReactions,
+		MatchTypeAngryReactions,
+	}
+	for _, matchType := range reactionTypes {
+		if showTriggerInHelp(Trigger{ActionType: ActionTypeSendVoice, MatchType: matchType}) {
+			t.Fatalf("voice reaction %q must be omitted from help", matchType)
+		}
+	}
+	if !showTriggerInHelp(Trigger{ActionType: ActionTypeSendVoice, MatchType: MatchTypeRegex}) {
+		t.Fatal("ordinary voice trigger must remain visible in help")
+	}
+	if !showTriggerInHelp(Trigger{ActionType: ActionTypeSend, MatchType: MatchTypeSadReactions}) {
+		t.Fatal("non-voice reaction trigger must remain visible in help")
+	}
+}
+
+func TestShowTriggerInHelpOmitsLinkActions(t *testing.T) {
+	linkActions := []ActionType{
+		ActionTypeSpotifyMusic,
+		ActionTypeVKMusic,
+		ActionTypeYandexMusic,
+		ActionTypeMediaAudio,
+		ActionTypeMediaTikTok,
+		ActionTypeMediaCoub,
+		ActionTypeMediaX,
+	}
+	for _, actionType := range linkActions {
+		if showTriggerInHelp(Trigger{ActionType: actionType, MatchType: MatchTypeRegex}) {
+			t.Fatalf("link action %q must be omitted from help", actionType)
+		}
+	}
+	if !showTriggerInHelp(Trigger{UID: "music-search", ActionType: ActionTypeMusic, MatchType: MatchTypeRegex}) {
+		t.Fatal("music search trigger must remain visible in help")
+	}
+}
+
 func TestMusicCommandSpecByCommand(t *testing.T) {
 	cases := []struct {
 		cmd     string
@@ -1391,24 +1508,80 @@ func TestNormalizeTelegramLineBreaks_ConvertsLiteralEscapedBreaks(t *testing.T) 
 	}
 }
 
-func TestRenderUnsupportedRichArticleMath_RendersBracketDisplayBlock(t *testing.T) {
-	requireSystemLatexRenderer(t)
+func TestRenderRichArticleMediaBlocks_KeepsSimpleBracketDisplayNative(t *testing.T) {
 	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
-	got, attachments, err := renderUnsupportedRichArticleMath(in)
+	got, attachments, err := renderRichArticleMediaBlocks(in)
 	if err != nil {
-		t.Fatalf("render unsupported math: %v", err)
+		t.Fatalf("render rich media: %v", err)
 	}
-	if len(attachments) != 1 {
-		t.Fatalf("expected 1 rendered formula attachment, got %d", len(attachments))
+	if len(attachments) != 0 {
+		t.Fatalf("simple formula should stay native, got %d attachments", len(attachments))
 	}
-	if len(attachments[0].PNG) == 0 {
-		t.Fatalf("rendered formula attachment is empty")
+	want := "До\n\n$$E = mc^2$$\n\nПосле"
+	if got != want {
+		t.Fatalf("native formula delimiters not normalized:\n got %q\nwant %q", got, want)
 	}
-	if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachments[0].ID)) {
-		t.Fatalf("formula placeholder missing: %q", got)
+}
+
+func TestRenderRichArticleMediaBlocks_KeepsSimpleParenthesizedInlineNative(t *testing.T) {
+	in := `До \(x^2 + y^2\) после`
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render rich media: %v", err)
 	}
-	if strings.Contains(got, `\[E = mc^2\]`) {
-		t.Fatalf("unsupported latex block must be replaced: %q", got)
+	if len(attachments) != 0 {
+		t.Fatalf("simple inline formula should stay native, got %d attachments", len(attachments))
+	}
+	if want := `До $x^2 + y^2$ после`; got != want {
+		t.Fatalf("native inline delimiters not normalized:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestRenderRichArticleMediaBlocks_NormalizesModelStyleFormulaList(t *testing.T) {
+	requireSystemLatexRenderer(t)
+	in := strings.Join([]string{
+		`1. \( E=mc^2 \)`,
+		`2. \( x = \frac{-b \pm \sqrt{b^2-4ac}}{2a} \)`,
+		`3. \( \left| \begin{matrix} a & b \\ c & d \end{matrix} \right| = ad-bc \)`,
+		`4. \( \overrightarrow{AB} = \vec{b}-\vec{a} \)`,
+		`5. \( f(x) \xrightarrow{x \to a} L \)`,
+	}, "\n")
+
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render model-style formula list: %v", err)
+	}
+	if len(attachments) != 3 {
+		t.Fatalf("complex inline formulas should produce 3 attachments, got %d\n%s", len(attachments), got)
+	}
+	for _, native := range []string{
+		`$E=mc^2$`,
+		`$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$`,
+	} {
+		if !strings.Contains(got, native) {
+			t.Errorf("native formula %q missing after normalization:\n%s", native, got)
+		}
+	}
+	if strings.Contains(got, `\(`) || strings.Contains(got, `\)`) {
+		t.Fatalf("non-native or whitespace-padded delimiters survived:\n%s", got)
+	}
+	for _, match := range richArticleInlineMathRe.FindAllStringSubmatch(got, -1) {
+		if len(match) == 2 && match[1] != strings.TrimSpace(match[1]) {
+			t.Fatalf("whitespace-padded formula body survived: %q\n%s", match[1], got)
+		}
+	}
+	for _, attachment := range attachments {
+		if !isPNGBytes(attachment.PNG) || !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachment.ID)) {
+			t.Errorf("rendered attachment %q is missing or invalid", attachment.ID)
+		}
+	}
+	for _, marker := range []string{"3.", "4.", "5."} {
+		if !strings.Contains(got, "**"+marker+"**\n\n![](") {
+			t.Errorf("complex formula marker %s is not separated from its media block:\n%s", marker, got)
+		}
+		if strings.Contains(got, "\n"+marker+" \n\n![](") {
+			t.Errorf("bare list marker %s still owns a media block:\n%s", marker, got)
+		}
 	}
 }
 
@@ -1936,8 +2109,8 @@ func TestRenderRichArticleMediaBlocks_RendersMathAndDiagram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render mixed rich media: %v", err)
 	}
-	if len(attachments) != 2 {
-		t.Fatalf("expected 2 rendered attachments, got %d", len(attachments))
+	if len(attachments) != 1 {
+		t.Fatalf("expected only the diagram attachment, got %d", len(attachments))
 	}
 	for _, attachment := range attachments {
 		if !isPNGBytes(attachment.PNG) {
@@ -1946,6 +2119,9 @@ func TestRenderRichArticleMediaBlocks_RendersMathAndDiagram(t *testing.T) {
 		if !strings.Contains(got, richArticleRenderedFormulaMarkdown(attachment.ID)) {
 			t.Fatalf("placeholder for %s missing: %q", attachment.ID, got)
 		}
+	}
+	if !strings.Contains(got, `$$E = mc^2$$`) {
+		t.Fatalf("simple formula must remain native: %q", got)
 	}
 }
 
@@ -2011,7 +2187,7 @@ func TestNormalizeRichArticleInlineImagePNG_ScalesWideImageToArticleWidth(t *tes
 
 func TestRenderUnsupportedRichArticleMath_UsesUniqueMediaIDs(t *testing.T) {
 	requireSystemLatexRenderer(t)
-	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
+	in := "До\n\n$$\\begin{cases}x=1\\\\y=2\\end{cases}$$\n\nПосле"
 	_, first, err := renderUnsupportedRichArticleMath(in)
 	if err != nil {
 		t.Fatalf("first render unsupported math: %v", err)
@@ -2045,7 +2221,7 @@ func TestRenderUnsupportedRichArticleMath_KeepsSimpleDollarBlockNative(t *testin
 func TestRenderUnsupportedRichArticleMath_KeepsRawWhenSystemLatexMissing(t *testing.T) {
 	t.Setenv("TRIGGER_BOT_PDFLATEX_BIN", "/definitely/missing/pdflatex")
 	t.Setenv("TRIGGER_BOT_PDFTOCAIRO_BIN", "/definitely/missing/pdftocairo")
-	in := "До\n\n\\[E = mc^2\\]\n\nПосле"
+	in := "До\n\n$$\\begin{cases}x=1\\\\y=2\\end{cases}$$\n\nПосле"
 	got, attachments, err := renderUnsupportedRichArticleMath(in)
 	if err != nil {
 		t.Fatalf("missing system renderer must not fail rich article rendering: %v", err)

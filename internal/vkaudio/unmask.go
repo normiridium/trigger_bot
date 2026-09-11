@@ -27,21 +27,30 @@ func unmaskVKAudioURL(raw string, vkID int) string {
 		return decoded
 	}
 	ops := strings.Split(opsRaw, "\t")
+	if vkID > 0 {
+		if unmasked, ok := applyVKAudioMaskOps(decoded, ops, vkID, true); ok && strings.HasPrefix(unmasked, "http") {
+			return unmasked
+		}
+	}
+	if unmasked, ok := applyVKAudioMaskOps(decoded, ops, 0, false); ok && strings.HasPrefix(unmasked, "http") {
+		return unmasked
+	}
+	return raw
+}
+
+func applyVKAudioMaskOps(decoded string, ops []string, vkID int, xorI bool) (string, bool) {
 	for i := len(ops) - 1; i >= 0; i-- {
 		step := strings.Split(ops[i], "\v")
 		if len(step) == 0 || step[0] == "" {
-			return raw
+			return "", false
 		}
-		next, ok := applyVKAudioMaskOp(decoded, step[0], step[1:], vkID)
+		next, ok := applyVKAudioMaskOp(decoded, step[0], step[1:], vkID, xorI)
 		if !ok {
-			return raw
+			return "", false
 		}
 		decoded = next
 	}
-	if strings.HasPrefix(decoded, "http") {
-		return decoded
-	}
-	return raw
+	return decoded, true
 }
 
 func vkAudioB64(s string) string {
@@ -69,7 +78,7 @@ func vkAudioB64(s string) string {
 	return b.String()
 }
 
-func applyVKAudioMaskOp(s, name string, args []string, vkID int) (string, bool) {
+func applyVKAudioMaskOp(s, name string, args []string, vkID int, xorI bool) (string, bool) {
 	switch name {
 	case "v":
 		return reverseString(s), true
@@ -99,9 +108,10 @@ func applyVKAudioMaskOp(s, name string, args []string, vkID int) (string, bool) 
 		if err != nil {
 			return "", false
 		}
-		key := big.NewInt(n)
-		key.Xor(key, big.NewInt(int64(vkID)))
-		return shuffleString(s, key), true
+		if xorI && vkID > 0 {
+			n ^= int64(vkID)
+		}
+		return shuffleString(s, big.NewInt(n)), true
 	case "x":
 		if len(args) < 1 || args[0] == "" {
 			return "", false

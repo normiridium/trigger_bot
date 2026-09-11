@@ -548,6 +548,88 @@ func triggerDisplayName(tr *Trigger) string {
 	return "без названия"
 }
 
+var (
+	helpRegexBracketGroupRe = regexp.MustCompile(`\[[^]]*\]`)
+	helpRegexUnicodeClassRe = regexp.MustCompile(`\\[pP]\{[^}]*\}`)
+	helpRegexEscapeRe       = regexp.MustCompile(`\\[[:alpha:]]`)
+	helpRegexQuantifierRe   = regexp.MustCompile(`\{[^}]*\}`)
+)
+
+func cleanRegexForHelp(pattern string) string {
+	cleaned := helpRegexBracketGroupRe.ReplaceAllString(pattern, " ")
+	cleaned = helpRegexUnicodeClassRe.ReplaceAllString(cleaned, " ")
+	cleaned = helpRegexEscapeRe.ReplaceAllString(cleaned, " ")
+	cleaned = helpRegexQuantifierRe.ReplaceAllString(cleaned, " ")
+
+	var out strings.Builder
+	for _, r := range cleaned {
+		switch {
+		case unicode.IsLetter(r), unicode.IsMark(r), unicode.IsSpace(r):
+			out.WriteRune(r)
+		case unicode.IsSymbol(r) && r > unicode.MaxASCII:
+			out.WriteRune(r)
+		default:
+			out.WriteByte(' ')
+		}
+	}
+	fields := strings.Fields(out.String())
+	unique := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		unique = append(unique, field)
+	}
+	return strings.Join(unique, " ")
+}
+
+func triggerHelpHTMLItem(tr Trigger) string {
+	title := strings.TrimSpace(tr.Title)
+	if title == "" {
+		title = strings.TrimSpace(tr.MatchText)
+	}
+	if title == "" {
+		title = fmt.Sprintf("ID %d", tr.ID)
+	}
+
+	item := "• <b>" + html.EscapeString(title) + "</b>"
+	if tr.MatchType == MatchTypeRegex {
+		pattern := cleanRegexForHelp(tr.MatchText)
+		if pattern != "" {
+			item = "• <b>" + html.EscapeString(title) + ":</b> <code>" + html.EscapeString(pattern) + "</code>"
+		}
+	}
+	return item
+}
+
+func showTriggerInHelp(tr Trigger) bool {
+	switch tr.ActionType {
+	case ActionTypeSpotifyMusic,
+		ActionTypeVKMusic,
+		ActionTypeYandexMusic,
+		ActionTypeMediaAudio,
+		ActionTypeMediaTikTok,
+		ActionTypeMediaCoub,
+		ActionTypeMediaX:
+		return false
+	}
+	if tr.ActionType != ActionTypeSendVoice {
+		return true
+	}
+	switch tr.MatchType {
+	case MatchTypeSupportReactions,
+		MatchTypeHypeReactions,
+		MatchTypeFunnyReactions,
+		MatchTypeSadReactions,
+		MatchTypeAngryReactions:
+		return false
+	default:
+		return true
+	}
+}
+
 func adminModeAllowsTrigger(tr *Trigger, isAdmin bool) bool {
 	if tr == nil {
 		return false
@@ -1998,10 +2080,30 @@ func Run() {
 		return chatRecent.RecentText(chatID, limit)
 	})
 	setChatSummaryResolver(nil)
+	setGPTLimitResolver(func(chatID, userID int64) gptLimitTemplateInfo {
+		if userGPTTokenLimit <= 0 || userID == 0 || !userGPTTokenLimitApplies(userID) {
+			return gptLimitTemplateInfo{}
+		}
+		remaining, err := store.UserGPTTokensRemaining(userID, time.Now(), userGPTTokenLimit)
+		if err != nil {
+			log.Printf("gpt 4h limit template tags failed user=%d chat=%d: %v", userID, chatID, err)
+			return gptLimitTemplateInfo{
+				Remaining:    userGPTTokenLimit,
+				Limit:        userGPTTokenLimit,
+				LowThreshold: userGPTTokenLowThreshold,
+			}
+		}
+		return gptLimitTemplateInfo{
+			Remaining:    remaining,
+			Limit:        userGPTTokenLimit,
+			LowThreshold: userGPTTokenLowThreshold,
+		}
+	})
 	defer func() {
 		setOutgoingChatRecentStore(nil, "")
 		setChatContextResolver(nil)
 		setChatSummaryResolver(nil)
+		setGPTLimitResolver(nil)
 	}()
 	disallowedNotifier := chataccess.NewDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
 	portraitManager := newParticipantPortraitManager(store)
@@ -2454,6 +2556,7 @@ func Run() {
 			switch cmd {
 			case cmdStart, cmdHelp:
 				s := ""
+				helpHTML := false
 				if isPrivateChat {
 					commands := []string{
 						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
@@ -2473,6 +2576,7 @@ func Run() {
 						"{{user_portrait}}\n" +
 						"{{user_portrait_remaining}}\n" +
 						"{{bot_portrait}}\n" +
+						"{{gpt_4h_remaining}}, {{gpt_4h_limit}}, {{gpt_4h_low_threshold}}\n" +
 						"{{chat_context 12}}\n" +
 						"{{sender_tag}}\n" +
 						"{{chat_id}}, {{chat_title}}\n" +
@@ -2486,132 +2590,29 @@ func Run() {
 						fmt.Sprintf("— команда /%s\n", cmdEmojiID) +
 						"— или просто отправьте кастомный emoji в личку боту."
 				} else {
+					helpHTML = true
 					triggerInfo := "Триггеры: список временно недоступен."
-					featureInfo := "Что умею:\n— выполнять триггеры, настроенные админами"
-					usageInfo := fmt.Sprintf("Как пользоваться:\n— /%s — показать ID кастомного эмодзи", cmdEmojiID)
 					if items, err := store.ListTriggers(); err == nil {
 						enabled := make([]string, 0, len(items))
-						hasSpotify := false
-						hasUnifiedMusic := false
-						hasYandexMusic := false
-						hasVKMusic := false
-						hasYouTube := false
-						hasInstagram := false
-						hasTikTok := false
-						hasSoundCloud := false
-						hasX := false
 						for _, it := range items {
-							if !it.Enabled {
+							if !it.Enabled || !showTriggerInHelp(it) {
 								continue
 							}
-							switch strings.TrimSpace(it.UID) {
-							case "system-media-youtube-link-audio":
-								hasYouTube = true
-							case "system-media-instagram-link-audio":
-								hasInstagram = true
-							case "system-media-tiktok-link-audio":
-								hasTikTok = true
-							case "system-media-soundcloud-link-audio":
-								hasSoundCloud = true
-							case "system-media-x-link-video":
-								hasX = true
-							}
-							if it.ActionType == ActionTypeSpotifyMusic {
-								hasSpotify = true
-							}
-							if it.ActionType == ActionTypeMusic {
-								hasUnifiedMusic = true
-							}
-							if it.ActionType == ActionTypeYandexMusic {
-								hasYandexMusic = true
-							}
-							if it.ActionType == ActionTypeVKMusic {
-								hasVKMusic = true
-							}
-							if it.ActionType == ActionTypeMediaX {
-								hasX = true
-							}
-							title := strings.TrimSpace(it.Title)
-							if title == "" {
-								title = strings.TrimSpace(it.MatchText)
-							}
-							if title == "" {
-								title = fmt.Sprintf("ID %d", it.ID)
-							}
-							enabled = append(enabled, "• "+clipText(title, 70))
+							enabled = append(enabled, triggerHelpHTMLItem(it))
 						}
 						if len(enabled) > 0 {
 							triggerInfo = fmt.Sprintf("Активные триггеры: %d\n%s", len(enabled), strings.Join(enabled, "\n"))
 						} else {
 							triggerInfo = "Активные триггеры: пока не настроены."
 						}
-						featureLines := []string{"Что умею:"}
-						if hasUnifiedMusic {
-							featureLines = append(featureLines, "— искать музыку с выбором сервиса: Spotify, Яндекс.Музыка, VK или SoundCloud")
-						} else if hasSpotify {
-							featureLines = append(featureLines, "— искать и скачивать музыку Spotify")
-						}
-						if hasYandexMusic {
-							featureLines = append(featureLines, "— скачивать музыку из Яндекс.Музыки по ссылке")
-						}
-						if hasVKMusic {
-							featureLines = append(featureLines, "— искать и скачивать музыку VK")
-						}
-						mediaServices := make([]string, 0, 3)
-						if hasYouTube {
-							mediaServices = append(mediaServices, "YouTube")
-						}
-						if hasInstagram {
-							mediaServices = append(mediaServices, "Instagram")
-						}
-						if hasTikTok {
-							mediaServices = append(mediaServices, "TikTok")
-						}
-						if hasSoundCloud {
-							mediaServices = append(mediaServices, "SoundCloud")
-						}
-						if hasX {
-							mediaServices = append(mediaServices, "X")
-						}
-						if len(mediaServices) > 0 {
-							featureLines = append(featureLines, "— скачивать аудио/видео по ссылкам: "+strings.Join(mediaServices, ", "))
-						}
-						featureLines = append(featureLines, "— выполнять триггеры и GPT-ответы, настроенные админами")
-						featureInfo = strings.Join(featureLines, "\n")
-						usageLines := []string{"Как пользоваться:"}
-						if len(mediaServices) > 0 {
-							usageLines = append(usageLines, "— отправьте ссылку, и я предложу формат (аудио/видео)")
-						}
-						if hasUnifiedMusic {
-							usageLines = append(usageLines, "— напишите: включи/поставь/найди трек ..., затем выберите сервис")
-						} else if hasSpotify {
-							usageLines = append(usageLines, fmt.Sprintf("— для Spotify: /%s <запрос>", cmdSpotifySearch))
-						}
-						if hasYandexMusic {
-							usageLines = append(usageLines, fmt.Sprintf("— для Yandex Music: /%s <запрос> или ссылка music.yandex.ru", cmdYandexMusicSearch))
-						}
-						if hasVKMusic {
-							usageLines = append(usageLines, fmt.Sprintf("— для VK: /%s <запрос>", cmdVKMusicSearch))
-						}
-						if hasSoundCloud {
-							usageLines = append(usageLines, fmt.Sprintf("— для SoundCloud: /%s <запрос>", cmdSoundCloudSearch))
-						}
-						usageLines = append(usageLines, fmt.Sprintf("— /%s — показать ваш портрет", cmdMyPortrait))
-						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить ваш портрет", cmdDeleteMyPortrait))
-						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID кастомного эмодзи: /%s", cmdEmojiID))
-						usageLines = append(usageLines, fmt.Sprintf("— если нужен код стикера: отправьте /%s в ответ на стикер", cmdStickerID))
-						usageLines = append(usageLines, fmt.Sprintf("— если нужен ID гифки: отправьте /%s в ответ на гифку", cmdGifID))
-						usageLines = append(usageLines, fmt.Sprintf("— /%s [N] — сделать quote-стикер (по reply или сообщению выше)", cmdQuoteSticker))
-						usageLines = append(usageLines, fmt.Sprintf("— /%s — удалить стикер из стикерпака (по reply или сообщению выше)", cmdQuoteDelete))
-						usageLines = append(usageLines, fmt.Sprintf("— /%s — roleplay-действие по reply", cmdRoleplay))
-						usageInfo = strings.Join(usageLines, "\n")
 					}
-					s = "Привет! Я тут, чтобы помогать с музыкой и автоматизацией чата.\n\n" +
-						featureInfo + "\n\n" +
-						usageInfo + "\n\n" +
-						triggerInfo
+					s = triggerInfo
 				}
-				reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
+				if helpHTML {
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), s, false)
+				} else {
+					reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
+				}
 				continue
 			case cmdEmojiID, cmdEmojiIDAlias:
 				hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
@@ -3303,6 +3304,13 @@ func handleYandexTop10Callback(
 	return true
 }
 
+func spotifyMusicSearchFailureTitle(err error) string {
+	if spotifymusic.IsPremiumRequiredError(err) {
+		return "Spotify требует Premium у владельца приложения"
+	}
+	return "ошибка поиска музыки Spotify"
+}
+
 func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req musicpick.ChoiceRequest, provider string) error {
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
@@ -3318,7 +3326,7 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 		tracks, err := deps.SpotifyMusic.SearchTracks(searchCtx, query, 10)
 		cancel()
 		if err != nil {
-			return err
+			return withChatFailureTitle(spotifyMusicSearchFailureTitle(err), err)
 		}
 		if len(tracks) == 0 {
 			return errors.New("ничего не найдено в Spotify")
@@ -3435,6 +3443,9 @@ func processMusicProviderChoice(ctx context.Context, deps musicProviderDeps, req
 				return errors.New("vk music queue is full")
 			}
 			return nil
+		}
+		if err := ensureProxyFreshForService(ctx, "vk"); err != nil {
+			return err
 		}
 		searchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 		tracks, err := deps.VKDownloader.SearchTracks(searchCtx, query, 10)
@@ -3943,7 +3954,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 		cancel()
 		if err != nil {
 			log.Printf("spotify music search failed: %v", err)
-			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка поиска музыки Spotify", err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, spotifyMusicSearchFailureTitle(err), err)
 			return
 		}
 		if len(tracks) == 0 {
@@ -4038,6 +4049,11 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 				reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка отправки аудио VK", errors.New("vk music queue is full"))
 				return
 			}
+			return
+		}
+		if err := ensureProxyFreshForService(context.Background(), "vk"); err != nil {
+			log.Printf("vk music proxy update failed: %v", err)
+			reportChatFailure(deps.Bot, msg.Chat.ID, "ошибка обновления VK-прокси", err)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

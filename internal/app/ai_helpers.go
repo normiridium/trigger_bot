@@ -1101,13 +1101,45 @@ func getChatMemberTagRaw(token string, chatID, userID int64) string {
 }
 
 func reportChatFailure(bot *tgbotapi.BotAPI, chatID int64, context string, err error) {
-	if !chatErrorLogEnabled || bot == nil || chatID == 0 || err == nil {
+	if err == nil {
+		return
+	}
+	context = strings.TrimSpace(context)
+	log.Printf("chat failure chat=%d context=%q err=%s", chatID, context, clipText(sanitizeSecretText(err.Error()), 1200))
+	if !chatErrorLogEnabled || bot == nil || chatID == 0 {
 		return
 	}
 	// Never expose raw upstream errors to chat (can leak sensitive internals/tokens).
-	text := fmt.Sprintf("⚠️ %s. Подробности в логах.", strings.TrimSpace(context))
+	text := fmt.Sprintf("⚠️ %s. Подробности в логах.", context)
 	m := tgbotapi.NewMessage(chatID, text)
 	_, _ = bot.Send(m)
+}
+
+type chatFailureTitleError struct {
+	title string
+	err   error
+}
+
+func (e chatFailureTitleError) Error() string {
+	if e.err == nil {
+		return e.title
+	}
+	return e.err.Error()
+}
+
+func (e chatFailureTitleError) Unwrap() error {
+	return e.err
+}
+
+func (e chatFailureTitleError) ChatFailureTitle() string {
+	return e.title
+}
+
+func withChatFailureTitle(title string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return chatFailureTitleError{title: strings.TrimSpace(title), err: err}
 }
 
 func buildOpenAIImageDataURL(imageURL string) (string, error) {

@@ -38,6 +38,62 @@ func TestRoleplayPickerDoesNotExposeUnsafeAction(t *testing.T) {
 	}
 }
 
+func TestRoleplayAdultChatMarkers(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{title: "Дом Оленьки (16+)", want: false},
+		{title: "Дом Оленьки 18+", want: true},
+		{title: "Дом Оленьки 18 +", want: true},
+		{title: "Дом Оленьки 🍓", want: true},
+		{title: "Клубничный домик", want: true},
+		{title: "Дом Оленьки секс", want: true},
+		{title: "Дом Оленьки порно", want: true},
+		{title: "Дом Оленьки хорни", want: true},
+		{title: "Horny basement", want: true},
+		{title: "Sex positive club", want: true},
+		{title: "Porno archive", want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.title, func(t *testing.T) {
+			got := roleplayChatAllowsAdult(&tgbotapi.Chat{Title: tc.title})
+			if got != tc.want {
+				t.Fatalf("roleplayChatAllowsAdult(%q)=%v, want %v", tc.title, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRoleplayAdultActionsHiddenOutsideAdultChat(t *testing.T) {
+	adultIdx := findRoleplayAction("трахнуть")
+	if adultIdx < 0 {
+		t.Fatal("expected трахнуть action")
+	}
+	if !roleplayActionRequiresAdultChat(roleplayActions[adultIdx]) {
+		t.Fatal("трахнуть must require adult chat marker")
+	}
+
+	plain := roleplayVisibleActionIndexes(false)
+	for _, idx := range plain {
+		if idx == adultIdx {
+			t.Fatal("adult action must be hidden in plain chats")
+		}
+	}
+
+	adult := roleplayVisibleActionIndexes(true)
+	found := false
+	for _, idx := range adult {
+		if idx == adultIdx {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("adult action must stay visible in adult-marked chats")
+	}
+}
+
 func TestRoleplayInlineResultsExposeMenu(t *testing.T) {
 	t.Setenv("ROLEPLAY_INLINE_THUMB_BASE_URL", "https://bot.example.test")
 	q := &tgbotapi.InlineQuery{
@@ -91,6 +147,39 @@ func TestRoleplayInlineTargetFromQuery(t *testing.T) {
 	}
 	if !strings.Contains(content.Text, "Фрешка") {
 		t.Fatalf("target was not inserted into inline message: %q", content.Text)
+	}
+}
+
+func TestRoleplayInlineResultsHideAdultActions(t *testing.T) {
+	t.Setenv("ROLEPLAY_INLINE_ADULT_ENABLED", "false")
+	q := &tgbotapi.InlineQuery{
+		ID:    "inline-adult",
+		Query: "трахнуть",
+		From:  &tgbotapi.User{ID: 123, FirstName: "Оленька"},
+	}
+	results := roleplayInlineResults(q, 10)
+	if len(results) != 0 {
+		t.Fatalf("adult inline action must be hidden when the setting is disabled, got %d results", len(results))
+	}
+}
+
+func TestRoleplayInlineResultsExposeAdultActionsWhenEnabled(t *testing.T) {
+	t.Setenv("ROLEPLAY_INLINE_ADULT_ENABLED", "true")
+	q := &tgbotapi.InlineQuery{
+		ID:    "inline-adult-enabled",
+		Query: "трахнуть",
+		From:  &tgbotapi.User{ID: 123, FirstName: "Оленька"},
+	}
+	results := roleplayInlineResults(q, 10)
+	if len(results) != 1 {
+		t.Fatalf("adult inline action must be exposed when the setting is enabled, got %d results", len(results))
+	}
+	article, ok := results[0].(tgbotapi.InlineQueryResultArticle)
+	if !ok {
+		t.Fatalf("unexpected result type: %T", results[0])
+	}
+	if article.Title != "трахнуть" {
+		t.Fatalf("unexpected adult inline result: %q", article.Title)
 	}
 }
 

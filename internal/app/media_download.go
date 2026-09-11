@@ -736,6 +736,12 @@ func processVKMusic(ctx context.Context, sendCtx sendContext, dl VKMusicDownload
 	}
 	trackID = strings.TrimSpace(trackID)
 	query = strings.TrimSpace(query)
+	if trackID == "" && query == "" {
+		return errors.New("empty vk music query")
+	}
+	if err := ensureProxyFreshForService(ctx, "vk"); err != nil {
+		return err
+	}
 	var (
 		res vkaudio.DownloadResult
 		err error
@@ -743,9 +749,6 @@ func processVKMusic(ctx context.Context, sendCtx sendContext, dl VKMusicDownload
 	if trackID != "" {
 		res, err = dl.DownloadTrack(ctx, trackID)
 	} else {
-		if query == "" {
-			return errors.New("empty vk music query")
-		}
 		res, err = dl.DownloadFirstByQuery(ctx, query, 5)
 	}
 	if err != nil {
@@ -949,6 +952,15 @@ func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
 
 func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode mediadl.Mode, progress *mediaProgressHandle) error {
 	mode = mediadl.Mode(strings.TrimSpace(strings.ToLower(string(mode))))
+	_, mediaService, _ := mediadl.NormalizeSupportedURL(rawURL)
+	if mediaService == mediadl.ServiceTikTok {
+		if progress != nil {
+			progress.SetStage("Обновление прокси")
+		}
+		if err := ensureProxyFreshForService(ctx, "tiktok"); err != nil {
+			return err
+		}
+	}
 	coubLoopParts := 0
 	if strings.HasPrefix(string(mode), mediadl.ModeCoubLoopPrefix) {
 		spec := strings.TrimSpace(strings.TrimPrefix(string(mode), mediadl.ModeCoubLoopPrefix))

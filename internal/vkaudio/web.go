@@ -411,7 +411,23 @@ func loadNetscapeCookies(jar *cookiejar.Jar, path string) error {
 	if err != nil {
 		return err
 	}
-	byHost := map[string][]*http.Cookie{}
+	byHost := map[string]map[string]*http.Cookie{}
+	addCookie := func(host string, ck *http.Cookie, overwrite bool) {
+		host = strings.TrimPrefix(strings.TrimSpace(host), ".")
+		if host == "" || ck == nil {
+			return
+		}
+		if byHost[host] == nil {
+			byHost[host] = make(map[string]*http.Cookie)
+		}
+		key := ck.Name + "\x00" + ck.Path
+		if _, exists := byHost[host][key]; exists && !overwrite {
+			return
+		}
+		clone := *ck
+		clone.Domain = host
+		byHost[host][key] = &clone
+	}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -436,13 +452,31 @@ func loadNetscapeCookies(jar *cookiejar.Jar, path string) error {
 		if exp, err := strconv.ParseInt(parts[4], 10, 64); err == nil && exp > 0 {
 			ck.Expires = time.Unix(exp, 0)
 		}
-		byHost[domain] = append(byHost[domain], ck)
+		addCookie(domain, ck, true)
+		if alias := vkCookieAliasDomain(domain); alias != "" {
+			addCookie(alias, ck, false)
+		}
 	}
-	for host, cookies := range byHost {
+	for host, cookieMap := range byHost {
+		cookies := make([]*http.Cookie, 0, len(cookieMap))
+		for _, ck := range cookieMap {
+			cookies = append(cookies, ck)
+		}
 		u := &url.URL{Scheme: "https", Host: host, Path: "/"}
 		jar.SetCookies(u, cookies)
 	}
 	return nil
+}
+
+func vkCookieAliasDomain(domain string) string {
+	switch strings.TrimPrefix(strings.TrimSpace(domain), ".") {
+	case "vk.com":
+		return "vk.ru"
+	case "vk.ru":
+		return "vk.com"
+	default:
+		return ""
+	}
 }
 
 func socks5Dialer(raw string) (proxy.Dialer, error) {

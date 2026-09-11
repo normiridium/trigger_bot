@@ -24,6 +24,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - PyYAML is optional until Clash YAML is used.
+    yaml = None
+
 
 JSON = dict[str, Any]
 
@@ -94,25 +99,60 @@ def run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subpr
     return proc
 
 
+def compact_dict(value: JSON) -> JSON:
+    return {k: v for k, v in value.items() if v not in (None, "", [], {})}
+
+
 def fetch_subscription(url: str, timeout: int, user_agent: str) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
     text = raw.decode("utf-8", "replace").strip()
+    parsed = parse_subscription_text(text)
+    if parsed is not None:
+        return parsed
+
+    compact = "".join(text.split())
+    try:
+        padded = compact + ("=" * ((4 - len(compact) % 4) % 4))
+        decoded = base64.b64decode(padded.encode("ascii")).decode("utf-8", "replace").strip()
+    except Exception as exc:  # noqa: BLE001 - report real subscription shape error.
+        raise SystemExit(f"subscription is not supported JSON/base64-JSON/Clash-YAML: {exc}") from exc
+
+    parsed = parse_subscription_text(decoded)
+    if parsed is not None:
+        return parsed
+    raise SystemExit("subscription is not supported JSON/base64-JSON/Clash-YAML")
+
+
+def parse_subscription_text(text: str) -> Any | None:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        compact = "".join(text.split())
-        try:
-            padded = compact + ("=" * ((4 - len(compact) % 4) % 4))
-            decoded = base64.b64decode(padded).decode("utf-8", "replace").strip()
-            return json.loads(decoded)
-        except Exception as exc:  # noqa: BLE001 - report real subscription shape error.
-            raise SystemExit(f"subscription is not supported JSON/base64-JSON: {exc}") from exc
+        pass
+    if yaml is None:
+        return None
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        return None
+    if isinstance(data, (dict, list)):
+        return data
+    return None
 
 
 def profiles_from_subscription(data: Any) -> list[JSON]:
     if isinstance(data, dict):
+        if isinstance(data.get("proxies"), list):
+            profiles: list[JSON] = []
+            for proxy_item in data["proxies"]:
+                if not isinstance(proxy_item, dict):
+                    continue
+                outbound = outbound_from_clash_proxy(proxy_item)
+                if outbound:
+                    profiles.append({"remarks": profile_name(proxy_item), "outbounds": [outbound]})
+            if profiles:
+                return profiles
         if isinstance(data.get("outbounds"), list):
             return [data]
         for key in ("profiles", "configs", "items"):
@@ -121,6 +161,80 @@ def profiles_from_subscription(data: Any) -> list[JSON]:
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
     raise SystemExit("subscription contains no JSON profiles")
+
+
+def outbound_from_clash_proxy(proxy_item: JSON) -> JSON | None:
+    proxy_type = str(proxy_item.get("type") or "").strip().lower()
+    if proxy_type == "vless":
+        return vless_outbound_from_clash_proxy(proxy_item)
+    if proxy_type in {"hysteria2", "hy2"}:
+        return hysteria2_outbound_from_clash_proxy(proxy_item)
+    return None
+
+
+def vless_outbound_from_clash_proxy(proxy_item: JSON) -> JSON | None:
+    if str(proxy_item.get("network") or "tcp").strip().lower() != "tcp":
+        return None
+    if not bool(proxy_item.get("tls")):
+        return None
+    reality = proxy_item.get("reality-opts") or proxy_item.get("reality_opts")
+    if not isinstance(reality, dict):
+        return None
+    server = str(proxy_item.get("server") or "").strip()
+    uuid = str(proxy_item.get("uuid") or "").strip()
+    public_key = str(reality.get("public-key") or reality.get("public_key") or "").strip()
+    if not server or not uuid or not public_key:
+        return None
+    return {
+        "protocol": "vless",
+        "tag": profile_name(proxy_item),
+        "settings": {
+            "vnext": [
+                {
+                    "address": server,
+                    "port": int(proxy_item.get("port") or 443),
+                    "users": [
+                        {
+                            "id": uuid,
+                            "encryption": "none",
+                            "flow": str(proxy_item.get("flow") or "").strip(),
+                        }
+                    ],
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "serverName": str(proxy_item.get("servername") or proxy_item.get("sni") or "").strip(),
+                "fingerprint": str(proxy_item.get("client-fingerprint") or proxy_item.get("client_fingerprint") or "firefox").strip(),
+                "publicKey": public_key,
+                "shortId": str(reality.get("short-id") or reality.get("short_id") or "").strip(),
+            },
+        },
+    }
+
+
+def hysteria2_outbound_from_clash_proxy(proxy_item: JSON) -> JSON | None:
+    server = str(proxy_item.get("server") or "").strip()
+    password = str(proxy_item.get("password") or "").strip()
+    if not server or not password:
+        return None
+    return {
+        "protocol": "hysteria2",
+        "tag": profile_name(proxy_item),
+        "server": server,
+        "server_port": int(proxy_item.get("port") or 443),
+        "password": password,
+        "tls": compact_dict(
+            {
+                "server_name": str(proxy_item.get("sni") or proxy_item.get("servername") or "").strip(),
+                "alpn": proxy_item.get("alpn") if isinstance(proxy_item.get("alpn"), list) else None,
+                "insecure": bool(proxy_item.get("skip-cert-verify") or proxy_item.get("skip_cert_verify")),
+            }
+        ),
+    }
 
 
 def profile_name(profile: JSON) -> str:
@@ -162,6 +276,18 @@ def compatible_vless_reality(outbound: JSON) -> bool:
     )
 
 
+def compatible_hysteria2(outbound: JSON) -> bool:
+    return (
+        outbound.get("protocol") == "hysteria2"
+        and bool(str(outbound.get("server") or "").strip())
+        and bool(str(outbound.get("password") or "").strip())
+    )
+
+
+def compatible_outbound(outbound: JSON) -> bool:
+    return compatible_vless_reality(outbound) or compatible_hysteria2(outbound)
+
+
 def selected_source(
     profiles: list[JSON],
     country: str,
@@ -187,7 +313,7 @@ def selected_source(
     for profile, name in candidates:
         profile_had_compatible = False
         for outbound in profile.get("outbounds", []):
-            if not isinstance(outbound, dict) or not compatible_vless_reality(outbound):
+            if not isinstance(outbound, dict) or not compatible_outbound(outbound):
                 continue
             cloned = copy.deepcopy(outbound)
             cloned["tag"] = f"{tag_prefix}-{len(selected) + 1:03d}"
@@ -200,7 +326,7 @@ def selected_source(
         if len(selected) >= max_outbounds:
             break
     if not selected:
-        raise SystemExit(f"no compatible VLESS TCP+Reality outbounds found for country={country}")
+        raise SystemExit(f"no compatible VLESS TCP+Reality or Hysteria2 outbounds found for country={country}")
     return {"outbounds": selected}, matched_profiles
 
 
@@ -212,30 +338,142 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def singbox_vless_from_source(outbound: JSON) -> JSON:
+    vnext = nested(outbound, "settings.vnext.0")
+    user = nested(outbound, "settings.vnext.0.users.0")
+    reality = nested(outbound, "streamSettings.realitySettings")
+    if not isinstance(vnext, dict) or not isinstance(user, dict) or not isinstance(reality, dict):
+        raise SystemExit(f"invalid VLESS outbound: {outbound.get('tag')}")
+    return compact_dict(
+        {
+            "type": "vless",
+            "tag": str(outbound.get("tag") or "vless-out"),
+            "server": vnext.get("address"),
+            "server_port": vnext.get("port"),
+            "uuid": user.get("id"),
+            "flow": user.get("flow"),
+            "packet_encoding": "xudp",
+            "tls": compact_dict(
+                {
+                    "enabled": True,
+                    "server_name": reality.get("serverName"),
+                    "utls": {
+                        "enabled": True,
+                        "fingerprint": reality.get("fingerprint") or "firefox",
+                    },
+                    "reality": compact_dict(
+                        {
+                            "enabled": True,
+                            "public_key": reality.get("publicKey"),
+                            "short_id": reality.get("shortId"),
+                        }
+                    ),
+                }
+            ),
+        }
+    )
+
+
+def singbox_hysteria2_from_source(outbound: JSON) -> JSON:
+    tls = outbound.get("tls") if isinstance(outbound.get("tls"), dict) else {}
+    return compact_dict(
+        {
+            "type": "hysteria2",
+            "tag": str(outbound.get("tag") or "hysteria2-out"),
+            "server": outbound.get("server"),
+            "server_port": outbound.get("server_port"),
+            "password": outbound.get("password"),
+            "tls": compact_dict(
+                {
+                    "enabled": True,
+                    "server_name": tls.get("server_name"),
+                    "alpn": tls.get("alpn"),
+                    "insecure": tls.get("insecure"),
+                }
+            ),
+        }
+    )
+
+
+def source_outbound_to_singbox(outbound: JSON) -> JSON:
+    if compatible_vless_reality(outbound):
+        return singbox_vless_from_source(outbound)
+    if compatible_hysteria2(outbound):
+        return singbox_hysteria2_from_source(outbound)
+    raise SystemExit(f"unsupported selected outbound: {outbound.get('tag')}")
+
+
+def write_direct_singbox_config(source: JSON, args: argparse.Namespace, target_name: str, output_path: Path) -> None:
+    converted_outbounds = [source_outbound_to_singbox(outbound) for outbound in source.get("outbounds", [])]
+    if not converted_outbounds:
+        raise SystemExit(f"{target_name}: no compatible outbounds selected")
+
+    outbound_tags = [str(outbound["tag"]) for outbound in converted_outbounds]
+    generated_outbounds: list[JSON] = []
+    if len(outbound_tags) > 1:
+        final_tag = f"{target_name}-auto"
+        generated_outbounds.append(
+            {
+                "type": "urltest",
+                "tag": final_tag,
+                "outbounds": outbound_tags,
+                "url": "http://www.gstatic.com/generate_204",
+                "interval": "5m",
+                "tolerance": 50,
+            }
+        )
+    else:
+        final_tag = outbound_tags[0]
+
+    generated_outbounds.extend(converted_outbounds)
+    generated_outbounds.extend([{"type": "direct", "tag": "direct"}, {"type": "block", "tag": "block"}])
+    result: JSON = {
+        "log": {"level": "warn", "timestamp": True},
+        "inbounds": [
+            {
+                "type": "socks",
+                "tag": f"{target_name}-socks-in",
+                "listen": args.listen,
+                "listen_port": int(TARGETS[target_name]["listen_port"]),
+                "sniff": True,
+            }
+        ],
+        "outbounds": generated_outbounds,
+        "route": {"auto_detect_interface": True, "final": final_tag},
+    }
+    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    run(["/usr/bin/sing-box", "check", "-c", str(output_path)])
+
+
 def convert_target(source: JSON, args: argparse.Namespace, target_name: str, target: JSON, workdir: Path) -> Path:
     source_path = workdir / f"{target_name}-source.json"
     output_path = workdir / f"{target_name}-singbox.json"
     source_path.write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    cmd = [
-        str(args.converter),
-        "--input",
-        str(source_path),
-        "--output",
-        str(output_path),
-        "--listen",
-        args.listen,
-        "--port",
-        str(target["listen_port"]),
-        "--tag-prefix",
-        str(target["tag_prefix"]),
-        "--final",
-        "auto",
-        "--check",
-    ]
-    proc = run(cmd)
-    for line in proc.stdout.splitlines():
-        if line.startswith(("listen=", "converted=", "skipped=", "check=")):
-            log(f"{target_name}: {line}")
+    protocols = {str(outbound.get("protocol") or "") for outbound in source.get("outbounds", []) if isinstance(outbound, dict)}
+    if protocols == {"vless"}:
+        cmd = [
+            str(args.converter),
+            "--input",
+            str(source_path),
+            "--output",
+            str(output_path),
+            "--listen",
+            args.listen,
+            "--port",
+            str(target["listen_port"]),
+            "--tag-prefix",
+            str(target["tag_prefix"]),
+            "--final",
+            "auto",
+            "--check",
+        ]
+        proc = run(cmd)
+        for line in proc.stdout.splitlines():
+            if line.startswith(("listen=", "converted=", "skipped=", "check=")):
+                log(f"{target_name}: {line}")
+    else:
+        write_direct_singbox_config(source, args, target_name, output_path)
+        log(f"{target_name}: direct_singbox=ok protocols={','.join(sorted(protocols))}")
     probe_url = str(target.get("probe_url") or "").strip()
     if probe_url:
         converted = json.loads(output_path.read_text(encoding="utf-8"))
@@ -435,8 +673,6 @@ def main() -> None:
             failures: list[str] = []
             for target_name in targets:
                 target = TARGETS[target_name]
-                if target_name not in installed:
-                    continue
                 ok = probe_proxy(
                     int(target["listen_port"]),
                     str(target["probe_url"]),
@@ -445,8 +681,9 @@ def main() -> None:
                     follow_redirects=env_bool(str(target.get("probe_follow_redirects", "")), False),
                 )
                 if not ok:
-                    destination, backup = installed[target_name]
-                    restore_backup(destination, backup, str(target["service"]))
+                    if target_name in installed:
+                        destination, backup = installed[target_name]
+                        restore_backup(destination, backup, str(target["service"]))
                     failures.append(target_name)
             if failures:
                 raise SystemExit("probe failed, rolled back: " + ",".join(failures))
