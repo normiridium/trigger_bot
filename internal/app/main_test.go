@@ -1523,6 +1523,28 @@ func TestRenderRichArticleMediaBlocks_KeepsSimpleBracketDisplayNative(t *testing
 	}
 }
 
+func TestRenderRichArticleMediaBlocks_SeparatesNativeDisplayFormulaFromParagraph(t *testing.T) {
+	in := "3. Подстановка:\n\\[\n\\frac{d\\tau}{dt} = \\sqrt{1-\\frac{88.5}{108.5}}\n= \\sqrt{0.185}\n\\approx 0.43\n\\]\n\nОтвет"
+	got, attachments, err := renderRichArticleMediaBlocks(in)
+	if err != nil {
+		t.Fatalf("render rich media: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Fatalf("simple display formula should stay native, got %d attachments", len(attachments))
+	}
+	want := "3. Подстановка:\n\n$$\\frac{d\\tau}{dt} = \\sqrt{1-\\frac{88.5}{108.5}}\n= \\sqrt{0.185}\n\\approx 0.43$$\n\nОтвет"
+	if got != want {
+		t.Fatalf("display formula must occupy its own Markdown block:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestNormalizeRichArticleDisplayMathSpacing_PreservesCodeFence(t *testing.T) {
+	in := "До\n\n```text\nпример $$x = 1$$ внутри кода\n```\n\nПосле"
+	if got := normalizeRichArticleDisplayMathSpacing(in); got != in {
+		t.Fatalf("display delimiters inside code fence changed:\n got %q\nwant %q", got, in)
+	}
+}
+
 func TestRenderRichArticleMediaBlocks_KeepsSimpleParenthesizedInlineNative(t *testing.T) {
 	in := `До \(x^2 + y^2\) после`
 	got, attachments, err := renderRichArticleMediaBlocks(in)

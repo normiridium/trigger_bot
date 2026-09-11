@@ -76,6 +76,7 @@ const (
 
 func renderRichArticleMediaBlocks(markdown string) (string, []richArticleRenderedAttachment, error) {
 	markdown = normalizeRichArticleMathDelimiters(markdown)
+	markdown = normalizeRichArticleDisplayMathSpacing(markdown)
 	renderedMarkdown, attachments, err := renderRichArticleFencedMediaBlocks(markdown)
 	if err != nil {
 		return markdown, nil, err
@@ -151,6 +152,59 @@ func normalizeRichArticleMathDelimiters(markdown string) string {
 		last = loc[1]
 	}
 	if last == 0 {
+		return markdown
+	}
+	out.WriteString(markdown[last:])
+	return out.String()
+}
+
+// Telegram only recognizes $$...$$ as display math when it occupies its own
+// Markdown block. Models often put the opening delimiter after a single line
+// break, which Markdown folds back into the preceding paragraph.
+func normalizeRichArticleDisplayMathSpacing(markdown string) string {
+	if !strings.Contains(markdown, "$$") {
+		return markdown
+	}
+	matches := richArticleMathBlockRe.FindAllStringSubmatchIndex(markdown, -1)
+	if len(matches) == 0 {
+		return markdown
+	}
+
+	fences := richArticleFencedCodeRanges(markdown)
+	var out strings.Builder
+	out.Grow(len(markdown))
+	last := 0
+	changed := false
+	for _, loc := range matches {
+		if len(loc) < 10 || loc[0] < last || !strings.HasPrefix(markdown[loc[0]:loc[1]], "$$") || richArticleRangeInFence(loc[0], loc[1], fences) {
+			continue
+		}
+
+		prefix := strings.TrimRight(markdown[last:loc[0]], " \t\r\n")
+		out.WriteString(prefix)
+		if out.Len() > 0 {
+			out.WriteString("\n\n")
+		}
+		out.WriteString("$$")
+		out.WriteString(strings.TrimSpace(richArticleMathBlockBody(markdown, loc)))
+		out.WriteString("$$")
+
+		last = loc[1]
+		for last < len(markdown) {
+			switch markdown[last] {
+			case ' ', '\t', '\r', '\n':
+				last++
+			default:
+				goto spacingDone
+			}
+		}
+	spacingDone:
+		if last < len(markdown) {
+			out.WriteString("\n\n")
+		}
+		changed = true
+	}
+	if !changed {
 		return markdown
 	}
 	out.WriteString(markdown[last:])
