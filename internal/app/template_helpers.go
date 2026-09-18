@@ -328,8 +328,6 @@ var botPortraitResolverMu sync.RWMutex
 var botPortraitResolver func(chatID int64) string
 var chatContextResolverMu sync.RWMutex
 var chatContextResolver func(chatID int64, limit int) string
-var chatSummaryResolverMu sync.RWMutex
-var chatSummaryResolver func(chatID int64) string
 var chatAdminsCache = struct {
 	mu    sync.RWMutex
 	items map[int64]chatAdminsCacheEntry
@@ -483,25 +481,6 @@ func resolveChatContext(chatID int64, limit int) string {
 		return ""
 	}
 	return strings.TrimSpace(fn(chatID, limit))
-}
-
-func setChatSummaryResolver(fn func(chatID int64) string) {
-	chatSummaryResolverMu.Lock()
-	chatSummaryResolver = fn
-	chatSummaryResolverMu.Unlock()
-}
-
-func resolveChatSummary(chatID int64) string {
-	if chatID == 0 {
-		return ""
-	}
-	chatSummaryResolverMu.RLock()
-	fn := chatSummaryResolver
-	chatSummaryResolverMu.RUnlock()
-	if fn == nil {
-		return ""
-	}
-	return strings.TrimSpace(fn(chatID))
 }
 
 var responseTemplateFuncs = htmltmpl.FuncMap{
@@ -1506,7 +1485,6 @@ func renderTemplateWithMessage(ctx templateContext, template string) string {
 		return template
 	}
 	vars := buildTemplateVars(ctx)
-	vars["summary"] = ""
 	var funcs htmltmpl.FuncMap
 	if ctx.Msg != nil && ctx.Msg.Chat != nil {
 		chatID := ctx.Msg.Chat.ID

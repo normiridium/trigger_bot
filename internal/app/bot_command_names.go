@@ -21,7 +21,6 @@ const (
 	cmdSoundCloudSearch  = "scsearch"
 	cmdSoundCloudFind    = "scfind"
 	cmdSummary           = "summary"
-	cmdSummaryAlias      = "sum"
 	cmdBalance           = "balance"
 	cmdMyPortrait        = "my_portrait"
 	cmdMyPortraitAlias   = "portrait"

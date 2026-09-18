@@ -65,6 +65,20 @@ type authCompleteResp struct {
 	AccessHash int64  `json:"access_hash"`
 }
 
+type historyPayload struct {
+	ChatID    int64  `json:"chat_id"`
+	Username  string `json:"username,omitempty"`
+	Limit     int    `json:"limit"`
+	SinceUnix int64  `json:"since_unix,omitempty"`
+	UntilUnix int64  `json:"until_unix,omitempty"`
+}
+
+type historyResp struct {
+	OK       bool             `json:"ok"`
+	Error    string           `json:"error"`
+	Messages []HistoryMessage `json:"messages"`
+}
+
 func NewServiceFromEnv() Service {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CLEAR_CHAT_OPS_URL")), "/")
 	if baseURL == "" {
@@ -145,7 +159,54 @@ func (noopService) StartAuth(context.Context, AuthStartRequest) (AuthStartResult
 func (noopService) CompleteAuth(context.Context, AuthCompleteRequest) (AuthCompleteResult, error) {
 	return AuthCompleteResult{}, ErrNotConfigured
 }
+func (noopService) GetHistory(context.Context, HistoryRequest) (HistoryResult, error) {
+	return HistoryResult{}, ErrNotConfigured
+}
 func (noopService) Available(context.Context) bool { return false }
+
+func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (HistoryResult, error) {
+	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {
+		return HistoryResult{}, ErrNotConfigured
+	}
+	if req.ChatID == 0 {
+		return HistoryResult{}, fmt.Errorf("%w: empty chat id", ErrBadRequest)
+	}
+	if req.Limit <= 0 || req.Limit > 1000 {
+		req.Limit = 1000
+	}
+	body, err := json.Marshal(commandEnvelope{
+		RequestID: fmt.Sprintf("history-%d", time.Now().UnixNano()),
+		Command:   "get_history",
+		Payload: historyPayload{
+			ChatID: req.ChatID, Username: strings.TrimSpace(req.Username), Limit: req.Limit,
+			SinceUnix: req.SinceUnix, UntilUnix: req.UntilUnix,
+		},
+	})
+	if err != nil {
+		return HistoryResult{}, fmt.Errorf("marshal get_history: %w", err)
+	}
+	historyClient := *s.client
+	historyTimeoutSec := envInt("TG_OPS_HISTORY_TIMEOUT_SEC", 90)
+	if historyTimeoutSec <= 0 {
+		historyTimeoutSec = 90
+	}
+	historyClient.Timeout = time.Duration(historyTimeoutSec) * time.Second
+	data, err := s.postForJSONWithClientLimit(ctx, &historyClient, "/v1/command", body, 8<<20)
+	if err != nil {
+		return HistoryResult{}, err
+	}
+	var out historyResp
+	if err := json.Unmarshal(data, &out); err != nil {
+		return HistoryResult{}, fmt.Errorf("decode get_history: %w", err)
+	}
+	if !out.OK {
+		if strings.TrimSpace(out.Error) != "" {
+			return HistoryResult{}, errors.New(out.Error)
+		}
+		return HistoryResult{}, errors.New("get_history failed")
+	}
+	return HistoryResult{Messages: out.Messages}, nil
+}
 
 func (s *HTTPService) StartAuth(ctx context.Context, req AuthStartRequest) (AuthStartResult, error) {
 	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {
@@ -246,6 +307,20 @@ func envInt(key string, fallback int) int {
 }
 
 func (s *HTTPService) postForJSON(ctx context.Context, path string, body []byte) ([]byte, error) {
+	return s.postForJSONWithClient(ctx, s.client, path, body)
+}
+
+func (s *HTTPService) postForJSONWithClient(ctx context.Context, client *http.Client, path string, body []byte) ([]byte, error) {
+	return s.postForJSONWithClientLimit(ctx, client, path, body, 8192)
+}
+
+func (s *HTTPService) postForJSONWithClientLimit(ctx context.Context, client *http.Client, path string, body []byte, maxResponseBytes int64) ([]byte, error) {
+	if client == nil {
+		return nil, ErrNotConfigured
+	}
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = 8192
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request %s: %w", path, err)
@@ -254,12 +329,18 @@ func (s *HTTPService) postForJSON(ctx context.Context, path string, body []byte)
 	if s.authToken != "" {
 		httpReq.Header.Set("X-TG-Ops-Token", s.authToken)
 	}
-	resp, err := s.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("call tg-ops-service %s: %w", path, err)
 	}
 	defer resp.Body.Close()
-	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	respBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("read tg-ops-service %s response: %w", path, readErr)
+	}
+	if int64(len(respBytes)) > maxResponseBytes {
+		return nil, fmt.Errorf("tg-ops-service %s response exceeds %d bytes", path, maxResponseBytes)
+	}
 	if resp.StatusCode >= 400 {
 		parsed := clearChatHTTPResp{}
 		if json.Unmarshal(respBytes, &parsed) == nil && strings.TrimSpace(parsed.Error) != "" {

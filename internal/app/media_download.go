@@ -1029,9 +1029,6 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			log.Printf("media video downloaded chat=%d path=%q size=%.2fMB title=%q duration=%.0fs", sendCtx.ChatID, res.FilePath, float64(st.Size())/1_000_000.0, clipText(res.Title, 120), res.Duration)
 		}
 		videoPath := res.FilePath
-		if !videoHasAudioTrack(videoPath) {
-			return errors.New("в этом видео нет доступной аудиодорожки у источника")
-		}
 		coubLoopPath := ""
 		defer func() {
 			if rmErr := os.Remove(res.FilePath); rmErr != nil && debugTriggerLogEnabled {
@@ -1046,6 +1043,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				_ = os.Remove(coubLoopPath)
 			}
 		}()
+		if !videoHasVideoTrack(videoPath) {
+			return errors.New("в скачанном файле нет видеодорожки")
+		}
 		if res.Service == mediadl.ServiceCoub {
 			if progress != nil {
 				progress.SetFrame(8) // 90%
@@ -1134,8 +1134,8 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			}
 			return sendAudioFromFileWithMeta(sendCtx, mediaPath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, string(res.Service)), res.SourceURL, string(res.Service))
 		default:
-			if !videoHasAudioTrack(mediaPath) {
-				return errors.New("в этом видео нет доступной аудиодорожки у источника")
+			if !videoHasVideoTrack(mediaPath) {
+				return errors.New("в скачанном файле нет видеодорожки")
 			}
 			if res.Service == mediadl.ServiceCoub {
 				if progress != nil {
@@ -1192,12 +1192,12 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	return sendAudioFromFileWithMeta(sendCtx, res.FilePath, strings.TrimSpace(res.Artist), buildMediaAudioTitle(title, res.SourceURL, string(res.Service)), res.SourceURL, string(res.Service))
 }
 
-func videoHasAudioTrack(path string) bool {
+func videoHasVideoTrack(path string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return false
 	}
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", path)
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v", "-show_entries", "stream=index", "-of", "csv=p=0", path)
 	out, err := cmd.Output()
 	if err != nil {
 		return false

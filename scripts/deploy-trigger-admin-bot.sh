@@ -60,8 +60,6 @@ case "$exec_path" in
 		;;
 esac
 
-GO_LIMIT_PROCS="${GO_LIMIT_PROCS:-1}"
-GO_BUILD_P="${GO_BUILD_P:-1}"
 PKGS="${PKGS:-./...}"
 
 echo "== deploy $SERVICE_NAME =="
@@ -75,12 +73,12 @@ cd "$ROOT_DIR"
 if [ "${SKIP_TESTS:-0}" != "1" ]; then
 	read -r -a test_pkgs <<< "$PKGS"
 	echo "== go test =="
-	GOMAXPROCS="$GO_LIMIT_PROCS" "$GO_BIN" test -p "$GO_BUILD_P" -count=1 "${test_pkgs[@]}"
+	"$GO_BIN" test -count=1 "${test_pkgs[@]}"
 	echo
 fi
 
 echo "== go build =="
-GOMAXPROCS="$GO_LIMIT_PROCS" "$GO_BIN" build -p "$GO_BUILD_P" -o "$exec_path" .
+"$GO_BIN" build -o "$exec_path" .
 if [ "$(id -u)" -eq 0 ]; then
 	chown "$exec_owner" "$exec_path"
 fi

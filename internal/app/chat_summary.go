@@ -1,260 +1,312 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"trigger-admin-bot/internal/chatclear"
 )
 
 const (
-	chatSummaryQueueSize = 32
+	chatSummaryHistoryLimit = 1000
+	chatSummaryPeriod       = 24 * time.Hour
+	chatSummaryTemplateKey  = "chat_summary"
 )
 
-type chatSummaryTask struct {
-	chatID       int64
-	messages     []string
-	lastMessage  int
-	lastUnixTime int64
+var summaryCommandPattern = regexp.MustCompile(`(?i)^/summary(?:@[a-z0-9_]+)?(?:\s|$)`)
+
+type summaryHistoryStore struct {
+	mu       sync.RWMutex
+	max      int
+	messages map[int64][]chatclear.HistoryMessage
 }
 
-type chatSummaryTracker struct {
-	store *Store
-	every int
-	max   int
-
-	queue chan chatSummaryTask
-	stop  chan struct{}
-	wg    sync.WaitGroup
-
-	bufferMu sync.Mutex
-	buffer   map[int64][]string
-
-	historyMu sync.RWMutex
-	history   map[int64][]recentChatMessage
-
-	seenMu sync.Mutex
-	seen   map[string]time.Time
+type summaryPromptMessage struct {
+	MessageID      int    `json:"message_id"`
+	Date           string `json:"date"`
+	AuthorID       int64  `json:"author_id,omitempty"`
+	AuthorName     string `json:"author_name,omitempty"`
+	AuthorUsername string `json:"author_username,omitempty"`
+	MessageLink    string `json:"message_link,omitempty"`
+	ReplyToMessage int    `json:"reply_to_message_id,omitempty"`
+	ReplyToLink    string `json:"reply_to_link,omitempty"`
+	Text           string `json:"text"`
 }
 
-func newChatSummaryTracker(store *Store, every int, max int) *chatSummaryTracker {
+func newSummaryHistoryStore(max int) *summaryHistoryStore {
+	if max <= 0 || max > chatSummaryHistoryLimit {
+		max = chatSummaryHistoryLimit
+	}
+	return &summaryHistoryStore{max: max, messages: make(map[int64][]chatclear.HistoryMessage)}
+}
+
+func ensureChatSummaryTemplate(store *Store) {
 	if store == nil {
-		return nil
-	}
-	if every <= 0 {
-		every = 200
-	}
-	if max <= 0 {
-		max = 1000
-	}
-	t := &chatSummaryTracker{
-		store:   store,
-		every:   every,
-		max:     max,
-		queue:   make(chan chatSummaryTask, chatSummaryQueueSize),
-		stop:    make(chan struct{}),
-		buffer:  make(map[int64][]string),
-		history: make(map[int64][]recentChatMessage),
-		seen:    make(map[string]time.Time),
-	}
-	t.wg.Add(1)
-	go t.worker()
-	return t
-}
-
-func (t *chatSummaryTracker) Close() {
-	if t == nil {
 		return
 	}
-	close(t.stop)
-	t.wg.Wait()
-}
-
-func (t *chatSummaryTracker) ObserveMessage(msg *tgbotapi.Message, text string) {
-	if t == nil || t.store == nil || msg == nil || msg.Chat == nil {
+	existing, err := store.getTemplateByKey(chatSummaryTemplateKey)
+	if err != nil {
+		log.Printf("chat summary template lookup failed: %v", err)
 		return
 	}
-	chatID := msg.Chat.ID
-	if chatID == 0 {
+	if existing != nil {
+		return
+	}
+	if err := store.SaveTemplate(ResponseTemplate{
+		Key: chatSummaryTemplateKey, Title: "Саммаризация чата", Text: defaultChatSummaryPrompt,
+	}); err != nil {
+		log.Printf("chat summary template create failed: %v", err)
+		return
+	}
+	log.Printf("chat summary template created key=%s", chatSummaryTemplateKey)
+}
+
+func (s *summaryHistoryStore) ObserveMessage(msg *tgbotapi.Message, text string) {
+	if s == nil || msg == nil || msg.Chat == nil || msg.Chat.ID == 0 {
 		return
 	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" || summaryCommandPattern.MatchString(text) {
 		return
 	}
-	if t.isDuplicate(chatID, msg.MessageID) {
-		return
+	item := chatclear.HistoryMessage{ID: msg.MessageID, Date: int64(msg.Date), Text: text}
+	if item.Date <= 0 {
+		item.Date = time.Now().Unix()
 	}
-	name := "участник"
 	if msg.From != nil {
-		name = strings.TrimSpace(msg.From.FirstName)
-		if name == "" {
-			name = strings.TrimSpace(msg.From.UserName)
+		item.FromID = msg.From.ID
+		item.FromUsername = strings.TrimSpace(msg.From.UserName)
+		item.FromFirstName = strings.TrimSpace(msg.From.FirstName)
+		item.FromLastName = strings.TrimSpace(msg.From.LastName)
+	}
+	if msg.SenderChat != nil {
+		item.FromID = msg.SenderChat.ID
+		item.FromUsername = strings.TrimSpace(msg.SenderChat.UserName)
+		item.FromTitle = strings.TrimSpace(msg.SenderChat.Title)
+	}
+	if msg.ReplyToMessage != nil {
+		item.ReplyToMessage = msg.ReplyToMessage.MessageID
+	}
+	s.add(msg.Chat.ID, item)
+}
+
+func (s *summaryHistoryStore) add(chatID int64, item chatclear.HistoryMessage) {
+	if s == nil || chatID == 0 || item.ID <= 0 || strings.TrimSpace(item.Text) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.messages[chatID]
+	for i := range items {
+		if items[i].ID == item.ID {
+			items[i] = item
+			s.messages[chatID] = items
+			return
 		}
 	}
-	line := fmt.Sprintf("%s: %s", name, clipText(text, 900))
-	t.addHistory(chatID, recentChatMessage{
-		MessageID: msg.MessageID,
-		UserName:  name,
-		Text:      strings.TrimSpace(text),
-		At:        time.Now(),
-	})
+	items = append(items, item)
+	if len(items) > s.max {
+		items = items[len(items)-s.max:]
+	}
+	s.messages[chatID] = items
+}
 
-	batch, ok := t.takeBatch(chatID, line)
-	if !ok || len(batch) == 0 {
+func (s *summaryHistoryStore) Messages(chatID int64, since time.Time, limit int) []chatclear.HistoryMessage {
+	if s == nil || chatID == 0 {
+		return nil
+	}
+	if limit <= 0 || limit > s.max {
+		limit = s.max
+	}
+	s.mu.RLock()
+	items := append([]chatclear.HistoryMessage(nil), s.messages[chatID]...)
+	s.mu.RUnlock()
+	result := make([]chatclear.HistoryMessage, 0, len(items))
+	for _, item := range items {
+		if !since.IsZero() && item.Date < since.Unix() {
+			continue
+		}
+		if summaryCommandPattern.MatchString(strings.TrimSpace(item.Text)) {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) > limit {
+		result = result[len(result)-limit:]
+	}
+	return result
+}
+
+func handleSummaryCommand(bot *tgbotapi.BotAPI, service chatclear.Service, memory *summaryHistoryStore, templateLookup func(string) string, msg *tgbotapi.Message) {
+	if bot == nil || msg == nil || msg.Chat == nil {
 		return
 	}
-	task := chatSummaryTask{
-		chatID:       chatID,
-		messages:     append([]string(nil), batch...),
-		lastMessage:  msg.MessageID,
-		lastUnixTime: time.Now().Unix(),
-	}
-	select {
-	case t.queue <- task:
-	default:
-		log.Printf("chat summary queue full; batch requeued chat=%d", chatID)
-		t.prependBatch(chatID, batch)
-	}
-}
-
-func (t *chatSummaryTracker) addHistory(chatID int64, msg recentChatMessage) {
-	if t == nil || chatID == 0 || strings.TrimSpace(msg.Text) == "" {
-		return
-	}
-	t.historyMu.Lock()
-	items := append(t.history[chatID], msg)
-	if len(items) > t.max {
-		items = items[len(items)-t.max:]
-	}
-	t.history[chatID] = items
-	t.historyMu.Unlock()
-}
-
-func (t *chatSummaryTracker) RecentText(chatID int64, limit int) string {
-	if t == nil || chatID == 0 {
-		return ""
-	}
-	t.historyMu.RLock()
-	items := append([]recentChatMessage(nil), t.history[chatID]...)
-	t.historyMu.RUnlock()
-	return renderRecentContextLines(items, 0, limit)
-}
-
-func (t *chatSummaryTracker) isDuplicate(chatID int64, messageID int) bool {
-	if chatID == 0 || messageID <= 0 {
-		return false
-	}
-	key := fmt.Sprintf("%d:%d", chatID, messageID)
-	now := time.Now()
-	t.seenMu.Lock()
-	defer t.seenMu.Unlock()
-	if ts, ok := t.seen[key]; ok && now.Sub(ts) < 30*time.Minute {
-		return true
-	}
-	t.seen[key] = now
-	if len(t.seen) > 4096 {
-		cutoff := now.Add(-30 * time.Minute)
-		for k, ts := range t.seen {
-			if ts.Before(cutoff) {
-				delete(t.seen, k)
+	chatID := msg.Chat.ID
+	replyTo := msg.MessageID
+	chatUsername := strings.TrimPrefix(strings.TrimSpace(msg.Chat.UserName), "@")
+	go func() {
+		_, _ = bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+		now := time.Now()
+		since := now.Add(-chatSummaryPeriod)
+		messages, source, err := loadSummaryMessages(service, memory, chatID, chatUsername, since, now)
+		if err != nil {
+			reportChatFailure(bot, chatID, "ошибка получения истории для сводки", err)
+			return
+		}
+		if len(messages) == 0 {
+			reply(sendContext{Bot: bot, ChatID: chatID, ReplyTo: replyTo}, "За последние сутки нет текстовых сообщений для сводки.", false)
+			return
+		}
+		promptMessages := buildSummaryPromptMessages(chatID, chatUsername, messages)
+		promptTemplate := defaultChatSummaryPrompt
+		if templateLookup != nil {
+			if configured := strings.TrimSpace(templateLookup(chatSummaryTemplateKey)); configured != "" {
+				promptTemplate = configured
 			}
 		}
-	}
-	return false
-}
-
-func (t *chatSummaryTracker) takeBatch(chatID int64, line string) ([]string, bool) {
-	if chatID == 0 {
-		return nil, false
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil, false
-	}
-	t.bufferMu.Lock()
-	defer t.bufferMu.Unlock()
-	items := append(t.buffer[chatID], line)
-	if len(items) < t.every {
-		t.buffer[chatID] = items
-		return nil, false
-	}
-	batch := append([]string(nil), items[:t.every]...)
-	rest := append([]string(nil), items[t.every:]...)
-	if len(rest) == 0 {
-		delete(t.buffer, chatID)
-	} else {
-		t.buffer[chatID] = rest
-	}
-	return batch, true
-}
-
-func (t *chatSummaryTracker) prependBatch(chatID int64, messages []string) {
-	if chatID == 0 || len(messages) == 0 {
-		return
-	}
-	clean := make([]string, 0, len(messages))
-	for _, m := range messages {
-		v := strings.TrimSpace(m)
-		if v != "" {
-			clean = append(clean, clipText(v, 900))
-		}
-	}
-	if len(clean) == 0 {
-		return
-	}
-	t.bufferMu.Lock()
-	existing := t.buffer[chatID]
-	merged := make([]string, 0, len(clean)+len(existing))
-	merged = append(merged, clean...)
-	merged = append(merged, existing...)
-	limit := t.every * 2
-	if limit < 400 {
-		limit = 400
-	}
-	if len(merged) > limit {
-		merged = merged[:limit]
-	}
-	t.buffer[chatID] = merged
-	t.bufferMu.Unlock()
-}
-
-func (t *chatSummaryTracker) worker() {
-	defer t.wg.Done()
-	for {
-		select {
-		case <-t.stop:
+		summary, err := generateChatSummary(promptTemplate, promptMessages)
+		if err != nil {
+			reportChatFailure(bot, chatID, "ошибка создания сводки", err)
 			return
-		case task := <-t.queue:
-			t.processTask(task)
 		}
-	}
+		summary = ensureSummaryHashtagLine(summary)
+		log.Printf("chat summary generated chat=%d source=%s messages=%d", chatID, source, len(messages))
+		if !sendRichMarkdownArticle(sendContext{Bot: bot, ChatID: chatID, ReplyTo: replyTo}, summary, false) {
+			log.Printf("chat summary delivery failed chat=%d source=%s messages=%d", chatID, source, len(messages))
+		}
+	}()
 }
 
-func (t *chatSummaryTracker) processTask(task chatSummaryTask) {
-	summary, err := generateChatSummary(task.messages)
+func ensureSummaryHashtagLine(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return `\#summary`
+	}
+	lines := strings.Split(summary, "\n")
+	for len(lines) > 0 {
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if last == "" {
+			lines = lines[:len(lines)-1]
+			continue
+		}
+		if strings.EqualFold(last, "summary") || strings.EqualFold(last, "#summary") || strings.EqualFold(last, `\#summary`) {
+			lines[len(lines)-1] = `\#summary`
+			return strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+		break
+	}
+	return summary + "\n\n" + `\#summary`
+}
+
+func loadSummaryMessages(service chatclear.Service, memory *summaryHistoryStore, chatID int64, username string, since, until time.Time) ([]chatclear.HistoryMessage, string, error) {
+	var primaryErr error
+	primarySucceeded := false
+	if service != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		result, err := service.GetHistory(ctx, chatclear.HistoryRequest{
+			ChatID: chatID, Username: username, Limit: chatSummaryHistoryLimit,
+			SinceUnix: since.Unix(), UntilUnix: until.Unix(),
+		})
+		cancel()
+		if err == nil {
+			primarySucceeded = true
+			messages := filterSummaryMessages(result.Messages)
+			if len(messages) > 0 {
+				return messages, "tg-ops-service", nil
+			}
+			primaryErr = errors.New("tg-ops-service returned no text messages")
+		} else {
+			primaryErr = err
+		}
+	}
+
+	var fallback []chatclear.HistoryMessage
+	if memory != nil {
+		fallback = memory.Messages(chatID, since, chatSummaryHistoryLimit)
+	}
+	if len(fallback) > 0 {
+		log.Printf("chat summary history fallback chat=%d source=memory primary_error=%v messages=%d", chatID, primaryErr, len(fallback))
+		return fallback, "memory", nil
+	}
+	if primaryErr != nil {
+		if primarySucceeded {
+			return nil, "tg-ops-service", nil
+		}
+		return nil, "", fmt.Errorf("tg-ops-service unavailable and memory history is empty: %w", primaryErr)
+	}
+	return nil, "memory", nil
+}
+
+func filterSummaryMessages(messages []chatclear.HistoryMessage) []chatclear.HistoryMessage {
+	result := make([]chatclear.HistoryMessage, 0, len(messages))
+	for _, item := range messages {
+		item.Text = strings.TrimSpace(item.Text)
+		if item.Text == "" || summaryCommandPattern.MatchString(item.Text) {
+			continue
+		}
+		result = append(result, item)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Date == result[j].Date {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].Date < result[j].Date
+	})
+	if len(result) > chatSummaryHistoryLimit {
+		result = result[len(result)-chatSummaryHistoryLimit:]
+	}
+	return result
+}
+
+func buildSummaryPromptMessages(chatID int64, username string, messages []chatclear.HistoryMessage) []summaryPromptMessage {
+	result := make([]summaryPromptMessage, 0, len(messages))
+	for _, item := range messages {
+		name := strings.TrimSpace(strings.Join([]string{item.FromFirstName, item.FromLastName}, " "))
+		if name == "" {
+			name = strings.TrimSpace(item.FromTitle)
+		}
+		promptItem := summaryPromptMessage{
+			MessageID: item.ID, Date: time.Unix(item.Date, 0).Format(time.RFC3339),
+			AuthorID: item.FromID, AuthorName: name, AuthorUsername: strings.TrimPrefix(strings.TrimSpace(item.FromUsername), "@"),
+			MessageLink: telegramMessageLink(chatID, username, item.ID), ReplyToMessage: item.ReplyToMessage,
+			Text: item.Text,
+		}
+		if item.ReplyToMessage > 0 {
+			promptItem.ReplyToLink = telegramMessageLink(chatID, username, item.ReplyToMessage)
+		}
+		result = append(result, promptItem)
+	}
+	return result
+}
+
+func telegramMessageLink(chatID int64, username string, messageID int) string {
+	if messageID <= 0 {
+		return ""
+	}
+	if username = strings.TrimPrefix(strings.TrimSpace(username), "@"); username != "" {
+		return fmt.Sprintf("https://t.me/%s/%d", username, messageID)
+	}
+	const supergroupOffset int64 = 1000000000000
+	if chatID <= -supergroupOffset {
+		return fmt.Sprintf("https://t.me/c/%d/%d", -chatID-supergroupOffset, messageID)
+	}
+	return ""
+}
+
+func marshalSummaryHistory(messages []summaryPromptMessage) (string, error) {
+	data, err := json.Marshal(messages)
 	if err != nil {
-		log.Printf("chat summary generation failed chat=%d err=%v", task.chatID, err)
-		t.prependBatch(task.chatID, task.messages)
-		return
+		return "", err
 	}
-	if err := t.store.SaveChatSummary(ChatSummary{
-		ChatID:             task.chatID,
-		Summary:            summary,
-		MessagesSince:      0,
-		LastMessageID:      task.lastMessage,
-		LastMessageUnix:    task.lastUnixTime,
-		SummarizedMessages: len(task.messages),
-		UpdatedAt:          time.Now().Unix(),
-	}); err != nil {
-		log.Printf("chat summary save failed chat=%d err=%v", task.chatID, err)
-		t.prependBatch(task.chatID, task.messages)
-		return
-	}
-	if debugTriggerLogEnabled {
-		log.Printf("chat summary updated chat=%d batch=%d", task.chatID, len(task.messages))
-	}
+	return string(data), nil
 }

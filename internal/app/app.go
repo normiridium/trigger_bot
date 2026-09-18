@@ -2069,6 +2069,8 @@ func Run() {
 	mtprotoSetup := newMTProtoSetupManager(time.Duration(envInt("MTPROTO_SETUP_TTL_SEC", 1200)) * time.Second)
 	setMTProtoSetupVisible(clearChatService != nil && clearChatService.Available(context.Background()))
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
+	summaryHistory := newSummaryHistoryStore(chatSummaryHistoryLimit)
+	ensureChatSummaryTemplate(store)
 	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
 	qsSessionTTLSec := envInt("QS_SESSION_TTL_SEC", int(quoteStickerSessionTTL/time.Second))
 	if qsSessionTTLSec < 300 {
@@ -2079,7 +2081,6 @@ func Run() {
 	setChatContextResolver(func(chatID int64, limit int) string {
 		return chatRecent.RecentText(chatID, limit)
 	})
-	setChatSummaryResolver(nil)
 	setGPTLimitResolver(func(chatID, userID int64) gptLimitTemplateInfo {
 		if userGPTTokenLimit <= 0 || userID == 0 || !userGPTTokenLimitApplies(userID) {
 			return gptLimitTemplateInfo{}
@@ -2102,7 +2103,6 @@ func Run() {
 	defer func() {
 		setOutgoingChatRecentStore(nil, "")
 		setChatContextResolver(nil)
-		setChatSummaryResolver(nil)
 		setGPTLimitResolver(nil)
 	}()
 	disallowedNotifier := chataccess.NewDisallowedChatNotifier(time.Duration(envInt("DISALLOWED_CHAT_NOTICE_TTL_SEC", 600)) * time.Second)
@@ -2534,6 +2534,7 @@ func Run() {
 				log.Printf("admin cache warmup failed chat=%d: %v", msg.Chat.ID, err)
 			}
 		}
+		summaryHistory.ObserveMessage(msg, firstNonEmptyUserText(msg))
 
 		if handleRoleplayInlineSentMessage(bot, msg) {
 			continue
@@ -2563,7 +2564,7 @@ func Run() {
 						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
 						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
 						cmdTranslateVoice, cmdTranslateGPT, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
-						cmdChess, cmdReadonly, cmdReloadAdmins, cmdBalance,
+						cmdChess, cmdSummary, cmdReadonly, cmdReloadAdmins, cmdBalance,
 					}
 					s = "Триггер-бот активен.\n\n" +
 						"Админка: /trigger_bot\n" +
@@ -2788,8 +2789,8 @@ func Run() {
 				if handleChessCommand(bot, msg) {
 					continue
 				}
-			case cmdSummary, cmdSummaryAlias:
-				reply(cmdSendCtx.WithReply(msg.MessageID), "Сводка чата отключена.", false)
+			case cmdSummary:
+				handleSummaryCommand(bot, clearChatService, summaryHistory, templateLookup, msg)
 				continue
 			case cmdBalance:
 				if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
@@ -2922,6 +2923,7 @@ func Run() {
 			continue
 		}
 		msg = messageWithEffectiveUserText(msg, text)
+		summaryHistory.ObserveMessage(msg, text)
 		now := time.Now()
 		idleTracker.Seen(msg.Chat.ID, now)
 		var quotaLowWarningTrigger *Trigger
