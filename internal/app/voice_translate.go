@@ -706,8 +706,8 @@ func buildVOTCLITranslateArgs(sourcePath, outputDir, outputFile, srcLang, resLan
 		args = append(args, "--lang="+from)
 	}
 	if provider == votProviderYandexLively {
-		if from != "en" || to != "ru" {
-			return nil, fmt.Errorf("lively voice supports only en -> ru")
+		if to != "ru" {
+			return nil, fmt.Errorf("lively voice supports only translations to ru")
 		}
 		if votLivelyAPIToken() == "" {
 			return nil, fmt.Errorf("lively voice requires VOT_LIVELY_API_TOKEN")
@@ -1273,10 +1273,6 @@ func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction,
 		langs = gptTranslateSourceLangs
 	}
 	lively := engine == voiceTranslateEngineVOT && provider == votProviderYandexLively && action != voiceTranslateActionText && action != voiceTranslateActionSubs
-	if lively {
-		target = "ru"
-		langs = []voiceSourceLang{{Code: "en", Label: "🇺🇸 English"}}
-	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
 	row := make([]tgbotapi.InlineKeyboardButton, 0, 4)
 	if !lively {
@@ -1479,10 +1475,6 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 		}
 		if provider == votProviderYandexLively {
 			resLang = "ru"
-			if srcLang != "en" {
-				_, _ = bot.Request(tgbotapi.NewCallbackWithAlert(cb.ID, "Живые голоса доступны только для перевода с английского на русский."))
-				return true
-			}
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Запускаю..."))
 		task := voiceTranslateTask{

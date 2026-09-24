@@ -121,7 +121,7 @@ func TestBuildVOTCLITranslateArgsRejectsInvalidLivelyConfiguration(t *testing.T)
 		t.Fatalf("expected missing token error, got %v", err)
 	}
 	t.Setenv("VOT_LIVELY_API_TOKEN", "test-oauth-token")
-	if _, err := buildVOTCLITranslateArgs("source", "/tmp/out", "translated", "nl", "ru", votProviderYandexLively); err == nil || !strings.Contains(err.Error(), "en -> ru") {
+	if _, err := buildVOTCLITranslateArgs("source", "/tmp/out", "translated", "nl", "kk", votProviderYandexLively); err == nil || !strings.Contains(err.Error(), "to ru") {
 		t.Fatalf("expected unsupported language error, got %v", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestRunVOTCLITranslateLocalDoesNotFallbackWhenLivelyCLIMissing(t *testing.T
 	}
 }
 
-func TestVoiceTranslateLivelyKeyboardOnlyOffersEnglish(t *testing.T) {
+func TestVoiceTranslateLivelyKeyboardOffersSourceLanguages(t *testing.T) {
 	keyboard := renderVoiceTranslateLangKeyboard("token", voiceTranslateActionMix, voiceTranslateEngineVOT, votProviderYandexLively)
 	callbacks := make([]string, 0)
 	for _, row := range keyboard.InlineKeyboard {
@@ -149,8 +149,8 @@ func TestVoiceTranslateLivelyKeyboardOnlyOffersEnglish(t *testing.T) {
 	if !strings.Contains(joined, "vtr|lang|mix|token|en") {
 		t.Fatalf("English option missing: %v", callbacks)
 	}
-	if strings.Contains(joined, "|auto") || strings.Contains(joined, "|nl") || strings.Contains(joined, "|ru") {
-		t.Fatalf("lively keyboard contains unsupported source language: %v", callbacks)
+	if strings.Contains(joined, "|auto") || !strings.Contains(joined, "vtr|lang|mix|token|fr") || !strings.Contains(joined, "vtr|lang|mix|token|en") {
+		t.Fatalf("lively keyboard does not expose expected source languages: %v", callbacks)
 	}
 }
 
