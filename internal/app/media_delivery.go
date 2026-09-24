@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -698,6 +699,9 @@ func sendAudioFromFileWithMeta(ctx sendContext, filePath, performer, title, sour
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
 		return errors.New("invalid audio file send params")
 	}
+	if sent, err := sendOversizeFileThroughOps(ctx, filePath, buildAudioCaption(filePath, service, sourceURL)); sent || err != nil {
+		return err
+	}
 	if err := ensureTelegramUploadLimit(filePath); err != nil {
 		return err
 	}
@@ -726,6 +730,9 @@ func sendVideoFromFile(ctx sendContext, filePath, caption string) error {
 	filePath = strings.TrimSpace(filePath)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
 		return errors.New("invalid video file send params")
+	}
+	if sent, err := sendOversizeFileThroughOps(ctx, filePath, caption); sent || err != nil {
+		return err
 	}
 	if err := ensureTelegramUploadLimit(filePath); err != nil {
 		return err
@@ -756,6 +763,9 @@ func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
 		return errors.New("invalid photo file send params")
 	}
+	if sent, err := sendOversizeFileThroughOps(ctx, filePath, caption); sent || err != nil {
+		return err
+	}
 	if err := ensureTelegramUploadLimit(filePath); err != nil {
 		return err
 	}
@@ -783,6 +793,9 @@ func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
 	filePath = strings.TrimSpace(filePath)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
 		return errors.New("invalid document file send params")
+	}
+	if sent, err := sendOversizeFileThroughOps(ctx, filePath, caption); sent || err != nil {
+		return err
 	}
 	if err := ensureTelegramUploadLimit(filePath); err != nil {
 		return err
@@ -1111,6 +1124,66 @@ func ensureTelegramUploadLimit(path string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %d bytes > %d MB limit", errTelegramUploadTooLarge, st.Size(), maxMB)
+}
+
+// sendOversizeFileThroughOps keeps normal Bot API media unchanged and delegates
+// only files above its configured limit to the local MTProto service.
+func sendOversizeFileThroughOps(ctx sendContext, path, caption string) (bool, error) {
+	st, err := os.Stat(strings.TrimSpace(path))
+	if err != nil {
+		return false, err
+	}
+	maxMB := envInt("TELEGRAM_UPLOAD_MAX_MB", 50)
+	if maxMB <= 0 || st.Size() <= int64(maxMB)*1024*1024 {
+		return false, nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CLEAR_CHAT_OPS_URL")), "/")
+	if baseURL == "" {
+		return false, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return true, err
+	}
+	defer file.Close()
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	go func() {
+		defer pw.Close()
+		defer writer.Close()
+		_ = writer.WriteField("chat_id", strconv.FormatInt(ctx.ChatID, 10))
+		if ctx.ReplyTo > 0 {
+			_ = writer.WriteField("reply_to_message_id", strconv.Itoa(ctx.ReplyTo))
+		}
+		if strings.TrimSpace(caption) != "" {
+			_ = writer.WriteField("caption", clipText(caption, 1024))
+		}
+		part, createErr := writer.CreateFormFile("file", filepath.Base(path))
+		if createErr == nil {
+			_, createErr = io.Copy(part, file)
+		}
+		if createErr != nil {
+			_ = pw.CloseWithError(createErr)
+		}
+	}()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/files", pr)
+	if err != nil {
+		return true, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if token := strings.TrimSpace(os.Getenv("CLEAR_CHAT_OPS_TOKEN")); token != "" {
+		req.Header.Set("X-TG-Ops-Token", token)
+	}
+	resp, err := (&http.Client{Timeout: 45 * time.Minute}).Do(req)
+	if err != nil {
+		return true, fmt.Errorf("send oversized file through tg-ops-service: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return true, fmt.Errorf("tg-ops-service send file %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return true, nil
 }
 
 func sendPhotoWithSpoilerAPI(ctx sendContext, img generatedImage, caption string) error {
