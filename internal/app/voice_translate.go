@@ -1992,12 +1992,12 @@ type voiceTranslateMixProfile struct {
 
 func defaultVoiceTranslateMixProfile() voiceTranslateMixProfile {
 	return voiceTranslateMixProfile{
-		OriginalVolume:         voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME", 0.92, 0.05, 3),
-		TranslatedVolume:       voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME", 1.20, 0.05, 5),
-		DuckThreshold:          voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_THRESHOLD", 0.06, 0.001, 1),
-		DuckRatio:              voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_RATIO", 3, 1, 30),
-		StaticOriginalVolume:   voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME", 0.80, 0.05, 3),
-		StaticTranslatedVolume: voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", 1.20, 0.05, 5),
+		OriginalVolume:         voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME", 0.30, 0.05, 3),
+		TranslatedVolume:       voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME", 1.00, 0.05, 5),
+		DuckThreshold:          voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_THRESHOLD", 0.03, 0.001, 1),
+		DuckRatio:              voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_DUCK_RATIO", 12, 1, 30),
+		StaticOriginalVolume:   voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME", 0.30, 0.05, 3),
+		StaticTranslatedVolume: voiceTranslateMixFloat("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", 1.00, 0.05, 5),
 	}
 }
 
@@ -2166,14 +2166,14 @@ func voiceTranslateMixFilters() (dynamicFilter string, staticFilter string) {
 
 func voiceTranslateMixFiltersForProfile(profile voiceTranslateMixProfile) (dynamicFilter string, staticFilter string) {
 	return fmt.Sprintf(
-			"[1:a]apad,asplit=2[a1mix0][a1ctrl];[a1mix0]volume=%.4g[a1mix];[a1ctrl]highpass=f=150,lowpass=f=4200,agate=threshold=0.02:ratio=8:attack=10:release=180[ctrl];[0:a]volume=%.4g[a0base];[a0base][ctrl]sidechaincompress=threshold=%.4g:ratio=%.4g:attack=12:release=360[a0duck];[a0duck][a1mix]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			"[1:a]asplit=2[sc][tr0];[tr0]volume=%.4g[tr];[0:a]volume=%.4g[base];[base][sc]sidechaincompress=threshold=%.4g:ratio=%.4g:attack=20:release=300[duck];[duck][tr]amix=inputs=2:duration=first:normalize=0[mix]",
 			profile.TranslatedVolume,
 			profile.OriginalVolume,
 			profile.DuckThreshold,
 			profile.DuckRatio,
 		),
 		fmt.Sprintf(
-			"[0:a]volume=%.4g[a0];[1:a]apad,volume=%.4g[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.96[mix]",
+			"[0:a]volume=%.4g[a0];[1:a]volume=%.4g[a1];[a0][a1]amix=inputs=2:duration=first:normalize=0[mix]",
 			profile.StaticOriginalVolume,
 			profile.StaticTranslatedVolume,
 		)

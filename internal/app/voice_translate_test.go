@@ -5,28 +5,27 @@ import (
 	"testing"
 )
 
-func TestVoiceTranslateMixFiltersUseModerateDefaults(t *testing.T) {
+func TestVoiceTranslateMixFiltersMatchVOTDefaults(t *testing.T) {
 	dynamicFilter, staticFilter := voiceTranslateMixFilters()
 	for _, want := range []string{
-		"apad,asplit=2",
-		"volume=1.2[a1mix]",
-		"volume=0.92[a0base]",
-		"threshold=0.06:ratio=3",
+		"asplit=2[sc][tr0]",
+		"volume=1[tr]",
+		"volume=0.3[base]",
+		"threshold=0.03:ratio=12",
+		"attack=20:release=300",
+		"normalize=0",
 	} {
 		if !strings.Contains(dynamicFilter, want) {
 			t.Fatalf("dynamic filter does not contain %q: %s", want, dynamicFilter)
 		}
 	}
 	for _, want := range []string{
-		"volume=0.8[a0]",
-		"apad,volume=1.2[a1]",
+		"volume=0.3[a0]",
+		"volume=1[a1]",
 	} {
 		if !strings.Contains(staticFilter, want) {
 			t.Fatalf("static filter does not contain %q: %s", want, staticFilter)
 		}
-	}
-	if strings.Contains(dynamicFilter, "normalize=") || strings.Contains(staticFilter, "normalize=") {
-		t.Fatalf("filters should stay compatible with ffmpeg builds without amix normalize: %s / %s", dynamicFilter, staticFilter)
 	}
 }
 
@@ -39,9 +38,9 @@ func TestVoiceTranslateMixFiltersUseEnvOverrides(t *testing.T) {
 	t.Setenv("VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME", "1.05")
 	dynamicFilter, staticFilter := voiceTranslateMixFilters()
 	for _, want := range []string{
-		"apad,asplit=2",
-		"volume=1.1[a1mix]",
-		"volume=0.9[a0base]",
+		"asplit=2[sc][tr0]",
+		"volume=1.1[tr]",
+		"volume=0.9[base]",
 		"threshold=0.04:ratio=3",
 	} {
 		if !strings.Contains(dynamicFilter, want) {
@@ -50,7 +49,7 @@ func TestVoiceTranslateMixFiltersUseEnvOverrides(t *testing.T) {
 	}
 	for _, want := range []string{
 		"volume=0.8[a0]",
-		"apad,volume=1.05[a1]",
+		"volume=1.05[a1]",
 	} {
 		if !strings.Contains(staticFilter, want) {
 			t.Fatalf("static filter does not contain override %q: %s", want, staticFilter)

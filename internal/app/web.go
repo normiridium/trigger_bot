@@ -1411,8 +1411,8 @@ func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// Delay restart so we can ответить до остановки процесса.
-	cmd := exec.Command("sh", "-c", "sleep 1; sudo /usr/bin/systemctl restart bot.service.example")
+	// The root-owned path unit consumes this marker after the HTTP response.
+	cmd := exec.Command("sh", "-c", "sleep 1; : > /run/trigger-admin-bot/restart.request")
 	if err := cmd.Start(); err != nil {
 		http.Error(rw, fmt.Sprintf("restart failed: %v", err), http.StatusInternalServerError)
 		return
