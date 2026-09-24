@@ -163,6 +163,17 @@ type templateContext struct {
 	TemplateLookup func(string) string
 }
 
+var gptMediaGroupImageResolver = struct {
+	mu sync.RWMutex
+	fn func(*tgbotapi.Message) []*tgbotapi.Message
+}{}
+
+func setGPTMediaGroupImageResolver(fn func(*tgbotapi.Message) []*tgbotapi.Message) {
+	gptMediaGroupImageResolver.mu.Lock()
+	defer gptMediaGroupImageResolver.mu.Unlock()
+	gptMediaGroupImageResolver.fn = fn
+}
+
 func newTemplateContext(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger, lookup func(string) string) templateContext {
 	if tr == nil {
 		return templateContext{Bot: bot, Msg: msg, TemplateLookup: lookup}
@@ -196,22 +207,56 @@ func buildPromptFromMessage(ctx templateContext, promptTemplate string) string {
 }
 
 func resolveMessageImageURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (string, bool) {
-	if bot == nil || msg == nil {
+	urls, err := resolveMessageImageURLs(bot, msg)
+	if err != nil || len(urls) == 0 {
 		return "", false
 	}
-	if fileID := extractImageFileID(msg); fileID != "" {
-		if url, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(url) != "" {
-			return strings.TrimSpace(url), true
+	return urls[0], true
+}
+
+func resolveMessageImageURLs(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) ([]string, error) {
+	if bot == nil || msg == nil {
+		return nil, nil
+	}
+	source := msg
+	if !hasMessageBitmapImage(source) && msg.ReplyToMessage != nil {
+		source = msg.ReplyToMessage
+	}
+	if !hasMessageBitmapImage(source) {
+		return nil, nil
+	}
+
+	gptMediaGroupImageResolver.mu.RLock()
+	resolver := gptMediaGroupImageResolver.fn
+	gptMediaGroupImageResolver.mu.RUnlock()
+	messages := []*tgbotapi.Message{source}
+	if resolver != nil {
+		if grouped := resolver(source); len(grouped) > 0 {
+			messages = grouped
 		}
 	}
-	if msg.ReplyToMessage != nil {
-		if fileID := extractImageFileID(msg.ReplyToMessage); fileID != "" {
-			if url, err := getTelegramFileDirectURL(bot, fileID); err == nil && strings.TrimSpace(url) != "" {
-				return strings.TrimSpace(url), true
-			}
+	urls := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for _, imageMsg := range messages {
+		fileID := extractImageFileID(imageMsg)
+		if fileID == "" {
+			return nil, fmt.Errorf("image message %d is unavailable for GPT context: check GPT_IMAGE_CONTEXT_MAX_MB", imageMsg.MessageID)
 		}
+		if _, ok := seen[fileID]; ok {
+			continue
+		}
+		url, err := getTelegramFileDirectURL(bot, fileID)
+		if err != nil {
+			return nil, fmt.Errorf("telegram image file_id=%s: %w", clipText(fileID, 32), err)
+		}
+		url = strings.TrimSpace(url)
+		if url == "" {
+			return nil, fmt.Errorf("telegram returned an empty image URL")
+		}
+		seen[fileID] = struct{}{}
+		urls = append(urls, url)
 	}
-	return "", false
+	return urls, nil
 }
 
 func resolveMessageSVGURL(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) (fileURL, fileName string, ok bool) {
@@ -262,6 +307,16 @@ func extractImageFileID(msg *tgbotapi.Message) string {
 		}
 	}
 	return ""
+}
+
+func hasMessageBitmapImage(msg *tgbotapi.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if len(msg.Photo) > 0 {
+		return true
+	}
+	return msg.Document != nil && !isSVGDocument(msg.Document) && strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Document.MimeType)), "image/")
 }
 
 func extractSVGFileID(msg *tgbotapi.Message) (fileID, fileName string) {

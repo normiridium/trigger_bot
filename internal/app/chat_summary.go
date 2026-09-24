@@ -209,42 +209,20 @@ func ensureSummaryHashtagLine(summary string) string {
 }
 
 func loadSummaryMessages(service chatclear.Service, memory *summaryHistoryStore, chatID int64, username string, since, until time.Time) ([]chatclear.HistoryMessage, string, error) {
-	var primaryErr error
-	primarySucceeded := false
-	if service != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		result, err := service.GetHistory(ctx, chatclear.HistoryRequest{
-			ChatID: chatID, Username: username, Limit: chatSummaryHistoryLimit,
-			SinceUnix: since.Unix(), UntilUnix: until.Unix(),
-		})
-		cancel()
-		if err == nil {
-			primarySucceeded = true
-			messages := filterSummaryMessages(result.Messages)
-			if len(messages) > 0 {
-				return messages, "tg-ops-service", nil
-			}
-			primaryErr = errors.New("tg-ops-service returned no text messages")
-		} else {
-			primaryErr = err
-		}
+	_ = memory
+	if service == nil {
+		return nil, "", errors.New("tg-ops-service is not configured")
 	}
-
-	var fallback []chatclear.HistoryMessage
-	if memory != nil {
-		fallback = memory.Messages(chatID, since, chatSummaryHistoryLimit)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	result, err := service.GetHistory(ctx, chatclear.HistoryRequest{
+		ChatID: chatID, Username: username,
+		SinceUnix: since.Unix(), UntilUnix: until.Unix(),
+	})
+	cancel()
+	if err != nil {
+		return nil, "", fmt.Errorf("load complete daily history from tg-ops-service: %w", err)
 	}
-	if len(fallback) > 0 {
-		log.Printf("chat summary history fallback chat=%d source=memory primary_error=%v messages=%d", chatID, primaryErr, len(fallback))
-		return fallback, "memory", nil
-	}
-	if primaryErr != nil {
-		if primarySucceeded {
-			return nil, "tg-ops-service", nil
-		}
-		return nil, "", fmt.Errorf("tg-ops-service unavailable and memory history is empty: %w", primaryErr)
-	}
-	return nil, "memory", nil
+	return filterSummaryMessages(result.Messages), "tg-ops-service", nil
 }
 
 func filterSummaryMessages(messages []chatclear.HistoryMessage) []chatclear.HistoryMessage {
@@ -262,9 +240,6 @@ func filterSummaryMessages(messages []chatclear.HistoryMessage) []chatclear.Hist
 		}
 		return result[i].Date < result[j].Date
 	})
-	if len(result) > chatSummaryHistoryLimit {
-		result = result[len(result)-chatSummaryHistoryLimit:]
-	}
 	return result
 }
 

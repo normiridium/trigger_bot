@@ -2136,6 +2136,9 @@ func Run() {
 	}
 	idleTracker := trigger.NewIdleTracker()
 	actionQueue := newTriggerActionQueue(defaultTriggerActionWorkers(), defaultTriggerActionQueueSize())
+	mediaGroupImages := newDefaultMediaGroupImageStore()
+	setGPTMediaGroupImageResolver(mediaGroupImages.MessagesFor)
+	defer setGPTMediaGroupImageResolver(nil)
 
 	adminBind := envOr("ADMIN_BIND", ":8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
@@ -2514,6 +2517,7 @@ func Run() {
 			}
 			continue
 		}
+		mediaGroupImages.Observe(msg)
 		quoteHistory.Add(msg, rawMsg)
 		isPrivateChat := msg.Chat.IsPrivate()
 		if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
@@ -2768,14 +2772,15 @@ func Run() {
 					replyToID = srcMediaMsg.MessageID
 				}
 				token := putVoiceTranslateOption(voiceTranslateOptionEntry{
-					chatID:  msg.Chat.ID,
-					userID:  msg.From.ID,
-					replyTo: replyToID,
-					engine:  engine,
-					media:   mediaInfo,
+					chatID:   msg.Chat.ID,
+					userID:   msg.From.ID,
+					replyTo:  replyToID,
+					engine:   engine,
+					provider: defaultVOTProvider(),
+					media:    mediaInfo,
 				})
 				menu := tgbotapi.NewMessage(msg.Chat.ID, menuTitle)
-				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo, engine)
+				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo, engine, defaultVOTProvider())
 				if replyToID > 0 {
 					menu.ReplyToMessageID = replyToID
 					menu.AllowSendingWithoutReply = true
@@ -2791,6 +2796,9 @@ func Run() {
 				}
 			case cmdSummary:
 				handleSummaryCommand(bot, clearChatService, summaryHistory, templateLookup, msg)
+				continue
+			case cmdEthics:
+				handleEthicsCommand(bot, clearChatService, adminCache, msg)
 				continue
 			case cmdBalance:
 				if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {

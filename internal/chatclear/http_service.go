@@ -66,11 +66,13 @@ type authCompleteResp struct {
 }
 
 type historyPayload struct {
-	ChatID    int64  `json:"chat_id"`
-	Username  string `json:"username,omitempty"`
-	Limit     int    `json:"limit"`
-	SinceUnix int64  `json:"since_unix,omitempty"`
-	UntilUnix int64  `json:"until_unix,omitempty"`
+	ChatID       int64  `json:"chat_id"`
+	Username     string `json:"username,omitempty"`
+	Limit        int    `json:"limit"`
+	SinceUnix    int64  `json:"since_unix,omitempty"`
+	UntilUnix    int64  `json:"until_unix,omitempty"`
+	FromID       int64  `json:"from_id,omitempty"`
+	FromUsername string `json:"from_username,omitempty"`
 }
 
 type historyResp struct {
@@ -171,7 +173,7 @@ func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (Histo
 	if req.ChatID == 0 {
 		return HistoryResult{}, fmt.Errorf("%w: empty chat id", ErrBadRequest)
 	}
-	if req.Limit <= 0 || req.Limit > 1000 {
+	if req.Limit <= 0 && req.SinceUnix <= 0 {
 		req.Limit = 1000
 	}
 	body, err := json.Marshal(commandEnvelope{
@@ -180,6 +182,7 @@ func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (Histo
 		Payload: historyPayload{
 			ChatID: req.ChatID, Username: strings.TrimSpace(req.Username), Limit: req.Limit,
 			SinceUnix: req.SinceUnix, UntilUnix: req.UntilUnix,
+			FromID: req.FromID, FromUsername: strings.TrimSpace(req.FromUsername),
 		},
 	})
 	if err != nil {
@@ -191,7 +194,7 @@ func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (Histo
 		historyTimeoutSec = 90
 	}
 	historyClient.Timeout = time.Duration(historyTimeoutSec) * time.Second
-	data, err := s.postForJSONWithClientLimit(ctx, &historyClient, "/v1/command", body, 8<<20)
+	data, err := s.postForJSONWithClientLimit(ctx, &historyClient, "/v1/command", body, 32<<20)
 	if err != nil {
 		return HistoryResult{}, err
 	}

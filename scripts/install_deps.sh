@@ -87,8 +87,8 @@ install_vot_cli() {
   if [[ -z "$major" || "$major" -lt 18 ]]; then
     err "vot-cli requires Node.js 18+. Current node major: ${major:-not installed}. Use INSTALL_NODESOURCE=1 NODE_MAJOR=22."
   fi
-  log "Installing vot-cli globally via npm"
-  "${SUDO[@]}" npm install -g vot-cli
+  log "Installing stable vot-cli 1.4.3 globally via npm"
+  "${SUDO[@]}" npm install -g vot-cli@1.4.3
 }
 
 install_latex_renderer() {

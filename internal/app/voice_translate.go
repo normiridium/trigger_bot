@@ -34,15 +34,16 @@ const (
 )
 
 type voiceTranslateTask struct {
-	Bot     *tgbotapi.BotAPI
-	ChatID  int64
-	ReplyTo int
-	Msg     *tgbotapi.Message
-	Engine  voiceTranslateEngine
-	Action  voiceTranslateAction
-	Media   replyMediaInfo
-	SrcLang string
-	ResLang string
+	Bot      *tgbotapi.BotAPI
+	ChatID   int64
+	ReplyTo  int
+	Msg      *tgbotapi.Message
+	Engine   voiceTranslateEngine
+	Provider votProvider
+	Action   voiceTranslateAction
+	Media    replyMediaInfo
+	SrcLang  string
+	ResLang  string
 }
 
 type voiceTranslateEngine string
@@ -55,15 +56,16 @@ const (
 type voiceTranslateAction string
 
 const (
-	voiceTranslateActionAudio  voiceTranslateAction = "audio"
-	voiceTranslateActionMix    voiceTranslateAction = "mix"
-	voiceTranslateActionVideo  voiceTranslateAction = "video"
-	voiceTranslateActionText   voiceTranslateAction = "text"
-	voiceTranslateActionSubs   voiceTranslateAction = "subs"
-	voiceTranslateActionCancel voiceTranslateAction = "cancel"
-	voiceTranslateActionBack   voiceTranslateAction = "back"
-	voiceTranslateActionNoop   voiceTranslateAction = "noop"
-	voiceTranslateActionLang   voiceTranslateAction = "lang"
+	voiceTranslateActionAudio    voiceTranslateAction = "audio"
+	voiceTranslateActionMix      voiceTranslateAction = "mix"
+	voiceTranslateActionVideo    voiceTranslateAction = "video"
+	voiceTranslateActionText     voiceTranslateAction = "text"
+	voiceTranslateActionSubs     voiceTranslateAction = "subs"
+	voiceTranslateActionCancel   voiceTranslateAction = "cancel"
+	voiceTranslateActionBack     voiceTranslateAction = "back"
+	voiceTranslateActionNoop     voiceTranslateAction = "noop"
+	voiceTranslateActionLang     voiceTranslateAction = "lang"
+	voiceTranslateActionProvider voiceTranslateAction = "provider"
 )
 
 const voiceTranslateMixCaption = `<tg-emoji emoji-id="5260512129240276089">📚</tg-emoji> Микшированный перевод`
@@ -104,6 +106,7 @@ type voiceTranslateOptionEntry struct {
 	userID    int64
 	replyTo   int
 	engine    voiceTranslateEngine
+	provider  votProvider
 	media     replyMediaInfo
 	expiresAt time.Time
 }
@@ -273,6 +276,26 @@ func buildVoiceTranslateCacheKeyWithProvider(fileID, srcLang, resLang, provider 
 		}
 	}
 	return strings.TrimSpace(fileID) + "|" + srcLang + "|" + resLang + "|" + provider
+}
+
+func normalizeVOTProvider(provider votProvider) votProvider {
+	switch votProvider(strings.ToLower(strings.TrimSpace(string(provider)))) {
+	case votProviderYandexLively:
+		return votProviderYandexLively
+	default:
+		return votProviderYandex
+	}
+}
+
+func defaultVOTProvider() votProvider {
+	return normalizeVOTProvider(votProvider(os.Getenv("VOICE_TRANSLATE_PROVIDER")))
+}
+
+func votLivelyAPIToken() string {
+	if token := strings.TrimSpace(os.Getenv("VOT_LIVELY_API_TOKEN")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(os.Getenv("YA_MUSIC_TOKEN"))
 }
 
 func loadVoiceTranslateCacheLocked() {
@@ -668,9 +691,42 @@ func cleanupVoiceTranslateStartup() {
 	})
 }
 
-func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang string) (string, error) {
+func buildVOTCLITranslateArgs(sourcePath, outputDir, outputFile, srcLang, resLang string, provider votProvider) ([]string, error) {
+	from := normalizeVOTLang(srcLang)
+	to := normalizeVOTLang(resLang)
+	provider = normalizeVOTProvider(provider)
+	args := []string{
+		"--output=" + outputDir,
+		"--output-file=" + outputFile,
+	}
+	if to != "" {
+		args = append(args, "--reslang="+to)
+	}
+	if from != "" {
+		args = append(args, "--lang="+from)
+	}
+	if provider == votProviderYandexLively {
+		if from != "en" || to != "ru" {
+			return nil, fmt.Errorf("lively voice supports only en -> ru")
+		}
+		if votLivelyAPIToken() == "" {
+			return nil, fmt.Errorf("lively voice requires VOT_LIVELY_API_TOKEN")
+		}
+		args[1] = "--output-file=" + outputFile + ".mp3"
+		args = append(args, "--clone")
+	}
+	return append(args, sourcePath), nil
+}
+
+func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang string, provider votProvider) (string, error) {
+	provider = normalizeVOTProvider(provider)
 	bin := strings.TrimSpace(os.Getenv("VOT_CLI_BIN"))
-	if bin == "" {
+	if provider == votProviderYandexLively {
+		bin = strings.TrimSpace(os.Getenv("VOT_LIVELY_CLI_BIN"))
+		if bin == "" {
+			bin = "vot-cli-go"
+		}
+	} else if bin == "" {
 		bin = "vot-cli"
 	}
 	nodeBin := strings.TrimSpace(os.Getenv("VOICE_TRANSLATE_NODE_BIN"))
@@ -684,30 +740,31 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 		nodeBin = path
 	}
 	useNodeWrapper := false
-	if _, err := os.Stat(nodeBin); err == nil {
-		if _, err2 := os.Stat(bin); err2 == nil {
+	if provider != votProviderYandexLively {
+		_, nodeErr := os.Stat(nodeBin)
+		_, binErr := os.Stat(bin)
+		if nodeErr == nil && binErr == nil {
 			useNodeWrapper = true
 		}
 	}
 	if !useNodeWrapper {
-		if _, err := os.Stat(bin); err != nil {
-			bin = "vot-cli"
+		if provider == votProviderYandexLively {
+			if _, err := exec.LookPath(bin); err != nil {
+				return "", fmt.Errorf("lively voice CLI not found: %w", err)
+			}
+		} else {
+			if _, err := os.Stat(bin); err != nil {
+				bin = "vot-cli"
+			}
+			if _, err := exec.LookPath(bin); err != nil {
+				return "", err
+			}
 		}
-		if _, err := exec.LookPath(bin); err != nil {
-			return "", err
-		}
 	}
-	args := []string{
-		"--output=" + outputDir,
-		"--output-file=" + outputFile,
+	args, err := buildVOTCLITranslateArgs(sourcePath, outputDir, outputFile, srcLang, resLang, provider)
+	if err != nil {
+		return "", err
 	}
-	if v := normalizeVOTLang(resLang); v != "" {
-		args = append(args, "--reslang="+v)
-	}
-	if v := normalizeVOTLang(srcLang); v != "" && v != "auto" {
-		args = append(args, "--lang="+v)
-	}
-	args = append(args, sourcePath)
 	var cmd *exec.Cmd
 	if useNodeWrapper {
 		nodeArgs := append([]string{bin}, args...)
@@ -716,6 +773,9 @@ func runVOTCLITranslateLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 		cmd = exec.Command(bin, args...)
 	}
 	cmd.Env = os.Environ()
+	if provider == votProviderYandexLively {
+		cmd.Env = append(cmd.Env, "VOT_TOKEN="+votLivelyAPIToken())
+	}
 	out, err := cmd.CombinedOutput()
 	outText := strings.TrimSpace(string(out))
 	if err != nil {
@@ -801,21 +861,22 @@ func runVOTCLISubtitlesLocal(sourcePath, outputDir, outputFile, srcLang, resLang
 			return "", err
 		}
 	}
-	subsArg := "--subs"
 	ext := ".json"
 	if strings.EqualFold(strings.TrimSpace(outFormat), "srt") {
-		subsArg = "--subs-srt"
 		ext = ".srt"
 	}
 	args := []string{
-		subsArg,
+		"--subs",
 		"--output=" + outputDir,
 		"--output-file=" + outputFile,
+	}
+	if ext == ".srt" {
+		args[0] = "--subs-srt"
 	}
 	if v := normalizeVOTLang(resLang); v != "" {
 		args = append(args, "--reslang="+v)
 	}
-	if v := normalizeVOTLang(srcLang); v != "" && v != "auto" {
+	if v := normalizeVOTLang(srcLang); v != "" {
 		args = append(args, "--lang="+v)
 	}
 	args = append(args, sourcePath)
@@ -1012,6 +1073,13 @@ func putVoiceTranslateOption(e voiceTranslateOptionEntry) string {
 	voiceTranslateOptionMu.Lock()
 	defer voiceTranslateOptionMu.Unlock()
 	cleanupVoiceTranslateOptionsLocked(time.Now())
+	if normalizeVoiceTranslateEngine(e.engine) == voiceTranslateEngineVOT {
+		if strings.TrimSpace(string(e.provider)) == "" {
+			e.provider = defaultVOTProvider()
+		} else {
+			e.provider = normalizeVOTProvider(e.provider)
+		}
+	}
 	token := newVoiceTranslateOptionToken()
 	e.token = token
 	if e.expiresAt.IsZero() {
@@ -1035,6 +1103,25 @@ func takeVoiceTranslateOption(token string, userID int64) (voiceTranslateOptionE
 	return v, true, ""
 }
 
+func setVoiceTranslateOptionProvider(token string, userID int64, provider votProvider) (voiceTranslateOptionEntry, bool, string) {
+	voiceTranslateOptionMu.Lock()
+	defer voiceTranslateOptionMu.Unlock()
+	cleanupVoiceTranslateOptionsLocked(time.Now())
+	v, ok := voiceTranslateOptionData[token]
+	if !ok {
+		return voiceTranslateOptionEntry{}, false, "меню устарело"
+	}
+	if v.userID != 0 && userID != 0 && v.userID != userID {
+		return voiceTranslateOptionEntry{}, false, "эта кнопка доступна только автору"
+	}
+	if normalizeVoiceTranslateEngine(v.engine) != voiceTranslateEngineVOT {
+		return voiceTranslateOptionEntry{}, false, "режим доступен только для VOT"
+	}
+	v.provider = normalizeVOTProvider(provider)
+	voiceTranslateOptionData[token] = v
+	return v, true, ""
+}
+
 func normalizeVoiceTranslateEngine(engine voiceTranslateEngine) voiceTranslateEngine {
 	switch voiceTranslateEngine(strings.ToLower(strings.TrimSpace(string(engine)))) {
 	case voiceTranslateEngineOpenAI:
@@ -1044,10 +1131,11 @@ func normalizeVoiceTranslateEngine(engine voiceTranslateEngine) voiceTranslateEn
 	}
 }
 
-func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool, engines ...voiceTranslateEngine) tgbotapi.InlineKeyboardMarkup {
-	engine := voiceTranslateEngineVOT
-	if len(engines) > 0 {
-		engine = normalizeVoiceTranslateEngine(engines[0])
+func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool, engine voiceTranslateEngine, providers ...votProvider) tgbotapi.InlineKeyboardMarkup {
+	engine = normalizeVoiceTranslateEngine(engine)
+	provider := defaultVOTProvider()
+	if len(providers) > 0 {
+		provider = normalizeVOTProvider(providers[0])
 	}
 	audioLabel := "Скачать аудио"
 	mixLabel := "Аудиомикс"
@@ -1061,12 +1149,26 @@ func renderVoiceTranslateOptionKeyboard(token string, hasVideo bool, engines ...
 		textLabel = "GPT текст"
 		subsLabel = "GPT SRT"
 	}
-	rows := [][]tgbotapi.InlineKeyboardButton{
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
+	if engine == voiceTranslateEngineVOT {
+		normalLabel := "Обычная"
+		livelyLabel := "Живые голоса"
+		if provider == votProviderYandexLively {
+			livelyLabel = "✓ " + livelyLabel
+		} else {
+			normalLabel = "✓ " + normalLabel
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(normalLabel, "vtr|"+string(voiceTranslateActionProvider)+"|"+token+"|"+string(votProviderYandex)),
+			tgbotapi.NewInlineKeyboardButtonData(livelyLabel, "vtr|"+string(voiceTranslateActionProvider)+"|"+token+"|"+string(votProviderYandexLively)),
+		))
+	}
+	rows = append(rows,
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(audioLabel, "vtr|"+string(voiceTranslateActionAudio)+"|"+token),
 			tgbotapi.NewInlineKeyboardButtonData(mixLabel, "vtr|"+string(voiceTranslateActionMix)+"|"+token),
 		),
-	}
+	)
 	if hasVideo {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(videoLabel, "vtr|"+string(voiceTranslateActionVideo)+"|"+token),
@@ -1159,21 +1261,28 @@ func voiceTranslateTargetLang(engine voiceTranslateEngine) string {
 	return target
 }
 
-func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction, engines ...voiceTranslateEngine) tgbotapi.InlineKeyboardMarkup {
-	engine := voiceTranslateEngineVOT
-	if len(engines) > 0 {
-		engine = normalizeVoiceTranslateEngine(engines[0])
+func renderVoiceTranslateLangKeyboard(token string, action voiceTranslateAction, engine voiceTranslateEngine, providers ...votProvider) tgbotapi.InlineKeyboardMarkup {
+	engine = normalizeVoiceTranslateEngine(engine)
+	provider := defaultVOTProvider()
+	if len(providers) > 0 {
+		provider = normalizeVOTProvider(providers[0])
 	}
 	target := voiceTranslateTargetLang(engine)
 	langs := voiceTranslateSourceLangs
 	if engine == voiceTranslateEngineOpenAI {
 		langs = gptTranslateSourceLangs
 	}
-	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
-	row := []tgbotapi.InlineKeyboardButton{
-		tgbotapi.NewInlineKeyboardButtonData("🌐 Авто", "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|auto"),
+	lively := engine == voiceTranslateEngineVOT && provider == votProviderYandexLively && action != voiceTranslateActionText && action != voiceTranslateActionSubs
+	if lively {
+		target = "ru"
+		langs = []voiceSourceLang{{Code: "en", Label: "🇺🇸 English"}}
 	}
-	rows = append(rows, row)
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, 5)
+	row := make([]tgbotapi.InlineKeyboardButton, 0, 4)
+	if !lively {
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("🌐 Авто", "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|auto"))
+		rows = append(rows, row)
+	}
 	row = make([]tgbotapi.InlineKeyboardButton, 0, 4)
 	for i, l := range langs {
 		row = append(row, tgbotapi.NewInlineKeyboardButtonData(l.Label, "vtr|"+string(voiceTranslateActionLang)+"|"+string(action)+"|"+token+"|"+l.Code))
@@ -1229,7 +1338,8 @@ func parseVoiceTranslateAction(raw string) (voiceTranslateAction, bool) {
 		voiceTranslateActionCancel,
 		voiceTranslateActionBack,
 		voiceTranslateActionNoop,
-		voiceTranslateActionLang:
+		voiceTranslateActionLang,
+		voiceTranslateActionProvider:
 		return a, true
 	default:
 		return "", false
@@ -1281,6 +1391,35 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 			})
 		}
 		return true
+	case voiceTranslateActionProvider:
+		if len(parts) != 4 {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "неверный режим озвучки"))
+			return true
+		}
+		provider := normalizeVOTProvider(votProvider(parts[3]))
+		if provider == votProviderYandexLively && votLivelyAPIToken() == "" {
+			_, _ = bot.Request(tgbotapi.NewCallbackWithAlert(cb.ID, "Для живых голосов не задан Yandex OAuth token."))
+			return true
+		}
+		entry, ok, msg = setVoiceTranslateOptionProvider(token, cb.From.ID, provider)
+		if !ok {
+			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, msg))
+			return true
+		}
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(
+				cb.Message.Chat.ID,
+				cb.Message.MessageID,
+				"Действия с переводом:",
+				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo, entry.engine, entry.provider),
+			)
+			if _, err := bot.Send(edit); err != nil {
+				_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "не удалось переключить озвучку"))
+				return true
+			}
+		}
+		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Режим озвучки выбран"))
+		return true
 	case voiceTranslateActionAudio, voiceTranslateActionMix, voiceTranslateActionVideo, voiceTranslateActionText, voiceTranslateActionSubs:
 		if action == voiceTranslateActionVideo && !entry.media.HasVideo {
 			_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "видеомикс доступен только для видео"))
@@ -1291,7 +1430,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 				cb.Message.Chat.ID,
 				cb.Message.MessageID,
 				"Выберите язык перевода:",
-				renderVoiceTranslateLangKeyboard(token, action, entry.engine),
+				renderVoiceTranslateLangKeyboard(token, action, entry.engine, entry.provider),
 			)
 			if _, err := bot.Send(edit); err != nil {
 				_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "не удалось показать языки"))
@@ -1306,7 +1445,7 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 				cb.Message.Chat.ID,
 				cb.Message.MessageID,
 				"Действия с переводом:",
-				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo, entry.engine),
+				renderVoiceTranslateOptionKeyboard(token, entry.media.HasVideo, entry.engine, entry.provider),
 			)
 			_, _ = bot.Send(edit)
 		}
@@ -1334,16 +1473,28 @@ func handleVoiceTranslateOptionCallback(bot *tgbotapi.BotAPI, cb *tgbotapi.Callb
 			srcLang = "auto"
 		}
 		resLang := voiceTranslateTargetLang(entry.engine)
+		provider := normalizeVOTProvider(entry.provider)
+		if runAction == voiceTranslateActionText || runAction == voiceTranslateActionSubs || normalizeVoiceTranslateEngine(entry.engine) == voiceTranslateEngineOpenAI {
+			provider = votProviderYandex
+		}
+		if provider == votProviderYandexLively {
+			resLang = "ru"
+			if srcLang != "en" {
+				_, _ = bot.Request(tgbotapi.NewCallbackWithAlert(cb.ID, "Живые голоса доступны только для перевода с английского на русский."))
+				return true
+			}
+		}
 		_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "Запускаю..."))
 		task := voiceTranslateTask{
-			Bot:     bot,
-			ChatID:  entry.chatID,
-			ReplyTo: entry.replyTo,
-			Engine:  entry.engine,
-			Action:  runAction,
-			Media:   entry.media,
-			SrcLang: srcLang,
-			ResLang: resLang,
+			Bot:      bot,
+			ChatID:   entry.chatID,
+			ReplyTo:  entry.replyTo,
+			Engine:   entry.engine,
+			Provider: provider,
+			Action:   runAction,
+			Media:    entry.media,
+			SrcLang:  srcLang,
+			ResLang:  resLang,
 		}
 		if !q.enqueue(task) {
 			queueName := "голосового перевода"
@@ -2112,6 +2263,8 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	cacheProvider := ""
 	if engine == voiceTranslateEngineOpenAI {
 		cacheProvider = openAIGPTTranslateCacheProvider()
+	} else {
+		cacheProvider = string(normalizeVOTProvider(task.Provider))
 	}
 	cacheKey := buildVoiceTranslateCacheKeyWithProvider(mediaInfo.FileID, srcLang, resLang, cacheProvider)
 	if n := sanitizeVoiceBaseName(mediaInfo.Name); n != "" {
@@ -2271,7 +2424,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			progress.SetFrame(3)
 			progress.SetStage("Голосовой перевод")
 		}
-		seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed", srcLang, resLang)
+		seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed", srcLang, resLang, votProviderYandex)
 		if seedErr != nil {
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate subtitles warmup failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, seedErr)
@@ -2309,7 +2462,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 					progress.SetFrame(3)
 					progress.SetStage("Голосовой перевод")
 				}
-				seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed_retry", srcLang, resLang)
+				seedOut, seedErr := runVOTCLITranslateLocal(publicURL, workDir, "translated_seed_retry", srcLang, resLang, votProviderYandex)
 				if seedErr == nil && strings.TrimSpace(seedOut) != "" {
 					cacheDst := voiceTranslateCacheMP3Path(cacheKey)
 					if in, openErr := os.Open(seedOut); openErr == nil {
@@ -2420,7 +2573,8 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			progress.SetStage("Голосовой перевод")
 		}
 		cliSourceURL := publicURL
-		cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated", srcLang, resLang)
+		provider := normalizeVOTProvider(task.Provider)
+		cliOut, cliErr := runVOTCLITranslateLocal(cliSourceURL, workDir, "translated", srcLang, resLang, provider)
 		if cliErr != nil {
 			if debugTriggerLogEnabled {
 				log.Printf("voice translate cli failed chat=%d replyTo=%d err=%v", task.ChatID, task.ReplyTo, cliErr)
@@ -2432,7 +2586,7 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 			if renameErr := os.Rename(cliOut, mp3Path); renameErr != nil && cliOut != mp3Path {
 				mp3Path = cliOut
 			}
-			providerUsed = "vot-cli"
+			providerUsed = "vot-cli:" + string(provider)
 		}
 	}
 	if !pathWithinVoiceTranslateTmpDir(mp3Path) {
@@ -2501,6 +2655,15 @@ func voiceTranslateUserErrorMessage(err error) string {
 		return msg
 	}
 	errText := strings.ToLower(err.Error())
+	if strings.Contains(errText, "lively voice requires") {
+		return "Для режима «Живые голоса» не настроен Yandex OAuth token."
+	}
+	if strings.Contains(errText, "lively voice cli not found") {
+		return "Для режима «Живые голоса» не установлен Go VOT CLI."
+	}
+	if strings.Contains(errText, "lively voice supports only") {
+		return "Живые голоса доступны только для перевода с английского на русский."
+	}
 	if strings.Contains(errText, "timeout") {
 		return "Перевод занял слишком много времени. Попробуйте позже или возьмите файл короче."
 	}

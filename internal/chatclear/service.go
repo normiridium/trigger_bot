@@ -29,11 +29,13 @@ type AuthCompleteResult struct {
 }
 
 type HistoryRequest struct {
-	ChatID    int64
-	Username  string
-	Limit     int
-	SinceUnix int64
-	UntilUnix int64
+	ChatID       int64
+	Username     string
+	Limit        int
+	SinceUnix    int64
+	UntilUnix    int64
+	FromID       int64
+	FromUsername string
 }
 
 type HistoryMessage struct {

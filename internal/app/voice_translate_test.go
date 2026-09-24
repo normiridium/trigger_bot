@@ -80,6 +80,88 @@ Response language is set to ru
 	}
 }
 
+func TestBuildVOTCLITranslateArgsUsesStableFlags(t *testing.T) {
+	args, err := buildVOTCLITranslateArgs("https://example.test/source.mp4", "/tmp/out", "translated", "auto", "ru", votProviderYandex)
+	if err != nil {
+		t.Fatalf("build args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--output=/tmp/out", "--output-file=translated", "--lang=auto", "--reslang=ru"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args do not contain %q: %v", want, args)
+		}
+	}
+	if strings.Contains(joined, "--clone") {
+		t.Fatalf("unexpected lively flag: %v", args)
+	}
+}
+
+func TestBuildVOTCLITranslateArgsEnablesLivelyVoice(t *testing.T) {
+	t.Setenv("VOT_LIVELY_API_TOKEN", "test-oauth-token")
+	t.Setenv("YA_MUSIC_TOKEN", "")
+	args, err := buildVOTCLITranslateArgs("https://example.test/source.mp4", "/tmp/out", "translated", "en", "ru", votProviderYandexLively)
+	if err != nil {
+		t.Fatalf("build lively args: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--clone", "--output-file=translated.mp3", "--lang=en", "--reslang=ru"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("lively args do not contain expected flag: %v", args)
+		}
+	}
+	if strings.Contains(joined, "test-oauth-token") || strings.Contains(joined, "--token") {
+		t.Fatalf("OAuth token must be passed through the child environment, not argv: %v", args)
+	}
+}
+
+func TestBuildVOTCLITranslateArgsRejectsInvalidLivelyConfiguration(t *testing.T) {
+	t.Setenv("VOT_LIVELY_API_TOKEN", "")
+	t.Setenv("YA_MUSIC_TOKEN", "")
+	if _, err := buildVOTCLITranslateArgs("source", "/tmp/out", "translated", "en", "ru", votProviderYandexLively); err == nil || !strings.Contains(err.Error(), "requires") {
+		t.Fatalf("expected missing token error, got %v", err)
+	}
+	t.Setenv("VOT_LIVELY_API_TOKEN", "test-oauth-token")
+	if _, err := buildVOTCLITranslateArgs("source", "/tmp/out", "translated", "nl", "ru", votProviderYandexLively); err == nil || !strings.Contains(err.Error(), "en -> ru") {
+		t.Fatalf("expected unsupported language error, got %v", err)
+	}
+}
+
+func TestRunVOTCLITranslateLocalDoesNotFallbackWhenLivelyCLIMissing(t *testing.T) {
+	t.Setenv("VOT_LIVELY_API_TOKEN", "test-oauth-token")
+	t.Setenv("VOT_LIVELY_CLI_BIN", "/definitely/missing/vot-cli-go")
+	_, err := runVOTCLITranslateLocal("source", t.TempDir(), "translated", "en", "ru", votProviderYandexLively)
+	if err == nil || !strings.Contains(err.Error(), "lively voice CLI not found") {
+		t.Fatalf("expected explicit missing lively CLI error, got %v", err)
+	}
+}
+
+func TestVoiceTranslateLivelyKeyboardOnlyOffersEnglish(t *testing.T) {
+	keyboard := renderVoiceTranslateLangKeyboard("token", voiceTranslateActionMix, voiceTranslateEngineVOT, votProviderYandexLively)
+	callbacks := make([]string, 0)
+	for _, row := range keyboard.InlineKeyboard {
+		for _, button := range row {
+			if button.CallbackData != nil {
+				callbacks = append(callbacks, *button.CallbackData)
+			}
+		}
+	}
+	joined := strings.Join(callbacks, " ")
+	if !strings.Contains(joined, "vtr|lang|mix|token|en") {
+		t.Fatalf("English option missing: %v", callbacks)
+	}
+	if strings.Contains(joined, "|auto") || strings.Contains(joined, "|nl") || strings.Contains(joined, "|ru") {
+		t.Fatalf("lively keyboard contains unsupported source language: %v", callbacks)
+	}
+}
+
+func TestVoiceTranslateCacheSeparatesVoiceProviders(t *testing.T) {
+	normal := buildVoiceTranslateCacheKeyWithProvider("file", "en", "ru", string(votProviderYandex))
+	lively := buildVoiceTranslateCacheKeyWithProvider("file", "en", "ru", string(votProviderYandexLively))
+	if normal == lively {
+		t.Fatalf("normal and lively cache keys must differ: %q", normal)
+	}
+}
+
 func TestVoiceTranslateUserErrorMessageForVOTFailure(t *testing.T) {
 	msg := voiceTranslateUserErrorMessage(assertErr("vot-cli reported failure (Error: Возникла ошибка при переводе)"))
 	if !strings.Contains(msg, "VOT не смог обработать этот файл") {

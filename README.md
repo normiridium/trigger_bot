@@ -205,10 +205,12 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 
 ### Голосовой перевод (`/translate_voice`, `/translate_gpt`)
 - `/translate_voice` работает через VOT: reply-команда на `voice`, `audio`, `video` и часть media-сообщений.
+- В меню `/translate_voice` можно переключить обычную озвучку и Yandex «Живые голоса»; живые голоса доступны для `en -> ru` и требуют Go CLI `go-vot` и Yandex OAuth token.
 - `/translate_gpt` работает отдельным OpenAI-пайплайном: транскрибация, GPT-перевод, TTS-озвучка и тот же набор выдачи.
 - Оба режима умеют отдавать перевод текстом, аудио, субтитрами, аудиомиксом и видеомиксом.
 - Результаты кешируются в MongoDB и `VOICE_TRANSLATE_TMP_DIR`, чтобы повторные действия не гоняли один и тот же файл заново.
 - Для `/translate_voice` нужны share-ссылки (`VOICE_TRANSLATE_PUBLIC_BASE_URL` + корректный `WEB_STATIC_DIR`) и `VOT_CLI_BIN`/`VOICE_TRANSLATE_NODE_BIN`.
+- Go CLI для «Живых голосов» устанавливается отдельно: `GOBIN=$HOME/.local/lib/go-vot go install github.com/n0madic/go-vot/cmd/vot-cli@v0.0.0-20260617162333-168245aae7ec`; путь к бинарнику задаётся в `VOT_LIVELY_CLI_BIN`.
 - Для `/translate_gpt` нужен `OPENAI_API_KEY`; VOT и публичная share-ссылка в этом режиме не используются.
 
 ## ⚙️ Важные переменные окружения
@@ -240,6 +242,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `USER_GPT_TOKEN_LOW_WARNING_THRESHOLD` — остаток токенов, при пересечении которого отправляется системное предупреждение (`0` = авто: 10% лимита, минимум 1000).
 - `USER_DAILY_BOT_MESSAGES_LIMIT` — устаревший fallback: если `USER_GPT_TOKEN_LIMIT` не задан, пересчитывается в токены через `USER_GPT_TOKEN_LIMIT_LEGACY_MESSAGE_TOKENS`.
 - `GPT_IMAGE_CONTEXT_MAX_MB` — максимум размера картинки, которую можно приложить к GPT multimodal-контексту (`0` отключает лимит).
+- `GPT_MEDIA_GROUP_QUIET_MS` / `GPT_MEDIA_GROUP_MAX_WAIT_MS` — сколько ждать Telegram-альбом перед GPT-запросом; по умолчанию 900/2500 мс, чтобы передать все фотографии одной группой.
 - `GPT_REPLY_REACTION_CHANCE_PERCENT` — шанс реакции на GPT-ответ.
 - `GPT_EDIT_WAIT_SEC` / `GPT_EDIT_WAIT_MAX_SEC` — ожидание стабилизации edited messages перед ответом.
 - `GPT_HUMAN_PAUSE` и `GPT_HUMAN_PAUSE_*` — человекоподобная пауза перед GPT-ответом.
@@ -329,7 +332,9 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 ### Голосовая транскрибация и перевод
 - `VOICE_TRANSCRIPTION_ENABLED` — включает авто-транскрибацию voice-сообщений для чата и trigger matching.
 - `AUDIO_TRANSCRIPTION_MODEL` — модель для расшифровки аудио.
-- `VOICE_TRANSLATE_PROVIDER` — провайдер VOT-перевода для `/translate_voice`.
+- `VOICE_TRANSLATE_PROVIDER` — режим VOT по умолчанию: `yandex` или `yandex_lively`; пользователь может переключить его в меню `/translate_voice`.
+- `VOT_LIVELY_API_TOKEN` — Yandex OAuth token для режима «Живые голоса»; если не задан, используется уже настроенный `YA_MUSIC_TOKEN`.
+- `VOT_LIVELY_CLI_BIN` — путь к Go CLI `github.com/n0madic/go-vot/cmd/vot-cli`, используемому только для «Живых голосов».
 - `VOICE_TRANSLATE_SRCLANG` / `VOICE_TRANSLATE_RESLANG` — языки исходной речи и результата для VOT.
 - `VOICE_TRANSLATE_TMP_DIR` — директория временных и кеш-файлов voice translate. Если пусто, используется `TRIGGER_BOT_TMP_DIR/voice`.
 - `VOICE_TRANSLATE_CACHE_TTL_SEC` / `VOICE_TRANSLATE_TMP_MAX_AGE_SEC` — TTL кеша и очистки tmp.
@@ -340,7 +345,7 @@ test -s "$(awk -F= '/^VK_COOKIES_FILE=/{print $2}' .env)" && echo "VK cookies fi
 - `VOICE_TRANSLATE_MIX_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_TRANSLATED_VOLUME` — баланс оригинала и озвучки в микшированном переводе; дефолт `0.92` и `1.20`.
 - `VOICE_TRANSLATE_MIX_DUCK_THRESHOLD` / `VOICE_TRANSLATE_MIX_DUCK_RATIO` — насколько сильно оригинал приглушается, когда активна озвучка; дефолт `0.06` и `3`.
 - `VOICE_TRANSLATE_MIX_STATIC_ORIGINAL_VOLUME` / `VOICE_TRANSLATE_MIX_STATIC_TRANSLATED_VOLUME` — запасной баланс, если динамический ducking не сработал; дефолт `0.80` и `1.20`.
-- `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к VOT CLI и Node.js.
+- `VOT_CLI_BIN` / `VOICE_TRANSLATE_NODE_BIN` — пути к стабильному `vot-cli 1.4.x` и Node.js для обычной озвучки и субтитров.
 - `GPT_TRANSLATE_MODEL` — модель GPT-перевода для `/translate_gpt`; если пусто, используется `OPENAI_MODEL`, затем `gpt-4.1`.
 - `GPT_TRANSLATE_TRANSCRIBE_MODEL` — модель распознавания речи для `/translate_gpt`; если пусто, используется `AUDIO_TRANSCRIPTION_MODEL`, затем `whisper-1`.
 - `GPT_TRANSLATE_TTS_MODEL` / `GPT_TRANSLATE_TTS_VOICE` — модель и голос OpenAI TTS для `/translate_gpt`; дефолтный голос `marin`.

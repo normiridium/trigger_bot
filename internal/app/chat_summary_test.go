@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ type summaryTestService struct {
 	history chatclear.HistoryResult
 	err     error
 	calls   int
+	request chatclear.HistoryRequest
 }
 
 func (s *summaryTestService) Clear(context.Context, chatclear.Request) error { return nil }
@@ -26,8 +28,9 @@ func (s *summaryTestService) CompleteAuth(context.Context, chatclear.AuthComplet
 	return chatclear.AuthCompleteResult{}, nil
 }
 func (s *summaryTestService) Available(context.Context) bool { return true }
-func (s *summaryTestService) GetHistory(context.Context, chatclear.HistoryRequest) (chatclear.HistoryResult, error) {
+func (s *summaryTestService) GetHistory(_ context.Context, req chatclear.HistoryRequest) (chatclear.HistoryResult, error) {
 	s.calls++
+	s.request = req
 	return s.history, s.err
 }
 
@@ -44,20 +47,37 @@ func TestLoadSummaryMessagesPrefersService(t *testing.T) {
 	if source != "tg-ops-service" || len(messages) != 1 || messages[0].Text != "service" {
 		t.Fatalf("unexpected source/messages: source=%q messages=%+v", source, messages)
 	}
+	if service.request.Limit != 0 || service.request.SinceUnix != now.Add(-time.Hour).Unix() || service.request.UntilUnix != now.Unix() {
+		t.Fatalf("summary request must be date-bounded without message cap: %+v", service.request)
+	}
 }
 
-func TestLoadSummaryMessagesFallsBackToMemoryOnServiceError(t *testing.T) {
+func TestParseEthicsTarget(t *testing.T) {
+	replyTarget, err := parseEthicsTarget(&tgbotapi.Message{ReplyToMessage: &tgbotapi.Message{From: &tgbotapi.User{
+		ID: 42, UserName: "reply_user", FirstName: "Reply",
+	}}})
+	if err != nil || replyTarget.ID != 42 || replyTarget.Username != "reply_user" {
+		t.Fatalf("unexpected reply target: %+v err=%v", replyTarget, err)
+	}
+
+	usernameTarget, err := parseEthicsTarget(&tgbotapi.Message{
+		Text:     "/ethics @Example",
+		Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Offset: 0, Length: 7}},
+	})
+	if err != nil || usernameTarget.ID != 0 || usernameTarget.Username != "Example" {
+		t.Fatalf("unexpected username target: %+v err=%v", usernameTarget, err)
+	}
+}
+
+func TestLoadSummaryMessagesDoesNotHideServiceErrorWithMemoryFallback(t *testing.T) {
 	now := time.Now()
 	service := &summaryTestService{err: errors.New("service down")}
 	memory := newSummaryHistoryStore(1000)
 	memory.add(-1001, chatclear.HistoryMessage{ID: 8, Date: now.Unix(), Text: "memory"})
 
 	messages, source, err := loadSummaryMessages(service, memory, -1001, "", now.Add(-time.Hour), now)
-	if err != nil {
-		t.Fatalf("load summary messages: %v", err)
-	}
-	if source != "memory" || len(messages) != 1 || messages[0].Text != "memory" {
-		t.Fatalf("unexpected source/messages: source=%q messages=%+v", source, messages)
+	if err == nil || !strings.Contains(err.Error(), "service down") {
+		t.Fatalf("expected service error, got source=%q messages=%+v err=%v", source, messages, err)
 	}
 }
 
@@ -76,6 +96,16 @@ func TestSummaryHistoryLimitUpsertAndCommandFilter(t *testing.T) {
 	}
 	if messages[0].ID != 3 || messages[1].ID != 4 || messages[1].Text != "updated" {
 		t.Fatalf("unexpected messages: %+v", messages)
+	}
+}
+
+func TestFilterSummaryMessagesDoesNotTruncateDailyHistory(t *testing.T) {
+	messages := make([]chatclear.HistoryMessage, 1500)
+	for i := range messages {
+		messages[i] = chatclear.HistoryMessage{ID: i + 1, Text: fmt.Sprintf("message %d", i+1)}
+	}
+	if got := filterSummaryMessages(messages); len(got) != len(messages) {
+		t.Fatalf("daily history was truncated: got %d, want %d", len(got), len(messages))
 	}
 }
 
