@@ -731,7 +731,7 @@ func TestUserGPTTokenQuota(t *testing.T) {
 	winStart := time.Date(2026, time.April, 23, 12, 5, 0, 0, time.UTC) // 12:00..15:59 window
 	nextWin := time.Date(2026, time.April, 23, 16, 0, 1, 0, time.UTC)  // next 4h window
 
-	remaining, err := s.UserGPTTokensRemaining(userID, winStart, 1000)
+	remaining, err := s.UserGPTTokensRemaining(userID, winStart, 1000, "openai")
 	if err != nil {
 		t.Fatalf("initial remaining: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestUserGPTTokenQuota(t *testing.T) {
 		t.Fatalf("expected full initial token budget, got %d", remaining)
 	}
 
-	remaining, err = s.AddUserGPTTokens(userID, winStart, 300, 1000)
+	remaining, err = s.AddUserGPTTokens(userID, winStart, 300, 1000, "openai")
 	if err != nil {
 		t.Fatalf("first token add: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestUserGPTTokenQuota(t *testing.T) {
 		t.Fatalf("expected 700 tokens remaining, got %d", remaining)
 	}
 
-	remaining, err = s.AddUserGPTTokens(userID, winStart.Add(2*time.Hour), 800, 1000)
+	remaining, err = s.AddUserGPTTokens(userID, winStart.Add(2*time.Hour), 800, 1000, "openai")
 	if err != nil {
 		t.Fatalf("second token add: %v", err)
 	}
@@ -755,7 +755,7 @@ func TestUserGPTTokenQuota(t *testing.T) {
 		t.Fatalf("expected exhausted token budget, got %d", remaining)
 	}
 
-	remaining, err = s.UserGPTTokensRemaining(userID, winStart.Add(3*time.Hour), 1000)
+	remaining, err = s.UserGPTTokensRemaining(userID, winStart.Add(3*time.Hour), 1000, "openai")
 	if err != nil {
 		t.Fatalf("same window remaining: %v", err)
 	}
@@ -763,7 +763,23 @@ func TestUserGPTTokenQuota(t *testing.T) {
 		t.Fatalf("same 4h window must stay exhausted, got %d", remaining)
 	}
 
-	remaining, err = s.UserGPTTokensRemaining(userID, nextWin, 1000)
+	// The DeepSeek bucket must be counted independently of the OpenAI one.
+	remaining, err = s.UserGPTTokensRemaining(userID, winStart.Add(3*time.Hour), 10000, "deepseek")
+	if err != nil {
+		t.Fatalf("deepseek bucket remaining: %v", err)
+	}
+	if remaining != 10000 {
+		t.Fatalf("deepseek bucket must not share openai usage, got %d remaining", remaining)
+	}
+	remaining, err = s.AddUserGPTTokens(userID, winStart.Add(3*time.Hour), 2500, 10000, "deepseek")
+	if err != nil {
+		t.Fatalf("deepseek token add: %v", err)
+	}
+	if remaining != 7500 {
+		t.Fatalf("expected 7500 deepseek tokens remaining, got %d", remaining)
+	}
+
+	remaining, err = s.UserGPTTokensRemaining(userID, nextWin, 1000, "openai")
 	if err != nil {
 		t.Fatalf("next window remaining: %v", err)
 	}

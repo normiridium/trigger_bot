@@ -532,7 +532,17 @@ func (m *mongoBackend) ensureTriggerCollectionValidator(ctx context.Context) err
 	return nil
 }
 
-func (m *mongoBackend) userGPTTokensRemaining(userID int64, now time.Time, limit int) (int, error) {
+// gptQuotaBucketFilter builds the bucket filter for the per-user GPT quota.
+// The "openai" bucket also matches legacy documents created before the
+// provider split (they have no bucket field).
+func gptQuotaBucketFilter(bucket string) bson.M {
+	if bucket == "deepseek" {
+		return bson.M{"bucket": "deepseek"}
+	}
+	return bson.M{"bucket": bson.M{"$in": []interface{}{"openai", nil}}}
+}
+
+func (m *mongoBackend) userGPTTokensRemaining(userID int64, now time.Time, limit int, bucket string) (int, error) {
 	if userID == 0 || limit <= 0 {
 		return 0, nil
 	}
@@ -540,7 +550,11 @@ func (m *mongoBackend) userGPTTokensRemaining(userID int64, now time.Time, limit
 	defer cancel()
 	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
 	var doc mongoDailyUserQuotaDoc
-	err := m.quotas.FindOne(ctx, bson.M{"user_id": userID, "day_utc": window}).Decode(&doc)
+	filter := bson.M{"user_id": userID, "day_utc": window}
+	for k, v := range gptQuotaBucketFilter(bucket) {
+		filter[k] = v
+	}
+	err := m.quotas.FindOne(ctx, filter).Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return limit, nil
@@ -554,7 +568,7 @@ func (m *mongoBackend) userGPTTokensRemaining(userID int64, now time.Time, limit
 	return remaining, nil
 }
 
-func (m *mongoBackend) addUserGPTTokens(userID int64, now time.Time, tokens int, limit int) (int, error) {
+func (m *mongoBackend) addUserGPTTokens(userID int64, now time.Time, tokens int, limit int, bucket string) (int, error) {
 	if userID == 0 || tokens <= 0 {
 		return 0, nil
 	}
@@ -565,12 +579,16 @@ func (m *mongoBackend) addUserGPTTokens(userID int64, now time.Time, tokens int,
 	defer cancel()
 	window := quotaWindowKeyUTC(now, gptUserQuotaWindow)
 	nowUnix := now.Unix()
+	filter := bson.M{"user_id": userID, "day_utc": window}
+	for k, v := range gptQuotaBucketFilter(bucket) {
+		filter[k] = v
+	}
 	_, err := m.quotas.UpdateOne(
 		ctx,
-		bson.M{"user_id": userID, "day_utc": window},
+		filter,
 		bson.M{
 			"$inc": bson.M{"tokens": tokens},
-			"$set": bson.M{"updated_at": nowUnix},
+			"$set": bson.M{"updated_at": nowUnix, "bucket": bucket},
 			"$setOnInsert": bson.M{
 				"user_id": userID,
 				"day_utc": window,
@@ -582,7 +600,7 @@ func (m *mongoBackend) addUserGPTTokens(userID int64, now time.Time, tokens int,
 	if err != nil {
 		return 0, err
 	}
-	return m.userGPTTokensRemaining(userID, now, limit)
+	return m.userGPTTokensRemaining(userID, now, limit, bucket)
 }
 
 func userGPTTokenLimitLowThreshold(limit int) int {

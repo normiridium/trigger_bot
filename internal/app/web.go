@@ -1431,6 +1431,7 @@ func settingsSchema() []settingField {
 		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
 		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
 		{Key: "USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов на пользователя за 4 часа (0 = выкл)", Type: "int", Description: "30000"},
+		{Key: "DEEPSEEK_USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов DeepSeek на пользователя за 4 часа (пусто = 10× лимита OpenAI, 0 = выкл)", Type: "int", Description: "200000"},
 		{Key: "USER_GPT_TOKEN_LOW_WARNING_THRESHOLD", Label: "Предупреждать при остатке GPT-токенов", Type: "int", Description: "0 = авто"},
 		{Key: "GPT_IMAGE_CONTEXT_MAX_MB", Label: "GPT: максимум картинки в контексте (МБ)", Type: "int", Description: "5"},
 		{Key: "DEBUG_TRIGGER_LOG", Label: "Лог триггеров (debug)", Type: "bool", Description: "false"},

@@ -390,13 +390,19 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка запроса к ChatGPT", err)
 		return
 	}
-	if task.RecordGPTTokens != nil && result.Usage.TotalTokens > 0 && task.Msg.From != nil {
-		remaining, crossedLow, recErr := task.RecordGPTTokens(task.Msg.From.ID, result.Usage.TotalTokens, time.Now())
+	recordFn := task.RecordGPTTokens
+	recordProvider := "openai"
+	if result.UsedDeepSeek && task.RecordDeepSeekGPTTokens != nil {
+		recordFn = task.RecordDeepSeekGPTTokens
+		recordProvider = "deepseek"
+	}
+	if recordFn != nil && result.Usage.TotalTokens > 0 && task.Msg.From != nil {
+		remaining, crossedLow, recErr := recordFn(task.Msg.From.ID, result.Usage.TotalTokens, time.Now())
 		if recErr != nil {
 			log.Printf("gpt user-token-limit record failed user=%d tokens=%d: %v", task.Msg.From.ID, result.Usage.TotalTokens, recErr)
 		} else {
 			if debugGPTLogEnabled || debugTriggerLogEnabled {
-				log.Printf("gpt user-token-limit user=%d spent=%d remaining=%d", task.Msg.From.ID, result.Usage.TotalTokens, remaining)
+				log.Printf("gpt user-token-limit user=%d spent=%d remaining=%d provider=%s", task.Msg.From.ID, result.Usage.TotalTokens, remaining, recordProvider)
 			}
 			if crossedLow {
 				sendUserLimitLowWarning(task.Bot, task.Msg, task.UserLimitLowTrigger, task.TemplateLookup)
@@ -470,6 +476,22 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 			sent = true
 			sendMode = "svg_png"
 		}
+	} else if abcSource, ok := extractFirstABCFromGPTResponse(out); ok {
+		oggPath, err := renderGPTABCResponseToAudio(abcSource)
+		if err != nil {
+			log.Printf("gpt abc render failed trigger=%d chat=%d msg=%d err=%v abc=%q",
+				task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, err, clipText(abcSource, 600))
+			reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка рендера музыки", err)
+			return
+		}
+		if err := sendVoiceMessage(sendCtx, oggPath, ""); err != nil {
+			log.Printf("gpt abc voice send failed trigger=%d chat=%d msg=%d err=%v",
+				task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, err)
+			reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка отправки музыки", err)
+			return
+		}
+		sent = true
+		sendMode = "abc_audio"
 	} else if hasRichArticle {
 		richOut := responseToRichMarkdownArticle(out)
 		if debugGPTLogEnabled {
@@ -2036,6 +2058,15 @@ func Run() {
 	}
 	userGPTTokenLimit := userGPTTokenLimitFromEnv()
 	userGPTTokenLowThreshold := userGPTTokenLimitLowThreshold(userGPTTokenLimit)
+	deepseekUserGPTTokenLimit := envInt("DEEPSEEK_USER_GPT_TOKEN_LIMIT", -1)
+	if deepseekUserGPTTokenLimit < 0 {
+		if userGPTTokenLimit > 0 {
+			deepseekUserGPTTokenLimit = userGPTTokenLimit * 10
+		} else {
+			deepseekUserGPTTokenLimit = 0
+		}
+	}
+	deepseekUserGPTTokenLowThreshold := userGPTTokenLimitLowThreshold(deepseekUserGPTTokenLimit)
 	if userGPTTokenLimit > 0 {
 		log.Printf("per-user GPT token limit enabled: %d tokens per 4h window (UTC), low warning threshold=%d", userGPTTokenLimit, userGPTTokenLowThreshold)
 		if ownerIDs := configuredBotOwnerIDsForLog(); ownerIDs != "" {
@@ -2043,6 +2074,9 @@ func Run() {
 		}
 	} else {
 		log.Printf("per-user GPT token limit disabled")
+	}
+	if deepseekUserGPTTokenLimit > 0 {
+		log.Printf("per-user DeepSeek GPT token limit enabled: %d tokens per 4h window (UTC), low warning threshold=%d", deepseekUserGPTTokenLimit, deepseekUserGPTTokenLowThreshold)
 	}
 	log.Printf("Bot started as @%s", bot.Self.UserName)
 
@@ -2085,7 +2119,7 @@ func Run() {
 		if userGPTTokenLimit <= 0 || userID == 0 || !userGPTTokenLimitApplies(userID) {
 			return gptLimitTemplateInfo{}
 		}
-		remaining, err := store.UserGPTTokensRemaining(userID, time.Now(), userGPTTokenLimit)
+		remaining, err := store.UserGPTTokensRemaining(userID, time.Now(), userGPTTokenLimit, "openai")
 		if err != nil {
 			log.Printf("gpt 4h limit template tags failed user=%d chat=%d: %v", userID, chatID, err)
 			return gptLimitTemplateInfo{
@@ -2204,15 +2238,30 @@ func Run() {
 				if userGPTTokenLimit <= 0 || userID == 0 || tokens <= 0 || !userGPTTokenLimitApplies(userID) {
 					return 0, false, nil
 				}
-				before, err := store.UserGPTTokensRemaining(userID, now, userGPTTokenLimit)
+				before, err := store.UserGPTTokensRemaining(userID, now, userGPTTokenLimit, "openai")
 				if err != nil {
 					return 0, false, err
 				}
-				remaining, err := store.AddUserGPTTokens(userID, now, tokens, userGPTTokenLimit)
+				remaining, err := store.AddUserGPTTokens(userID, now, tokens, userGPTTokenLimit, "openai")
 				if err != nil {
 					return 0, false, err
 				}
 				crossedLow := userGPTTokenLowThreshold > 0 && before > userGPTTokenLowThreshold && remaining <= userGPTTokenLowThreshold
+				return remaining, crossedLow, nil
+			},
+			RecordDeepSeekGPTTokens: func(userID int64, tokens int, now time.Time) (int, bool, error) {
+				if deepseekUserGPTTokenLimit <= 0 || userID == 0 || tokens <= 0 || !userGPTTokenLimitApplies(userID) {
+					return 0, false, nil
+				}
+				before, err := store.UserGPTTokensRemaining(userID, now, deepseekUserGPTTokenLimit, "deepseek")
+				if err != nil {
+					return 0, false, err
+				}
+				remaining, err := store.AddUserGPTTokens(userID, now, tokens, deepseekUserGPTTokenLimit, "deepseek")
+				if err != nil {
+					return 0, false, err
+				}
+				crossedLow := deepseekUserGPTTokenLowThreshold > 0 && before > deepseekUserGPTTokenLowThreshold && remaining <= deepseekUserGPTTokenLowThreshold
 				return remaining, crossedLow, nil
 			},
 		},
@@ -2936,22 +2985,34 @@ func Run() {
 		idleTracker.Seen(msg.Chat.ID, now)
 		var quotaLowWarningTrigger *Trigger
 		checkGPTTokenQuota := func() bool {
-			if userGPTTokenLimit <= 0 || msg.From == nil || msg.From.ID == 0 {
+			if msg.From == nil || msg.From.ID == 0 || !userGPTTokenLimitApplies(msg.From.ID) {
 				return true
 			}
-			if !userGPTTokenLimitApplies(msg.From.ID) {
+			if userGPTTokenLimit <= 0 && deepseekUserGPTTokenLimit <= 0 {
 				return true
 			}
-			remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit)
-			if err != nil {
-				log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
-				return true
+			if userGPTTokenLimit > 0 {
+				remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit, "openai")
+				if err != nil {
+					log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
+					return true
+				}
+				if remaining > 0 {
+					return true
+				}
 			}
-			if remaining > 0 {
-				return true
+			if deepseekUserGPTTokenLimit > 0 {
+				remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, deepseekUserGPTTokenLimit, "deepseek")
+				if err != nil {
+					log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
+					return true
+				}
+				if remaining > 0 {
+					return true
+				}
 			}
 			if debugTriggerLogEnabled {
-				log.Printf("gpt user-token-limit reached user=%d chat=%d limit=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit)
+				log.Printf("gpt user-token-limit reached user=%d chat=%d openai=%d/4h deepseek=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit, deepseekUserGPTTokenLimit)
 			}
 			return false
 		}
@@ -3069,23 +3130,24 @@ func Run() {
 }
 
 type triggerActionDeps struct {
-	Bot               *tgbotapi.BotAPI
-	Store             TriggerStorePort
-	IdleTracker       *trigger.IdleTracker
-	Portraits         *participantPortraitManager
-	SpotifyMusic      SpotifyMusicPort
-	SpotifyDownloader SpotifyDownloadPort
-	SpotifyQueue      *spotifyPickQueue
-	YandexDownloader  YandexMusicDownloadPort
-	YandexQueue       *yandexMusicQueue
-	VKDownloader      VKMusicDownloadPort
-	VKQueue           *vkMusicQueue
-	SoundCloudSearch  SoundCloudSearchPort
-	MediaDownloader   MediaDownloadPort
-	MediaQueue        *mediaDownloadQueue
-	MediaInteractive  bool
-	TemplateLookup    func(string) string
-	RecordGPTTokens   func(userID int64, tokens int, now time.Time) (remaining int, crossedLow bool, err error)
+	Bot                     *tgbotapi.BotAPI
+	Store                   TriggerStorePort
+	IdleTracker             *trigger.IdleTracker
+	Portraits               *participantPortraitManager
+	SpotifyMusic            SpotifyMusicPort
+	SpotifyDownloader       SpotifyDownloadPort
+	SpotifyQueue            *spotifyPickQueue
+	YandexDownloader        YandexMusicDownloadPort
+	YandexQueue             *yandexMusicQueue
+	VKDownloader            VKMusicDownloadPort
+	VKQueue                 *vkMusicQueue
+	SoundCloudSearch        SoundCloudSearchPort
+	MediaDownloader         MediaDownloadPort
+	MediaQueue              *mediaDownloadQueue
+	MediaInteractive        bool
+	TemplateLookup          func(string) string
+	RecordGPTTokens         func(userID int64, tokens int, now time.Time) (remaining int, crossedLow bool, err error)
+	RecordDeepSeekGPTTokens func(userID int64, tokens int, now time.Time) (remaining int, crossedLow bool, err error)
 }
 
 type triggerHandlerDeps struct {
@@ -3856,14 +3918,15 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			}
 		}
 		executeGPTPromptTask(gpt.PromptTask{
-			Bot:                 deps.Bot,
-			Trigger:             trCopy,
-			QuotaLowTrigger:     openAIQuotaLowTrigger,
-			UserLimitLowTrigger: userLimitLowTrigger,
-			Msg:                 msg,
-			TriggeredAt:         triggeredAt,
-			TemplateLookup:      deps.TemplateLookup,
-			RecordGPTTokens:     deps.RecordGPTTokens,
+			Bot:                     deps.Bot,
+			Trigger:                 trCopy,
+			QuotaLowTrigger:         openAIQuotaLowTrigger,
+			UserLimitLowTrigger:     userLimitLowTrigger,
+			Msg:                     msg,
+			TriggeredAt:             triggeredAt,
+			TemplateLookup:          deps.TemplateLookup,
+			RecordGPTTokens:         deps.RecordGPTTokens,
+			RecordDeepSeekGPTTokens: deps.RecordDeepSeekGPTTokens,
 			IdleMarkActivity: func(chatID int64, now time.Time) {
 				if deps.IdleTracker != nil {
 					deps.IdleTracker.MarkActivity(chatID, now)

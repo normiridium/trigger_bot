@@ -556,8 +556,9 @@ type openAITokenUsage struct {
 }
 
 type chatGPTReplyResult struct {
-	Text  string
-	Usage openAITokenUsage
+	Text         string
+	Usage        openAITokenUsage
+	UsedDeepSeek bool
 }
 
 func openAIChatTimeout() time.Duration {
@@ -569,6 +570,118 @@ func openAIChatTimeout() time.Duration {
 		sec = 300
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// --- DeepSeek fallback: used when OpenAI responds with insufficient_quota. ---
+
+func deepseekAPIKey() string { return strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")) }
+
+func deepseekChatEndpoint() string {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL")), "/")
+	if base == "" {
+		base = "https://api.deepseek.com"
+	}
+	if strings.HasSuffix(base, "/v1") {
+		return base + "/chat/completions"
+	}
+	return base + "/v1/chat/completions"
+}
+
+func deepseekModel() string {
+	m := strings.TrimSpace(os.Getenv("DEEPSEEK_MODEL"))
+	if m == "" {
+		m = "deepseek-chat"
+	}
+	return m
+}
+
+func isInsufficientQuotaResponse(status int, body []byte) bool {
+	if status != http.StatusTooManyRequests {
+		return false
+	}
+	b := strings.ToLower(string(body))
+	return strings.Contains(b, "insufficient_quota") || strings.Contains(b, "insufficient balance")
+}
+
+func postChatCompletion(apiKey, endpoint string, payload map[string]interface{}, timeout time.Duration) (int, []byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, bodyBytes, nil
+}
+
+// deepseekPayloadFromOpenAI returns a fresh DeepSeek-ready copy of an OpenAI
+// chat payload: the model is swapped and image parts are dropped (the DeepSeek
+// chat API is text-only).
+func deepseekPayloadFromOpenAI(payload map[string]interface{}) map[string]interface{} {
+	var cp map[string]interface{}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	if err := json.Unmarshal(raw, &cp); err != nil {
+		return payload
+	}
+	cp["model"] = deepseekModel()
+	if msgs, ok := cp["messages"].([]interface{}); ok {
+		for _, m := range msgs {
+			mm, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			content, ok := mm["content"].([]interface{})
+			if !ok {
+				continue
+			}
+			textParts := make([]string, 0, len(content))
+			for _, part := range content {
+				pm, ok := part.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if t, _ := pm["type"].(string); t == "text" {
+					if s, _ := pm["text"].(string); s != "" {
+						textParts = append(textParts, s)
+					}
+				}
+			}
+			mm["content"] = strings.Join(textParts, "\n")
+		}
+		cp["messages"] = msgs
+	}
+	return cp
+}
+
+func runDeepSeekChatCompletion(payload map[string]interface{}, timeout time.Duration) ([]byte, error) {
+	key := deepseekAPIKey()
+	if key == "" {
+		return nil, errors.New("DEEPSEEK_API_KEY is empty")
+	}
+	status, body, err := postChatCompletion(key, deepseekChatEndpoint(), deepseekPayloadFromOpenAI(payload), timeout)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("deepseek status=%d body=%s", status, clipText(sanitizeSecretText(string(body)), 600))
+	}
+	return body, nil
 }
 
 func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTReplyResult, error) {
@@ -623,30 +736,27 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 			userMessage,
 		},
 	}
-	body, _ := json.Marshal(payload)
-
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	timeout := openAIChatTimeout()
+	status, bodyBytes, err := postChatCompletion(apiKey, "https://api.openai.com/v1/chat/completions", payload, timeout)
 	if err != nil {
 		return chatGPTReplyResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: openAIChatTimeout()}
-	resp, err := client.Do(req)
-	if err != nil {
-		return chatGPTReplyResult{}, err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return chatGPTReplyResult{}, err
-	}
+	usedDeepSeek := false
 	if debugGPTLogEnabled {
-		log.Printf("gpt response status=%d body=%q", resp.StatusCode, clipLogText(sanitizeSecretText(string(bodyBytes)), 200))
+		log.Printf("gpt response status=%d body=%q", status, clipLogText(sanitizeSecretText(string(bodyBytes)), 200))
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return chatGPTReplyResult{}, fmt.Errorf("openai status=%d body=%s", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600))
+	if status < 200 || status >= 300 {
+		if isInsufficientQuotaResponse(status, bodyBytes) {
+			if dsBody, dsErr := runDeepSeekChatCompletion(payload, timeout); dsErr == nil {
+				log.Printf("openai insufficient quota: switched to deepseek model=%s", deepseekModel())
+				bodyBytes = dsBody
+				usedDeepSeek = true
+			} else {
+				return chatGPTReplyResult{}, fmt.Errorf("openai status=%d body=%s (deepseek fallback failed: %v)", status, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
+			}
+		} else {
+			return chatGPTReplyResult{}, fmt.Errorf("openai status=%d body=%s", status, clipText(sanitizeSecretText(string(bodyBytes)), 600))
+		}
 	}
 
 	var result struct {
@@ -684,7 +794,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 	if debugGPTLogEnabled {
 		log.Printf("gpt usage prompt_tokens=%d completion_tokens=%d total_tokens=%d", usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
 	}
-	return chatGPTReplyResult{Text: out, Usage: usage}, nil
+	return chatGPTReplyResult{Text: out, Usage: usage, UsedDeepSeek: usedDeepSeek}, nil
 }
 
 func estimateTextTokens(s string) int {
@@ -801,7 +911,16 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai portrait status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
+			if dsBody, dsErr := runDeepSeekChatCompletion(payload, 30*time.Second); dsErr == nil {
+				log.Printf("openai insufficient quota: portrait switched to deepseek model=%s", deepseekModel())
+				bodyBytes = dsBody
+			} else {
+				return "", fmt.Errorf("openai portrait status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
+			}
+		} else {
+			return "", fmt.Errorf("openai portrait status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		}
 	}
 	var result struct {
 		Choices []struct {
@@ -890,7 +1009,16 @@ func generateChatSummary(promptTemplate string, messages []summaryPromptMessage)
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai summary status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
+			if dsBody, dsErr := runDeepSeekChatCompletion(payload, time.Duration(timeoutSec)*time.Second); dsErr == nil {
+				log.Printf("openai insufficient quota: summary switched to deepseek model=%s", deepseekModel())
+				bodyBytes = dsBody
+			} else {
+				return "", fmt.Errorf("openai summary status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
+			}
+		} else {
+			return "", fmt.Errorf("openai summary status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		}
 	}
 	var result struct {
 		Choices []struct {
@@ -1033,7 +1161,16 @@ func chooseImageSizeWithChatGPT(apiKey, prompt string) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("orientation pick status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
+			if dsBody, dsErr := runDeepSeekChatCompletion(payload, 20*time.Second); dsErr == nil {
+				log.Printf("openai insufficient quota: orientation pick switched to deepseek model=%s", deepseekModel())
+				bodyBytes = dsBody
+			} else {
+				return "", fmt.Errorf("orientation pick status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
+			}
+		} else {
+			return "", fmt.Errorf("orientation pick status=%d body=%s", resp.StatusCode, clipText(string(bodyBytes), 600))
+		}
 	}
 	var result struct {
 		Choices []struct {
