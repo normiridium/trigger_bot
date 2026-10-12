@@ -1986,6 +1986,8 @@ type voiceTranslateMixProfile struct {
 	TranslatedVolume       float64
 	DuckThreshold          float64
 	DuckRatio              float64
+	// Deprecated: static mixing is retained only as a temporary compatibility
+	// retry while the VOT-style sidechain mixer is verified in production.
 	StaticOriginalVolume   float64
 	StaticTranslatedVolume float64
 }
@@ -2077,7 +2079,7 @@ func mixTranslatedAudioWithSourceProfile(sourcePath, translatedMP3Path string, h
 			mixWavPath,
 		)
 		if out, err := mixCmd.CombinedOutput(); err != nil {
-			// Fallback to static mix if sidechain filter is unsupported on this input.
+			// Deprecated: legacy static mix retained temporarily for incompatible inputs.
 			mixCmd = exec.Command("ffmpeg",
 				"-hide_banner",
 				"-loglevel", "error",
@@ -2126,6 +2128,7 @@ func mixTranslatedAudioWithSourceProfile(sourcePath, translatedMP3Path string, h
 		outPath,
 	)
 	if out, err := mixCmd.CombinedOutput(); err != nil {
+		// Deprecated: legacy static mix retained temporarily for incompatible inputs.
 		mixCmd = exec.Command("ffmpeg",
 			"-hide_banner",
 			"-loglevel", "error",
