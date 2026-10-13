@@ -43,7 +43,26 @@ func TestDeepseekChatEndpoint(t *testing.T) {
 	}
 }
 
+func TestDeepseekEffort(t *testing.T) {
+	t.Setenv("DEEPSEEK_EFFORT", "")
+	if got := deepseekEffort(); got != "max" {
+		t.Fatalf("default effort must be max, got %q", got)
+	}
+	t.Setenv("DEEPSEEK_EFFORT", "high")
+	if got := deepseekEffort(); got != "high" {
+		t.Fatalf("explicit effort, got %q", got)
+	}
+	t.Setenv("DEEPSEEK_EFFORT", "weird")
+	if got := deepseekEffort(); got != "max" {
+		t.Fatalf("invalid effort must fall back to max, got %q", got)
+	}
+}
+
 func TestDeepseekPayloadFromOpenAI(t *testing.T) {
+	t.Setenv("DEEPSEEK_MODEL", "")
+	t.Setenv("DEEPSEEK_MODEL_MULTIMODAL", "")
+	t.Setenv("DEEPSEEK_EFFORT", "")
+
 	orig := map[string]interface{}{
 		"model": "gpt-4.1",
 		"messages": []map[string]interface{}{
@@ -58,27 +77,50 @@ func TestDeepseekPayloadFromOpenAI(t *testing.T) {
 			{"role": "system", "content": "ты бот"},
 		},
 	}
-	t.Setenv("DEEPSEEK_MODEL", "deepseek-chat")
 	cp := deepseekPayloadFromOpenAI(orig)
 
 	if orig["model"] != "gpt-4.1" {
 		t.Fatalf("original payload mutated: %v", orig["model"])
 	}
-	if cp["model"] != "deepseek-chat" {
-		t.Fatalf("model not swapped: %v", cp["model"])
+	// With images -> multimodal model (flash), images preserved.
+	if cp["model"] != "deepseek-flash" {
+		t.Fatalf("image payload must route to flash, got %v", cp["model"])
+	}
+	if cp["effort"] != "max" {
+		t.Fatalf("expected effort=max, got %v", cp["effort"])
 	}
 	msgs, ok := cp["messages"].([]interface{})
 	if !ok || len(msgs) != 2 {
 		t.Fatalf("unexpected messages: %#v", cp["messages"])
 	}
 	first := msgs[0].(map[string]interface{})
-	content, ok := first["content"].(string)
+	content, ok := first["content"].([]interface{})
 	if !ok {
-		t.Fatalf("content should be a string after strip, got %T", first["content"])
+		t.Fatalf("content should stay an array (images passed through), got %T", first["content"])
 	}
-	if content != "привет\nчто на картинке?" {
-		t.Fatalf("unexpected stripped content: %q", content)
+	if len(content) != 3 {
+		t.Fatalf("expected 3 content parts, got %d", len(content))
 	}
+	img, ok := content[1].(map[string]interface{})
+	if !ok || img["type"] != "image_url" {
+		t.Fatalf("image part lost: %#v", img)
+	}
+
+	// Text-only payload -> text model (v4-pro).
+	textPayload := map[string]interface{}{
+		"model": "gpt-4.1",
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": "привет, как дела?"},
+		},
+	}
+	cp2 := deepseekPayloadFromOpenAI(textPayload)
+	if cp2["model"] != "deepseek-v4-pro" {
+		t.Fatalf("text payload must route to v4-pro, got %v", cp2["model"])
+	}
+	if cp2["effort"] != "max" {
+		t.Fatalf("expected effort=max, got %v", cp2["effort"])
+	}
+
 	if _, err := json.Marshal(cp); err != nil {
 		t.Fatalf("cp must marshal: %v", err)
 	}

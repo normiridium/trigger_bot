@@ -587,12 +587,57 @@ func deepseekChatEndpoint() string {
 	return base + "/v1/chat/completions"
 }
 
-func deepseekModel() string {
+func deepseekTextModel() string {
 	m := strings.TrimSpace(os.Getenv("DEEPSEEK_MODEL"))
 	if m == "" {
-		m = "deepseek-chat"
+		m = "deepseek-v4-pro"
 	}
 	return m
+}
+
+func deepseekMultimodalModel() string {
+	m := strings.TrimSpace(os.Getenv("DEEPSEEK_MODEL_MULTIMODAL"))
+	if m == "" {
+		m = "deepseek-flash"
+	}
+	return m
+}
+
+func deepseekEffort() string {
+	e := strings.ToLower(strings.TrimSpace(os.Getenv("DEEPSEEK_EFFORT")))
+	switch e {
+	case "low", "high", "max":
+		return e
+	default:
+		return "max"
+	}
+}
+
+func chatPayloadHasImages(payload map[string]interface{}) bool {
+	msgs, ok := payload["messages"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, m := range msgs {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := mm["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			pm, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if t, _ := pm["type"].(string); t == "image_url" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isInsufficientQuotaResponse(status int, body []byte) bool {
@@ -628,8 +673,10 @@ func postChatCompletion(apiKey, endpoint string, payload map[string]interface{},
 }
 
 // deepseekPayloadFromOpenAI returns a fresh DeepSeek-ready copy of an OpenAI
-// chat payload: the model is swapped and image parts are dropped (the DeepSeek
-// chat API is text-only).
+// chat payload. Model routing is hybrid: text-only requests go to
+// DEEPSEEK_MODEL (default deepseek-v4-pro), requests with images go to
+// DEEPSEEK_MODEL_MULTIMODAL (default deepseek-flash). The effort level is
+// controlled by DEEPSEEK_EFFORT (low/high/max, default max).
 func deepseekPayloadFromOpenAI(payload map[string]interface{}) map[string]interface{} {
 	var cp map[string]interface{}
 	raw, err := json.Marshal(payload)
@@ -639,33 +686,12 @@ func deepseekPayloadFromOpenAI(payload map[string]interface{}) map[string]interf
 	if err := json.Unmarshal(raw, &cp); err != nil {
 		return payload
 	}
-	cp["model"] = deepseekModel()
-	if msgs, ok := cp["messages"].([]interface{}); ok {
-		for _, m := range msgs {
-			mm, ok := m.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			content, ok := mm["content"].([]interface{})
-			if !ok {
-				continue
-			}
-			textParts := make([]string, 0, len(content))
-			for _, part := range content {
-				pm, ok := part.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if t, _ := pm["type"].(string); t == "text" {
-					if s, _ := pm["text"].(string); s != "" {
-						textParts = append(textParts, s)
-					}
-				}
-			}
-			mm["content"] = strings.Join(textParts, "\n")
-		}
-		cp["messages"] = msgs
+	model := deepseekTextModel()
+	if chatPayloadHasImages(cp) {
+		model = deepseekMultimodalModel()
 	}
+	cp["model"] = model
+	cp["effort"] = deepseekEffort()
 	return cp
 }
 
@@ -674,7 +700,9 @@ func runDeepSeekChatCompletion(payload map[string]interface{}, timeout time.Dura
 	if key == "" {
 		return nil, errors.New("DEEPSEEK_API_KEY is empty")
 	}
-	status, body, err := postChatCompletion(key, deepseekChatEndpoint(), deepseekPayloadFromOpenAI(payload), timeout)
+	dsPayload := deepseekPayloadFromOpenAI(payload)
+	log.Printf("deepseek fallback model=%v effort=%v", dsPayload["model"], dsPayload["effort"])
+	status, body, err := postChatCompletion(key, deepseekChatEndpoint(), dsPayload, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -748,7 +776,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 	if status < 200 || status >= 300 {
 		if isInsufficientQuotaResponse(status, bodyBytes) {
 			if dsBody, dsErr := runDeepSeekChatCompletion(payload, timeout); dsErr == nil {
-				log.Printf("openai insufficient quota: switched to deepseek model=%s", deepseekModel())
+				log.Printf("openai insufficient quota: switched to deepseek")
 				bodyBytes = dsBody
 				usedDeepSeek = true
 			} else {
@@ -913,7 +941,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
 			if dsBody, dsErr := runDeepSeekChatCompletion(payload, 30*time.Second); dsErr == nil {
-				log.Printf("openai insufficient quota: portrait switched to deepseek model=%s", deepseekModel())
+				log.Printf("openai insufficient quota: portrait switched to deepseek")
 				bodyBytes = dsBody
 			} else {
 				return "", fmt.Errorf("openai portrait status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
@@ -1011,7 +1039,7 @@ func generateChatSummary(promptTemplate string, messages []summaryPromptMessage)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
 			if dsBody, dsErr := runDeepSeekChatCompletion(payload, time.Duration(timeoutSec)*time.Second); dsErr == nil {
-				log.Printf("openai insufficient quota: summary switched to deepseek model=%s", deepseekModel())
+				log.Printf("openai insufficient quota: summary switched to deepseek")
 				bodyBytes = dsBody
 			} else {
 				return "", fmt.Errorf("openai summary status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)
@@ -1163,7 +1191,7 @@ func chooseImageSizeWithChatGPT(apiKey, prompt string) (string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if isInsufficientQuotaResponse(resp.StatusCode, bodyBytes) {
 			if dsBody, dsErr := runDeepSeekChatCompletion(payload, 20*time.Second); dsErr == nil {
-				log.Printf("openai insufficient quota: orientation pick switched to deepseek model=%s", deepseekModel())
+				log.Printf("openai insufficient quota: orientation pick switched to deepseek")
 				bodyBytes = dsBody
 			} else {
 				return "", fmt.Errorf("orientation pick status=%d body=%s (deepseek fallback failed: %v)", resp.StatusCode, clipText(sanitizeSecretText(string(bodyBytes)), 600), dsErr)

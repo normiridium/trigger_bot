@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,12 +132,19 @@ func renderGPTABCResponseToAudio(abcSource string) (string, error) {
 		return "", errors.New("timidity produced no audio")
 	}
 
-	// Step 3: WAV -> OGG/Opus voice note, capped at 120 seconds.
+	// Step 3: WAV -> OGG/Opus voice note, capped at GPT_ABC_MAX_AUDIO_SEC.
+	maxAudioSec := envInt("GPT_ABC_MAX_AUDIO_SEC", 300)
+	if maxAudioSec < 10 {
+		maxAudioSec = 10
+	}
+	if maxAudioSec > 900 {
+		maxAudioSec = 900
+	}
 	oggPath := filepath.Join(workDir, "out.ogg")
 	cmd3 := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-i", wavPath,
-		"-t", "120",
+		"-t", strconv.Itoa(maxAudioSec),
 		"-c:a", "libopus", "-b:a", "64k", "-ac", "1",
 		oggPath,
 	)
