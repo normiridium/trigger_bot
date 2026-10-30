@@ -986,7 +986,7 @@ func sendInstagramPhotoAlbum(ctx context.Context, sendCtx sendContext, dl MediaD
 		title = strings.TrimSpace(rawURL)
 	}
 	if envInt("MEDIA_RICH_CAROUSEL", 1) == 1 {
-		err := sendRichPhotoCarousel(sendCtx, album.Paths, buildRichCarouselCaption(len(album.Paths), title, album.SourceURL))
+		err := sendRichPhotoCarousel(sendCtx, album.Paths, buildRichCarouselCaption(len(album.Paths), title, album.SourceURL, album.Service))
 		if err == nil {
 			return true, nil
 		}

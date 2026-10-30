@@ -1252,24 +1252,25 @@ func buildMediaAlbumCaption(count int, title, sourceURL string, service mediadl.
 	return head + "\n" + stats
 }
 
-func buildRichCarouselCaption(count int, title, sourceURL string) string {
+func buildRichCarouselCaption(count int, title, sourceURL string, service mediadl.Service) string {
 	title = strings.TrimSpace(title)
 	sourceURL = strings.TrimSpace(sourceURL)
 	if count < 1 {
 		count = 1
 	}
+	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
 	stats := fmt.Sprintf("%d фото", count)
 	head := html.EscapeString(title)
 	if sourceURL != "" {
 		if head == "" {
-			return buildSourceLinkHTML(sourceURL, "ссылка") + " · " + stats
+			return emoji + " " + buildSourceLinkHTML(sourceURL, "ссылка") + " · " + stats
 		}
-		return `<a href="` + html.EscapeString(sourceURL) + `">` + head + `</a> · ` + stats
+		head = `<a href="` + html.EscapeString(sourceURL) + `">` + head + `</a>`
 	}
 	if head == "" {
-		return stats
+		return emoji + " " + stats
 	}
-	return head + " · " + stats
+	return emoji + " " + head + " · " + stats
 }
 
 func buildSourceLinkHTML(rawURL, label string) string {
