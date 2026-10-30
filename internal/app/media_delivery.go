@@ -891,6 +891,90 @@ func sendMediaGroupWithFloodRetry(ctx sendContext, cfg tgbotapi.MediaGroupConfig
 	return nil, lastErr
 }
 
+// sendRichPhotoCarousel posts photos as one swipeable Telegram carousel: a rich
+// message with a single <tg-slideshow> block (Bot API sendRichMessage).
+func sendRichPhotoCarousel(ctx sendContext, filePaths []string, caption string) error {
+	paths := make([]string, 0, len(filePaths))
+	for _, p := range filePaths {
+		if v := strings.TrimSpace(p); v != "" {
+			paths = append(paths, v)
+		}
+	}
+	if ctx.Bot == nil || ctx.ChatID == 0 {
+		return errors.New("invalid rich carousel params")
+	}
+	if len(paths) < 2 {
+		return errors.New("rich carousel needs at least two photos")
+	}
+
+	media := make([]tgbotapi.InputRichMessageMedia, 0, len(paths))
+	var page strings.Builder
+	page.WriteString("<tg-slideshow>")
+	for i, path := range paths {
+		if err := ensureTelegramUploadLimit(path); err != nil {
+			return err
+		}
+		id := fmt.Sprintf("p%d", i)
+		media = append(media, tgbotapi.NewInputRichMessageMediaPhoto(id, tgbotapi.FilePath(path)))
+		page.WriteString(`<img src="tg://photo?id=` + id + `"/>`)
+	}
+	if caption = strings.TrimSpace(caption); caption != "" {
+		page.WriteString("<figcaption>" + clipText(caption, 1024) + "</figcaption>")
+	}
+	page.WriteString("</tg-slideshow>")
+
+	cfg := tgbotapi.NewRichMessageHTMLWithMedia(ctx.ChatID, page.String(), media)
+	if ctx.ReplyTo > 0 {
+		cfg.ReplyToMessageID = ctx.ReplyTo
+		cfg.AllowSendingWithoutReply = true
+	}
+	sent, err := sendRichMessageWithFloodRetry(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	log.Printf("send rich carousel ok chat=%d msg=%d photos=%d", ctx.ChatID, sent.MessageID, len(paths))
+	return nil
+}
+
+func sendRichMessageWithFloodRetry(ctx sendContext, cfg tgbotapi.RichMessageConfig) (tgbotapi.Message, error) {
+	attempts := envInt("TELEGRAM_SEND_RETRY_ATTEMPTS", 3)
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > 10 {
+		attempts = 10
+	}
+	maxWait := time.Duration(envInt("TELEGRAM_SEND_RETRY_MAX_SEC", 120)) * time.Second
+	if maxWait <= 0 {
+		maxWait = 120 * time.Second
+	}
+	var last tgbotapi.Message
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		sent, err := ctx.Bot.Send(cfg)
+		if err == nil {
+			return sent, nil
+		}
+		last = sent
+		lastErr = err
+		wait, ok := telegramRetryAfter(err)
+		if !ok || attempt == attempts {
+			return sent, err
+		}
+		if wait > maxWait {
+			log.Printf("telegram rich message flood wait too long chat=%d attempt=%d/%d wait=%s max=%s err=%v",
+				ctx.ChatID, attempt, attempts, wait, maxWait, err)
+			return sent, err
+		}
+		sleep := wait + time.Second
+		if sleep > maxWait {
+			sleep = maxWait
+		}
+		time.Sleep(sleep)
+	}
+	return last, lastErr
+}
+
 func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
 	filePath = strings.TrimSpace(filePath)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
@@ -1166,6 +1250,26 @@ func buildMediaAlbumCaption(count int, title, sourceURL string, service mediadl.
 		return stats
 	}
 	return head + "\n" + stats
+}
+
+func buildRichCarouselCaption(count int, title, sourceURL string) string {
+	title = strings.TrimSpace(title)
+	sourceURL = strings.TrimSpace(sourceURL)
+	if count < 1 {
+		count = 1
+	}
+	stats := fmt.Sprintf("%d фото", count)
+	head := html.EscapeString(title)
+	if sourceURL != "" {
+		if head == "" {
+			return buildSourceLinkHTML(sourceURL, "ссылка") + " · " + stats
+		}
+		return `<a href="` + html.EscapeString(sourceURL) + `">` + head + `</a> · ` + stats
+	}
+	if head == "" {
+		return stats
+	}
+	return head + " · " + stats
 }
 
 func buildSourceLinkHTML(rawURL, label string) string {

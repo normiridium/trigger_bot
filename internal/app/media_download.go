@@ -985,6 +985,13 @@ func sendInstagramPhotoAlbum(ctx context.Context, sendCtx sendContext, dl MediaD
 	if title == "" {
 		title = strings.TrimSpace(rawURL)
 	}
+	if envInt("MEDIA_RICH_CAROUSEL", 1) == 1 {
+		err := sendRichPhotoCarousel(sendCtx, album.Paths, buildRichCarouselCaption(len(album.Paths), title, album.SourceURL))
+		if err == nil {
+			return true, nil
+		}
+		log.Printf("media rich carousel failed chat=%d photos=%d err=%v, falling back to albums", sendCtx.ChatID, len(album.Paths), err)
+	}
 	return true, sendPhotoAlbumFromFiles(sendCtx, album.Paths, buildMediaAlbumCaption(len(album.Paths), title, album.SourceURL, album.Service))
 }
 
