@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -373,6 +374,166 @@ func (d Downloader) DownloadMediaAutoFromURL(ctx context.Context, rawURL string)
 		SourceURL:   probe.SourceURL,
 		Restricted:  probe.Restricted,
 	}, nil
+}
+
+// PhotoAlbum is a set of photos taken from a single post (for example an Instagram carousel).
+type PhotoAlbum struct {
+	Paths     []string
+	Dir       string
+	Title     string
+	Service   Service
+	SourceURL string
+}
+
+// InstagramPhotoAlbum downloads every photo of an Instagram carousel/sidecar post.
+// supported=false means the url is not a multi-photo Instagram post and the caller
+// should continue with the regular single-media download flow.
+func (d Downloader) InstagramPhotoAlbum(ctx context.Context, rawURL string) (PhotoAlbum, bool, error) {
+	normURL, service, ok := NormalizeSupportedURL(rawURL)
+	if !ok || service != ServiceInstagram {
+		return PhotoAlbum{}, false, nil
+	}
+	return d.downloadInstagramPhotoAlbum(ctx, normURL)
+}
+
+func (d Downloader) downloadInstagramPhotoAlbum(ctx context.Context, normURL string) (PhotoAlbum, bool, error) {
+	probe, err := d.runJSON(ctx, d.buildPhotoAlbumProbeArgs(normURL))
+	if err != nil {
+		return PhotoAlbum{}, false, fmt.Errorf("instagram album probe: %w", err)
+	}
+	if len(probe.Entries) < 2 {
+		return PhotoAlbum{}, false, nil
+	}
+	for _, entry := range probe.Entries {
+		if entryHasVideoFormats(entry) {
+			// Photo+video carousels keep the regular single-media flow.
+			return PhotoAlbum{}, false, nil
+		}
+	}
+
+	tmpDir, err := bottmp.MkdirTemp("media-ig-album-*")
+	if err != nil {
+		return PhotoAlbum{}, true, err
+	}
+	if err := d.downloadInstagramAlbumThumbs(ctx, normURL, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return PhotoAlbum{}, true, err
+	}
+	paths, err := listPhotoFiles(tmpDir)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return PhotoAlbum{}, true, err
+	}
+	if len(paths) < 2 {
+		_ = os.RemoveAll(tmpDir)
+		return PhotoAlbum{}, false, nil
+	}
+	if limit := d.maxSizeMB(); limit > 0 {
+		for _, path := range paths {
+			st, statErr := os.Stat(path)
+			if statErr != nil {
+				_ = os.RemoveAll(tmpDir)
+				return PhotoAlbum{}, true, fmt.Errorf("downloaded file missing: %w", statErr)
+			}
+			if st.Size() > int64(limit)*1024*1024 {
+				_ = os.RemoveAll(tmpDir)
+				return PhotoAlbum{}, true, fmt.Errorf("%w: %d > %d MB", ErrTooLarge, st.Size(), limit)
+			}
+		}
+	}
+	return PhotoAlbum{
+		Paths:     paths,
+		Dir:       tmpDir,
+		Title:     displayTitleForService(ServiceInstagram, MediaKindPhoto, probe.Title, probe.Description),
+		Service:   ServiceInstagram,
+		SourceURL: normURL,
+	}, true, nil
+}
+
+func (d Downloader) buildPhotoAlbumProbeArgs(url string) []string {
+	// No --no-playlist here: carousel posts are exposed as a playlist of images.
+	args := []string{
+		"--skip-download",
+		"--quiet",
+		"--no-warnings",
+		"--ignore-no-formats-error",
+		"--extractor-args", d.extractorArgs(),
+		"--dump-single-json",
+	}
+	args = append(d.ytDLPAuthArgs(), args...)
+	return append(args, url)
+}
+
+func (d Downloader) downloadInstagramAlbumThumbs(ctx context.Context, url, dir string) error {
+	outTpl := filepath.Join(dir, "%(autonumber)03d.%(ext)s")
+	args := []string{
+		// Image-only entries have no video formats; the flag keeps yt-dlp going
+		// and --write-thumbnail writes one full-size image per carousel item.
+		"--ignore-no-formats-error",
+		"--skip-download",
+		"--write-thumbnail",
+		"--no-warnings",
+		"--no-progress",
+		"--extractor-args", d.extractorArgs(),
+		"-o", outTpl,
+	}
+	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(args, url)
+	cmd := exec.CommandContext(ctx, d.binary(), args...)
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+	var errBuf strings.Builder
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("instagram album download: %w: %s", err, lastNonEmptyLine(errBuf.String()))
+	}
+	return nil
+}
+
+func entryHasVideoFormats(entry probeJSON) bool {
+	check := func(formats []formatRecord) bool {
+		for _, f := range formats {
+			vcodec := strings.TrimSpace(f.Vcodec)
+			if vcodec != "" && !strings.EqualFold(vcodec, "none") {
+				return true
+			}
+		}
+		return false
+	}
+	return check(entry.Formats) || check(entry.RequestedFormats)
+}
+
+// listPhotoFiles returns the downloaded images ordered by their autonumber prefix.
+func listPhotoFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".jpg", ".jpeg", ".png":
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func lastNonEmptyLine(raw string) string {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			if len(line) > 300 {
+				line = line[:300]
+			}
+			return line
+		}
+	}
+	return ""
 }
 
 func (d Downloader) buildGenericDownloadArgsForService(service Service, url, outTpl string) []string {

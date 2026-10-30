@@ -789,6 +789,108 @@ func sendPhotoFromFile(ctx sendContext, filePath, caption string) error {
 	return nil
 }
 
+// telegramMediaGroupMax is the Telegram limit for one album (sendMediaGroup).
+const telegramMediaGroupMax = 10
+
+// sendPhotoAlbumFromFiles posts photos as Telegram albums so the client renders them
+// as a swipeable gallery. Sets larger than one album are split into several albums.
+func sendPhotoAlbumFromFiles(ctx sendContext, filePaths []string, caption string) error {
+	paths := make([]string, 0, len(filePaths))
+	for _, p := range filePaths {
+		if v := strings.TrimSpace(p); v != "" {
+			paths = append(paths, v)
+		}
+	}
+	if ctx.Bot == nil || ctx.ChatID == 0 || len(paths) == 0 {
+		return errors.New("invalid photo album send params")
+	}
+	if len(paths) == 1 {
+		return sendPhotoFromFile(ctx, paths[0], caption)
+	}
+	caption = clipText(strings.TrimSpace(caption), 1024)
+	sentItems := 0
+	for _, chunk := range splitMediaGroupChunks(paths, telegramMediaGroupMax) {
+		media := make([]interface{}, 0, len(chunk))
+		for i, path := range chunk {
+			if err := ensureTelegramUploadLimit(path); err != nil {
+				return err
+			}
+			item := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(path))
+			if sentItems == 0 && i == 0 && caption != "" {
+				item.Caption = caption
+				item.ParseMode = "HTML"
+			}
+			media = append(media, item)
+		}
+		cfg := tgbotapi.MediaGroupConfig{ChatID: ctx.ChatID, Media: media}
+		if sentItems == 0 && ctx.ReplyTo > 0 {
+			cfg.ReplyToMessageID = ctx.ReplyTo
+		}
+		msgs, err := sendMediaGroupWithFloodRetry(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		sentItems += len(chunk)
+		log.Printf("send photo album chunk ok chat=%d items=%d messages=%d", ctx.ChatID, len(chunk), len(msgs))
+	}
+	return nil
+}
+
+func splitMediaGroupChunks(items []string, max int) [][]string {
+	if max < 1 {
+		max = 1
+	}
+	chunks := make([][]string, 0, (len(items)+max-1)/max)
+	for len(items) > 0 {
+		n := max
+		if len(items) < n {
+			n = len(items)
+		}
+		chunks = append(chunks, items[:n])
+		items = items[n:]
+	}
+	return chunks
+}
+
+func sendMediaGroupWithFloodRetry(ctx sendContext, cfg tgbotapi.MediaGroupConfig) ([]tgbotapi.Message, error) {
+	attempts := envInt("TELEGRAM_SEND_RETRY_ATTEMPTS", 3)
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > 10 {
+		attempts = 10
+	}
+	maxWait := time.Duration(envInt("TELEGRAM_SEND_RETRY_MAX_SEC", 120)) * time.Second
+	if maxWait <= 0 {
+		maxWait = 120 * time.Second
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		msgs, err := ctx.Bot.SendMediaGroup(cfg)
+		if err == nil {
+			return msgs, nil
+		}
+		lastErr = err
+		wait, ok := telegramRetryAfter(err)
+		if !ok || attempt == attempts {
+			return nil, err
+		}
+		if wait > maxWait {
+			log.Printf("telegram album flood wait too long chat=%d attempt=%d/%d wait=%s max=%s err=%v",
+				ctx.ChatID, attempt, attempts, wait, maxWait, err)
+			return nil, err
+		}
+		sleep := wait + time.Second
+		if sleep > maxWait {
+			sleep = maxWait
+		}
+		log.Printf("telegram album flood wait retry chat=%d attempt=%d/%d sleep=%s err=%v",
+			ctx.ChatID, attempt, attempts, sleep, err)
+		time.Sleep(sleep)
+	}
+	return nil, lastErr
+}
+
 func sendDocumentFromFile(ctx sendContext, filePath, caption string) error {
 	filePath = strings.TrimSpace(filePath)
 	if ctx.Bot == nil || ctx.ChatID == 0 || filePath == "" {
@@ -1027,6 +1129,30 @@ func buildMediaPhotoCaption(path, title, sourceURL string, service mediadl.Servi
 		stats = fmt.Sprintf("%s %.2fMB", emoji, sizeMB)
 	}
 	head := strings.TrimSpace(title)
+	if sourceURL != "" {
+		if head == "" {
+			head = buildSourceLinkHTML(sourceURL, "ссылка")
+		} else {
+			head = buildSourceLinkHTML(sourceURL, head)
+		}
+	} else {
+		head = html.EscapeString(head)
+	}
+	if strings.TrimSpace(head) == "" {
+		return stats
+	}
+	return head + "\n" + stats
+}
+
+func buildMediaAlbumCaption(count int, title, sourceURL string, service mediadl.Service) string {
+	title = strings.TrimSpace(title)
+	sourceURL = strings.TrimSpace(sourceURL)
+	if count < 1 {
+		count = 1
+	}
+	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
+	stats := fmt.Sprintf("%s %d фото", emoji, count)
+	head := title
 	if sourceURL != "" {
 		if head == "" {
 			head = buildSourceLinkHTML(sourceURL, "ссылка")

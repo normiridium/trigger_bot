@@ -950,6 +950,44 @@ func (q *mediaDownloadQueue) enqueue(task mediaDownloadTask) bool {
 	}
 }
 
+// sendInstagramPhotoAlbum posts a multi-photo Instagram post as a Telegram album.
+// handled=false means the link is not a photo set and the regular media flow should run.
+func sendInstagramPhotoAlbum(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, progress *mediaProgressHandle) (bool, error) {
+	if _, service, ok := mediadl.NormalizeSupportedURL(rawURL); !ok || service != mediadl.ServiceInstagram {
+		return false, nil
+	}
+	if progress != nil {
+		progress.SetFrame(0)
+		progress.SetStage("Скачивание фото")
+	}
+	dlCtx, cancelDl := context.WithTimeout(withMediaDownloadProgress(ctx, progress), 5*time.Minute)
+	album, supported, err := dl.InstagramPhotoAlbum(dlCtx, rawURL)
+	cancelDl()
+	if !supported {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if album.Dir != "" {
+		defer func() {
+			if rmErr := os.RemoveAll(album.Dir); rmErr != nil && debugTriggerLogEnabled {
+				log.Printf("media album temp cleanup failed dir=%q err=%v", album.Dir, rmErr)
+			}
+		}()
+	}
+	log.Printf("media instagram album chat=%d photos=%d title=%q", sendCtx.ChatID, len(album.Paths), clipText(album.Title, 120))
+	if progress != nil {
+		progress.SetFrame(7)
+		progress.SetStage("Отправка фото")
+	}
+	title := strings.TrimSpace(album.Title)
+	if title == "" {
+		title = strings.TrimSpace(rawURL)
+	}
+	return true, sendPhotoAlbumFromFiles(sendCtx, album.Paths, buildMediaAlbumCaption(len(album.Paths), title, album.SourceURL, album.Service))
+}
+
 func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDownloadPort, rawURL string, mode mediadl.Mode, progress *mediaProgressHandle) error {
 	mode = mediadl.Mode(strings.TrimSpace(strings.ToLower(string(mode))))
 	_, mediaService, _ := mediadl.NormalizeSupportedURL(rawURL)
@@ -973,6 +1011,12 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	}
 	if mode == mediadl.Mode("") {
 		mode = mediadl.ModeAudio
+	}
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto {
+		// Instagram carousels are posted as a Telegram album (swipeable gallery).
+		if handled, albumErr := sendInstagramPhotoAlbum(ctx, sendCtx, dl, rawURL, progress); handled {
+			return albumErr
+		}
 	}
 	log.Printf(
 		"media process start mode=%s chat=%d url=%q limits(download=%dMB upload=%dMB max_h=%dp)",

@@ -61,6 +61,7 @@ type MediaDownloadPort interface {
 	DownloadAudioFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)
 	DownloadVideoFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)
 	DownloadMediaAutoFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)
+	InstagramPhotoAlbum(ctx context.Context, rawURL string) (mediadl.PhotoAlbum, bool, error)
 	ConfiguredMaxSizeMB() int
 	ConfiguredMaxHeight() int
 }
