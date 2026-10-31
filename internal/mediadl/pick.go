@@ -68,6 +68,23 @@ func ScheduleChoicePromptDeletion(bot *tgbotapi.BotAPI, chatID int64, messageID 
 
 func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.InlineKeyboardMarkup {
 	_, service, _ := NormalizeSupportedURL(req.URL)
+	if service == ServiceInstagram {
+		photoToken := putChoice(req)
+		videoToken := putChoice(req)
+		cancelToken := putChoice(req)
+		rows := [][]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
+				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		}
+		_ = msg
+		return tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+
 	if service == ServiceCoub {
 		audioToken := putChoice(req)
 		videoToken := putChoice(req)
@@ -81,23 +98,6 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.Inli
 				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
 			),
 		}
-		if service == ServiceInstagram {
-			photoToken := putChoice(req)
-			videoToken := putChoice(req)
-			cancelToken := putChoice(req)
-			rows := [][]tgbotapi.InlineKeyboardButton{
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
-					tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
-				),
-			}
-			_ = msg
-			return tgbotapi.NewInlineKeyboardMarkup(rows...)
-		}
-
 		_ = msg
 		return tgbotapi.NewInlineKeyboardMarkup(rows...)
 	}

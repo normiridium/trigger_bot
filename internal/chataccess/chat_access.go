@@ -86,6 +86,11 @@ func (n *DisallowedChatNotifier) ShouldNotify(chatID int64, now time.Time) bool 
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	for id, prev := range n.last {
+		if now.Sub(prev) >= n.ttl {
+			delete(n.last, id)
+		}
+	}
 	if prev, ok := n.last[chatID]; ok && now.Sub(prev) < n.ttl {
 		return false
 	}

@@ -35,11 +35,18 @@ type WebAdmin struct {
 	store      *Store
 	emojiProxy emojiProxyService
 	clearOps   chatclear.Service
+	// adminToken is optional defence in depth: when ADMIN_REQUIRE_TOKEN=true the
+	// request must carry a matching X-Admin-Token header.
+	adminToken string
 }
 
 const adminSessionCookieName = "trigger_admin_session"
 const adminCSRFCookieName = "trigger_admin_csrf"
-const adminSessionTTL = 30 * 24 * time.Hour
+
+// adminSessionTTL is configurable: default is short (12h) because the panel is
+// proxied publicly and cookies live in the browser.
+var adminSessionTTL = adminSessionTTLFromEnv()
+
 const webStaticCacheTTL = 0
 const webProxyCacheTTL = 0
 const adminAuthStateSetupRequired = "setup_required"
@@ -55,9 +62,13 @@ type settingField struct {
 }
 
 func NewWebAdmin(store *Store, adminToken string) *WebAdmin {
-	_ = adminToken
+	adminToken = strings.TrimSpace(adminToken)
+	if adminToken != "" && !envBool("ADMIN_REQUIRE_TOKEN", false) {
+		log.Printf("ADMIN_TOKEN задан, но ADMIN_REQUIRE_TOKEN!=true — статический токен не проверяется (аутентификация: пароль + сессия)")
+	}
 	return &WebAdmin{
-		store: store,
+		store:      store,
+		adminToken: adminToken,
 		emojiProxy: emojiProxyService{
 			Token: strings.TrimSpace(envOr("TELEGRAM_BOT_TOKEN", "")),
 		},
@@ -147,8 +158,8 @@ func setAdminSessionCookie(rw http.ResponseWriter, r *http.Request, token string
 		Value:    strings.TrimSpace(token),
 		Path:     "/trigger_bot",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r != nil && r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   adminCookieSecure(r),
 		MaxAge:   int(adminSessionTTL / time.Second),
 	})
 }
@@ -162,8 +173,8 @@ func setCSRFCookie(rw http.ResponseWriter, r *http.Request, token string) {
 		Value:    strings.TrimSpace(token),
 		Path:     "/trigger_bot",
 		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r != nil && r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   adminCookieSecure(r),
 		MaxAge:   int(adminSessionTTL / time.Second),
 	})
 }
@@ -194,8 +205,8 @@ func clearAdminSessionCookie(rw http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/trigger_bot",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r != nil && r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   adminCookieSecure(r),
 		MaxAge:   -1,
 	})
 }
@@ -209,10 +220,33 @@ func clearCSRFCookie(rw http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/trigger_bot",
 		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r != nil && r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   adminCookieSecure(r),
 		MaxAge:   -1,
 	})
+}
+
+// adminTokenAllowed enforces the optional static token.
+func (w *WebAdmin) adminTokenAllowed(r *http.Request) bool {
+	if w == nil || !envBool("ADMIN_REQUIRE_TOKEN", false) {
+		return true
+	}
+	if strings.TrimSpace(w.adminToken) == "" {
+		return false
+	}
+	provided := strings.TrimSpace(r.Header.Get("X-Admin-Token"))
+	return subtleConstantTimeEqual(w.adminToken, provided)
+}
+
+// countCommaItems counts non-empty comma-separated entries.
+func countCommaItems(raw string) int {
+	n := 0
+	for _, part := range strings.Split(raw, ",") {
+		if strings.TrimSpace(part) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func isStateChangingMethod(method string) bool {
@@ -255,7 +289,8 @@ func writeJSON(rw http.ResponseWriter, code int, payload interface{}) {
 func (w *WebAdmin) writeAuthRequired(rw http.ResponseWriter, r *http.Request) {
 	state, err := w.authStateForRequest(r)
 	if err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		log.Printf("admin auth required state failed: %v", err)
+		http.Error(rw, "internal error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
@@ -267,22 +302,40 @@ func (w *WebAdmin) writeAuthRequired(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
+		if !w.adminTokenAllowed(r) {
+			writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
+				"ok":    false,
+				"error": "admin_token_required",
+			})
+			return
+		}
 		state, err := w.authStateForRequest(r)
 		if err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			log.Printf("admin auth state failed: %v", err)
+			http.Error(rw, "internal error", http.StatusInternalServerError)
 			return
 		}
 		if state != adminAuthStateAuthenticated {
 			w.writeAuthRequired(rw, r)
 			return
 		}
-		if isStateChangingMethod(r.Method) && !csrfTokenValid(r) {
-			writeJSON(rw, http.StatusForbidden, map[string]interface{}{
-				"ok":         false,
-				"auth_state": adminAuthStateAuthenticated,
-				"error":      "csrf_invalid",
-			})
-			return
+		if isStateChangingMethod(r.Method) {
+			if !originAllowed(r) {
+				writeJSON(rw, http.StatusForbidden, map[string]interface{}{
+					"ok":         false,
+					"auth_state": adminAuthStateAuthenticated,
+					"error":      "csrf_origin_mismatch",
+				})
+				return
+			}
+			if !csrfTokenValid(r) {
+				writeJSON(rw, http.StatusForbidden, map[string]interface{}{
+					"ok":         false,
+					"auth_state": adminAuthStateAuthenticated,
+					"error":      "csrf_invalid",
+				})
+				return
+			}
 		}
 		next(rw, r)
 	}
@@ -321,6 +374,10 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/mtproto_challenge_start", w.withAuth(w.mtprotoChallengeStart))
 	mux.HandleFunc("/trigger_bot/mtproto_challenge_complete", w.withAuth(w.mtprotoChallengeComplete))
 	mux.HandleFunc("/trigger_bot/mtproto_chat_options", w.withAuth(w.mtprotoChatOptions))
+	mux.HandleFunc("/trigger_bot/mtproto_qr_start", w.withAuth(w.mtprotoQRStart))
+	mux.HandleFunc("/trigger_bot/mtproto_qr_state", w.withAuth(w.mtprotoQRState))
+	mux.HandleFunc("/trigger_bot/mtproto_qr_password", w.withAuth(w.mtprotoQRPassword))
+	mux.HandleFunc("/trigger_bot/mtproto_qr_stop", w.withAuth(w.mtprotoQRStop))
 	mux.HandleFunc("/trigger_bot/restart", w.withAuth(w.restartPost))
 	mux.HandleFunc("/trigger_bot/save", w.withAuth(w.savePost))
 	mux.HandleFunc("/trigger_bot/reorder", w.withAuth(w.reorderPost))
@@ -457,10 +514,21 @@ func (w *WebAdmin) authStateJSON(rw http.ResponseWriter, r *http.Request) {
 
 func (w *WebAdmin) authSetupPost(rw http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Password string `json:"password"`
+		Password       string `json:"password"`
+		BootstrapToken string `json:"bootstrap_token"`
 	}
 	if err := parseJSONBody(r, &payload); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// First-run setup must not be claimable by whoever reaches the panel first:
+	// require ADMIN_BOOTSTRAP_TOKEN, or a direct local request without a proxy.
+	if !adminSetupAllowed(r, firstNonEmpty(payload.BootstrapToken, r.Header.Get("X-Admin-Bootstrap"))) {
+		log.Printf("admin setup rejected addr=%s (не loopback и нет bootstrap-токена)", r.RemoteAddr)
+		writeJSON(rw, http.StatusForbidden, map[string]interface{}{
+			"ok":    false,
+			"error": "setup_forbidden",
+		})
 		return
 	}
 	state, err := w.authStateForRequest(r)
@@ -540,7 +608,16 @@ func (w *WebAdmin) authLoginPost(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "password is required", http.StatusBadRequest)
 		return
 	}
+	if loginThrottled(r) {
+		writeJSON(rw, http.StatusTooManyRequests, map[string]interface{}{
+			"ok":         false,
+			"auth_state": adminAuthStateLoginRequired,
+			"error":      "too_many_attempts",
+		})
+		return
+	}
 	if err := bcrypt.CompareHashAndPassword([]byte(auth.PasswordHash), []byte(pass)); err != nil {
+		loginRecordFailure(r)
 		writeJSON(rw, http.StatusUnauthorized, map[string]interface{}{
 			"ok":         false,
 			"auth_state": adminAuthStateLoginRequired,
@@ -548,6 +625,7 @@ func (w *WebAdmin) authLoginPost(rw http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	loginRecordSuccess(r)
 	token, err := newSessionToken()
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -1261,6 +1339,20 @@ func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
 		}
 		updates[k] = val
 	}
+	// Access-list changes are security-relevant: audit them, and never let the
+	// panel silently turn the allow-list off by saving an empty value.
+	if val, ok := updates["ALLOWED_CHAT_IDS"]; ok {
+		current := strings.TrimSpace(os.Getenv("ALLOWED_CHAT_IDS"))
+		if current != "" && strings.TrimSpace(val) == "" {
+			writeJSON(rw, http.StatusBadRequest, map[string]interface{}{
+				"ok":    false,
+				"error": "ALLOWED_CHAT_IDS нельзя очистить из админки: бот сразу откроется всем чатам. Правьте .env руками.",
+			})
+			return
+		}
+		log.Printf("admin settings: ALLOWED_CHAT_IDS changed (было=%d записей, стало=%d записей)",
+			countCommaItems(current), countCommaItems(val))
+	}
 	if err := writeEnvFile("./.env", updates); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
@@ -1432,9 +1524,14 @@ func settingsSchema() []settingField {
 		{Key: "CHAT_RECENT_MAX_AGE_SEC", Label: "TTL контекста (сек)", Type: "int", Description: "1800"},
 		{Key: "USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов на пользователя за 4 часа (0 = выкл)", Type: "int", Description: "30000"},
 		{Key: "DEEPSEEK_USER_GPT_TOKEN_LIMIT", Label: "Лимит GPT-токенов DeepSeek на пользователя за 4 часа (пусто = 10× лимита OpenAI, 0 = выкл)", Type: "int", Description: "200000"},
-		{Key: "DEEPSEEK_MODEL", Label: "DeepSeek: модель для текста", Type: "string", Description: "deepseek-v4-pro"},
-		{Key: "DEEPSEEK_MODEL_MULTIMODAL", Label: "DeepSeek: модель для картинок", Type: "string", Description: "deepseek-flash"},
+		{Key: "DEEPSEEK_MODEL", Label: "DeepSeek: модель для текста", Type: "string", Description: "deepseek-v4.1-flash"},
+		{Key: "DEEPSEEK_MODEL_MULTIMODAL", Label: "DeepSeek: модель для картинок", Type: "string", Description: "deepseek-v4.1-flash"},
 		{Key: "DEEPSEEK_EFFORT", Label: "DeepSeek: усилие (low/high/max)", Type: "string", Description: "max"},
+		{Key: "GPT_SVG_REFINE_ENABLED", Label: "SVG: ИИ-оценка и коррекция картинки (vision feedback)", Type: "bool", Description: "true"},
+		{Key: "GPT_SVG_REFINE_MAX_ROUNDS", Label: "SVG refine: максимум раундов (1-4)", Type: "int", Description: "2"},
+		{Key: "GPT_SVG_REFINE_MAX_TOKENS", Label: "SVG refine: max tokens ответа vision-модели", Type: "int", Description: "6000"},
+		{Key: "GPT_SVG_REFINE_TIMEOUT_SEC", Label: "SVG refine: timeout запроса (сек)", Type: "int", Description: "90"},
+		{Key: "GPT_SVG_REFINE_EFFORT", Label: "SVG refine: усилие (low/high/max)", Type: "string", Description: "low"},
 		{Key: "USER_GPT_TOKEN_LOW_WARNING_THRESHOLD", Label: "Предупреждать при остатке GPT-токенов", Type: "int", Description: "0 = авто"},
 		{Key: "GPT_IMAGE_CONTEXT_MAX_MB", Label: "GPT: максимум картинки в контексте (МБ)", Type: "int", Description: "5"},
 		{Key: "DEBUG_TRIGGER_LOG", Label: "Лог триггеров (debug)", Type: "bool", Description: "false"},

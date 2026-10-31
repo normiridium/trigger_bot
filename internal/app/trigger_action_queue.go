@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"log"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -17,6 +18,12 @@ type triggerActionQueue struct {
 	ch chan triggerActionTask
 }
 
+var errTriggerActionQueueFull = errors.New("trigger action queue is full")
+
+// triggerActionOverflow caps how many tasks may run outside the queue when the
+// channel is full, so a burst cannot spawn an unbounded number of goroutines.
+var triggerActionOverflow = make(chan struct{}, defaultTriggerActionWorkers()*4)
+
 func newTriggerActionQueue(workers, capacity int) *triggerActionQueue {
 	if workers <= 0 {
 		workers = 1
@@ -28,8 +35,10 @@ func newTriggerActionQueue(workers, capacity int) *triggerActionQueue {
 	for i := 0; i < workers; i++ {
 		go func() {
 			for task := range q.ch {
-				tr := task.trigger
-				handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
+				runWorkerTask("trigger_action", func() {
+					tr := task.trigger
+					handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
+				})
 			}
 		}()
 	}
@@ -39,21 +48,33 @@ func newTriggerActionQueue(workers, capacity int) *triggerActionQueue {
 func (q *triggerActionQueue) Enqueue(task triggerActionTask) {
 	if q == nil {
 		tr := task.trigger
-		handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
+		runWorkerTask("trigger_action_direct", func() {
+			handleTriggerActionForMessage(task.deps, task.msg, &tr, task.userLimitLowTrigger)
+		})
 		return
 	}
 	select {
 	case q.ch <- task:
 		return
 	default:
-		// Queue is full: avoid dropping trigger execution.
+	}
+	select {
+	case triggerActionOverflow <- struct{}{}:
+		if debugTriggerLogEnabled {
+			log.Printf("trigger action queue overflow, running outside queue trigger=%d chat=%d", task.trigger.ID, msgChatID(task.msg))
+		}
 		go func(t triggerActionTask) {
-			if debugTriggerLogEnabled {
-				log.Printf("trigger action queue overflow, fallback goroutine trigger=%d chat=%d", t.trigger.ID, msgChatID(t.msg))
-			}
-			tr := t.trigger
-			handleTriggerActionForMessage(t.deps, t.msg, &tr, t.userLimitLowTrigger)
+			defer func() { <-triggerActionOverflow }()
+			runWorkerTask("trigger_action_overflow", func() {
+				tr := t.trigger
+				handleTriggerActionForMessage(t.deps, t.msg, &tr, t.userLimitLowTrigger)
+			})
 		}(task)
+	default:
+		log.Printf("trigger action queue full and overflow exhausted, dropping trigger=%d chat=%d", task.trigger.ID, msgChatID(task.msg))
+		if task.deps.Bot != nil && task.msg != nil && task.msg.Chat != nil {
+			reportChatFailure(task.deps.Bot, task.msg.Chat.ID, "бот перегружен", errTriggerActionQueueFull)
+		}
 	}
 }
 

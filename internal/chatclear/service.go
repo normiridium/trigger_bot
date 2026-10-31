@@ -61,4 +61,10 @@ type Service interface {
 	CompleteAuth(ctx context.Context, req AuthCompleteRequest) (AuthCompleteResult, error)
 	GetHistory(ctx context.Context, req HistoryRequest) (HistoryResult, error)
 	Available(ctx context.Context) bool
+
+	// QR login (works when Telegram does not deliver login codes).
+	StartQR(ctx context.Context, chatID int64) (QRState, error)
+	QRState(ctx context.Context, chatID int64) (QRState, error)
+	SubmitQRPassword(ctx context.Context, chatID int64, password string) (QRState, error)
+	StopQR(ctx context.Context, chatID int64) error
 }

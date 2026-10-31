@@ -16,6 +16,9 @@ function triggerApp(){
     cloneCurrentTrigger,
     startMTProtoChallenge,
     completeMTProtoChallenge,
+    startMTProtoQR,
+    submitMTProtoQRPassword,
+    stopMTProtoQR,
   };
 }
 window.triggerApp = triggerApp;
@@ -242,6 +245,21 @@ async function initAuthenticatedApp(){
   if(mtprotoCompleteBtn && !mtprotoCompleteBtn.dataset.boundClick){
     mtprotoCompleteBtn.addEventListener('click', completeMTProtoChallenge);
     mtprotoCompleteBtn.dataset.boundClick = '1';
+  }
+  const mtprotoQRStartBtn = document.getElementById('mtproto_qr_start_btn');
+  if(mtprotoQRStartBtn && !mtprotoQRStartBtn.dataset.boundClick){
+    mtprotoQRStartBtn.addEventListener('click', startMTProtoQR);
+    mtprotoQRStartBtn.dataset.boundClick = '1';
+  }
+  const mtprotoQRStopBtn = document.getElementById('mtproto_qr_stop_btn');
+  if(mtprotoQRStopBtn && !mtprotoQRStopBtn.dataset.boundClick){
+    mtprotoQRStopBtn.addEventListener('click', stopMTProtoQR);
+    mtprotoQRStopBtn.dataset.boundClick = '1';
+  }
+  const mtprotoQRPwBtn = document.getElementById('mtproto_qr_pw_btn');
+  if(mtprotoQRPwBtn && !mtprotoQRPwBtn.dataset.boundClick){
+    mtprotoQRPwBtn.addEventListener('click', submitMTProtoQRPassword);
+    mtprotoQRPwBtn.dataset.boundClick = '1';
   }
   renderVariantControls();
   void loadTriggerList().then(() => initTriggerDragAndDrop()).catch(() => {});
@@ -2492,3 +2510,128 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 500);
 });
+
+// --- MTProto QR login -------------------------------------------------------
+let __mtprotoQRPollTimer = null;
+let __mtprotoQRChatID = 0;
+
+function mtprotoQRStopPolling(){
+  if(__mtprotoQRPollTimer){
+    clearInterval(__mtprotoQRPollTimer);
+    __mtprotoQRPollTimer = null;
+  }
+}
+
+function applyMTProtoQRState(data){
+  const hint = document.getElementById('mtproto_qr_hint');
+  const box = document.getElementById('mtproto_qr_box');
+  const img = document.getElementById('mtproto_qr_img');
+  const pwBox = document.getElementById('mtproto_qr_pw_box');
+  const status = String(data?.status || '');
+  if(hint){
+    hint.classList.remove('text-danger');
+    if(status === 'waiting_scan'){ hint.textContent = 'Сканируйте QR из Telegram: Настройки → Устройства → Подключить устройство.'; }
+    else if(status === 'need_password'){ hint.textContent = 'Вход подтверждён, нужен облачный пароль (2FA) этого аккаунта.'; }
+    else if(status === 'authorized'){ hint.textContent = 'Готово: сессия привязана к чату.'; }
+    else if(status === 'stopped'){ hint.textContent = 'Ожидание снято.'; }
+    else if(status === 'error'){ hint.textContent = 'Ошибка: ' + (data?.error || 'неизвестно'); hint.classList.add('text-danger'); }
+    else { hint.textContent = String(data?.error || ''); }
+  }
+  if(img && data?.png_b64){
+    img.src = 'data:image/png;base64,' + data.png_b64;
+  }
+  if(box){
+    box.style.display = (status === 'waiting_scan' && data?.png_b64) ? '' : 'none';
+  }
+  if(pwBox){
+    pwBox.style.display = (status === 'need_password') ? '' : 'none';
+  }
+  if(status === 'authorized' || status === 'error' || status === 'stopped' || status === 'need_password'){
+    mtprotoQRStopPolling();
+  }
+}
+
+async function pollMTProtoQRState(){
+  if(!__mtprotoQRChatID){ mtprotoQRStopPolling(); return; }
+  try{
+    const r = await fetchAdmin(withToken('/trigger_bot/mtproto_qr_state?chat_id=' + encodeURIComponent(__mtprotoQRChatID)));
+    const data = await r.json().catch(() => ({}));
+    if(data?.ok){ applyMTProtoQRState(data); }
+  } catch(_){ /* transient */ }
+}
+
+async function startMTProtoQR(){
+  const chatID = Number(document.getElementById('mtproto_chat_id')?.value || 0);
+  const hint = document.getElementById('mtproto_qr_hint');
+  if(!chatID){
+    if(hint){ hint.textContent = 'Сначала выберите чат.'; hint.classList.add('text-danger'); }
+    return;
+  }
+  __mtprotoQRChatID = chatID;
+  if(hint){ hint.textContent = 'Генерирую QR…'; hint.classList.remove('text-danger'); }
+  const btn = document.getElementById('mtproto_qr_start_btn');
+  lockButton(btn);
+  try{
+    const r = await fetch(withToken('/trigger_bot/mtproto_qr_start'), {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({chat_id: chatID}),
+      credentials: 'same-origin'
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok || !data?.ok){
+      if(hint){ hint.textContent = 'Ошибка: ' + (data?.error || r.status); hint.classList.add('text-danger'); }
+      return;
+    }
+    applyMTProtoQRState(data);
+    mtprotoQRStopPolling();
+    __mtprotoQRPollTimer = setInterval(pollMTProtoQRState, 2000);
+  } finally {
+    unlockButton(btn);
+  }
+}
+
+async function submitMTProtoQRPassword(){
+  const chatID = __mtprotoQRChatID || Number(document.getElementById('mtproto_chat_id')?.value || 0);
+  const input = document.getElementById('mtproto_qr_password');
+  const password = String(input?.value || '');
+  const hint = document.getElementById('mtproto_qr_hint');
+  if(!chatID || !password){
+    if(hint){ hint.textContent = 'Нужны чат и пароль.'; hint.classList.add('text-danger'); }
+    return;
+  }
+  const btn = document.getElementById('mtproto_qr_pw_btn');
+  lockButton(btn);
+  try{
+    const r = await fetch(withToken('/trigger_bot/mtproto_qr_password'), {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({chat_id: chatID, password}),
+      credentials: 'same-origin'
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok || !data?.ok){
+      if(hint){ hint.textContent = 'Ошибка: ' + (data?.error || r.status); hint.classList.add('text-danger'); }
+      return;
+    }
+    if(input){ input.value = ''; }
+    applyMTProtoQRState(data);
+  } finally {
+    unlockButton(btn);
+  }
+}
+
+async function stopMTProtoQR(){
+  mtprotoQRStopPolling();
+  const chatID = __mtprotoQRChatID || Number(document.getElementById('mtproto_chat_id')?.value || 0);
+  if(!chatID){ return; }
+  try{
+    await fetch(withToken('/trigger_bot/mtproto_qr_stop'), {
+      method: 'POST',
+      headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+      body: JSON.stringify({chat_id: chatID}),
+      credentials: 'same-origin'
+    });
+  } catch(_){ /* ignore */ }
+  applyMTProtoQRState({status: 'stopped'});
+}

@@ -473,6 +473,7 @@ func newSpotifyPickQueue(workers, size int) *spotifyPickQueue {
 		go func() {
 			for task := range q.ch {
 				func() {
+					defer recoverWorkerPanic("spotify_pick")
 					progressTask := mediaDownloadTask{SendCtx: task.SendCtx, Mode: mediadl.ModeAudio}
 					progress, stopProgress := startMediaDownloadProgress(progressTask)
 					defer stopProgress()
@@ -811,6 +812,7 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 		go func(id int) {
 			for task := range q.ch {
 				func() {
+					defer recoverWorkerPanic("media_download")
 					progress, stopProgress := startMediaDownloadProgress(task)
 					defer stopProgress()
 

@@ -466,7 +466,7 @@ func (m *botPortraitManager) worker() {
 }
 
 func (m *botPortraitManager) processTask(task botPortraitTask) {
-	portrait, err := generateParticipantPortrait(task.oldPortrait, task.messages)
+	portrait, err := generateBotPortrait(task.oldPortrait, task.messages)
 	if err != nil {
 		log.Printf("bot portrait generation failed chat=%d bot=%d err=%v", task.chatID, m.botID, err)
 		m.prependBatch(task.chatID, task.messages)

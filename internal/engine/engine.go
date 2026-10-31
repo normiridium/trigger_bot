@@ -198,6 +198,31 @@ func hasMessageMedia(msg *tgbotapi.Message) bool {
 	return false
 }
 
+// StartCooldownJanitor drops cooldown keys that have not been used for a while,
+// so deleted/recreated triggers do not leave permanent map entries.
+func (e *TriggerEngine) StartCooldownJanitor(interval, ttl time.Duration) {
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-ttl)
+			triggerCooldownState.mu.Lock()
+			for key, last := range triggerCooldownState.last {
+				if last.Before(cutoff) {
+					delete(triggerCooldownState.last, key)
+				}
+			}
+			triggerCooldownState.mu.Unlock()
+		}
+	}()
+}
+
 func allowCooldownChance(triggerID int64, chatID int64, chance int) bool {
 	if triggerID == 0 || chatID == 0 || chance <= 100 {
 		return true

@@ -265,6 +265,19 @@ func (s emojiProxyService) FetchPreviewImage(ctx context.Context, fileID string)
 	}
 }
 
+// emojiConvertSemaphore caps concurrent ffmpeg preview conversions so one
+// authorized client cannot exhaust CPU/memory with parallel requests.
+var emojiConvertSemaphore = make(chan struct{}, 2)
+
+func acquireEmojiConvertSlot(ctx context.Context) (func(), error) {
+	select {
+	case emojiConvertSemaphore <- struct{}{}:
+		return func() { <-emojiConvertSemaphore }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (s emojiProxyService) convertVideoURLToAnimatedWEBP(ctx context.Context, fileURL string) ([]byte, string, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, "", errors.New("ffmpeg not found for animated preview conversion")
@@ -278,6 +291,11 @@ func (s emojiProxyService) convertVideoURLToAnimatedWEBP(ctx context.Context, fi
 		tctx, cancel = context.WithTimeout(tctx, 12*time.Second)
 		defer cancel()
 	}
+	release, err := acquireEmojiConvertSlot(tctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
 	cmd := exec.CommandContext(tctx,
 		"ffmpeg",
 		"-hide_banner",

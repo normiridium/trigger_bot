@@ -26,11 +26,13 @@ func TestBuildChoiceKeyboard(t *testing.T) {
 	if len(kb.InlineKeyboard[0]) != 2 {
 		t.Fatalf("expected 2 buttons in first row")
 	}
-	audioData := kb.InlineKeyboard[0][0].CallbackData
+	// Instagram posts are images/video: the keyboard must offer a picture button,
+	// not the coub audio/video pair it used to show through a dead branch.
+	photoData := kb.InlineKeyboard[0][0].CallbackData
 	videoData := kb.InlineKeyboard[0][1].CallbackData
 	cancelData := kb.InlineKeyboard[1][0].CallbackData
-	if audioData == nil || !strings.HasPrefix(*audioData, "mdpick_a:") {
-		t.Fatalf("unexpected audio callback: %#v", audioData)
+	if photoData == nil || !strings.HasPrefix(*photoData, "mdpick_p:") {
+		t.Fatalf("unexpected photo callback: %#v", photoData)
 	}
 	if videoData == nil || !strings.HasPrefix(*videoData, "mdpick_v:") {
 		t.Fatalf("unexpected video callback: %#v", videoData)

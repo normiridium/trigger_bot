@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -36,10 +37,58 @@ var reactionTriggerState = struct {
 	counts        map[string]int
 	messageCounts map[string]reactionKindCounts
 	display       map[string][]reactionDisplay
+	lastSeen      map[string]time.Time
 }{
 	counts:        make(map[string]int),
 	messageCounts: make(map[string]reactionKindCounts),
 	display:       make(map[string][]reactionDisplay),
+	lastSeen:      make(map[string]time.Time),
+}
+
+// StartReactionStateJanitor drops reaction state that stopped changing long ago.
+// Without it counts/messageCounts grow for every message that ever got a
+// reaction (Bot API never reports message deletion), i.e. forever.
+func StartReactionStateJanitor(interval, ttl time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			evictReactionState(ttl)
+		}
+	}()
+}
+
+func evictReactionState(ttl time.Duration) {
+	cutoff := time.Now().Add(-ttl)
+	removed := 0
+	reactionTriggerState.mu.Lock()
+	for key, at := range reactionTriggerState.lastSeen {
+		if at.After(cutoff) {
+			continue
+		}
+		delete(reactionTriggerState.lastSeen, key)
+		delete(reactionTriggerState.counts, key)
+		delete(reactionTriggerState.messageCounts, key)
+		delete(reactionTriggerState.display, key)
+		removed++
+	}
+	reactionTriggerState.mu.Unlock()
+	if removed > 0 && debugTriggerLogEnabled {
+		log.Printf("reaction state janitor evicted=%d", removed)
+	}
+}
+
+func reactionTouchLocked(key string) {
+	if reactionTriggerState.lastSeen == nil {
+		reactionTriggerState.lastSeen = make(map[string]time.Time)
+	}
+	reactionTriggerState.lastSeen[key] = time.Now()
 }
 
 type reactionDisplay struct {
@@ -101,6 +150,10 @@ func (c *reactionKindCounts) add(kind reactionKind, delta int) {
 			c.Angry = 0
 		}
 	}
+}
+
+func (c reactionKindCounts) isZero() bool {
+	return c.Support == 0 && c.Hype == 0 && c.Funny == 0 && c.Sad == 0 && c.Angry == 0
 }
 
 func (c reactionKindCounts) winner() (reactionKind, int, bool) {
@@ -310,7 +363,14 @@ func reactionThresholdCrossed(triggerID, chatID int64, messageID int, kind react
 	reactionTriggerState.mu.Lock()
 	defer reactionTriggerState.mu.Unlock()
 	prev, seen := reactionTriggerState.counts[key]
-	reactionTriggerState.counts[key] = current
+	if current <= 0 {
+		// Reactions removed: keep the map flat instead of leaving dead keys behind.
+		delete(reactionTriggerState.counts, key)
+		delete(reactionTriggerState.lastSeen, key)
+	} else {
+		reactionTriggerState.counts[key] = current
+		reactionTouchLocked(key)
+	}
 	if current <= threshold {
 		return false
 	}
@@ -324,7 +384,13 @@ func reactionMessageKey(chatID int64, messageID int) string {
 func setReactionMessageCounts(chatID int64, messageID int, counts reactionKindCounts) {
 	reactionTriggerState.mu.Lock()
 	defer reactionTriggerState.mu.Unlock()
-	reactionTriggerState.messageCounts[reactionMessageKey(chatID, messageID)] = counts
+	key := reactionMessageKey(chatID, messageID)
+	if counts.isZero() {
+		delete(reactionTriggerState.messageCounts, key)
+		return
+	}
+	reactionTriggerState.messageCounts[key] = counts
+	reactionTouchLocked(key)
 }
 
 func applyReactionMessageDelta(chatID int64, messageID int, delta reactionKindCounts) reactionKindCounts {
@@ -337,7 +403,12 @@ func applyReactionMessageDelta(chatID int64, messageID int, delta reactionKindCo
 	counts.add(reactionKindFunny, delta.Funny)
 	counts.add(reactionKindSad, delta.Sad)
 	counts.add(reactionKindAngry, delta.Angry)
+	if counts.isZero() {
+		delete(reactionTriggerState.messageCounts, key)
+		return counts
+	}
 	reactionTriggerState.messageCounts[key] = counts
+	reactionTouchLocked(key)
 	return counts
 }
 
@@ -350,6 +421,7 @@ func setReactionMessageDisplay(chatID int64, messageID int, items []reactionDisp
 		return
 	}
 	reactionTriggerState.display[key] = append([]reactionDisplay(nil), items...)
+	reactionTouchLocked(key)
 }
 
 func applyReactionMessageDisplayDelta(chatID int64, messageID int, oldReactions, newReactions []rawReactionType) []reactionDisplay {

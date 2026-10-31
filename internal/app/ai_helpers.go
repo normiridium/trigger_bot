@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -375,16 +376,7 @@ func fetchTrustedTelegramTextBytes(fileURL string, maxBytes int64) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 5 {
-				return errors.New("too many redirects")
-			}
-			_, err := validateTrustedImageURL(req.URL.String())
-			return err
-		},
-	}
+	client := newGuardedImageClient(true, 15*time.Second)
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -418,20 +410,10 @@ func fetchTrustedTelegramTextBytes(fileURL string, maxBytes int64) ([]byte, erro
 
 func fetchImageBytesFromURL(u *url.URL, allowPrivateRedirect bool) ([]byte, error) {
 	imageURL := u.String()
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > 5 {
-				return errors.New("too many redirects")
-			}
-			if allowPrivateRedirect {
-				_, err := validateTrustedImageURL(req.URL.String())
-				return err
-			}
-			_, err := validateExternalImageURL(req.URL.String())
-			return err
-		},
-	}
+	// The dialer resolves the host once and connects only to validated IPs, so a
+	// rebinding DNS answer cannot redirect the request to an internal address
+	// between validation and connect.
+	client := newGuardedImageClient(allowPrivateRedirect, 15*time.Second)
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -732,7 +714,7 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 		prompt += "\n\nКонтекст по ссылкам (режим чтения):\n" + linkCtx
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt request model=%s prompt=%q", model, clipLogText(prompt, 200))
+		log.Printf("gpt request model=%s prompt[%s]", model, logTextFingerprint(prompt))
 	}
 
 	userMessage := map[string]interface{}{"role": "user", "content": prompt}
@@ -864,7 +846,35 @@ func sanitizeParticipantPortraitMessage(s string) string {
 	}
 }
 
+// participantPortraitSystemPrompt drives portraits of ordinary chat members.
+const participantPortraitSystemPrompt = "Ты анализируешь стиль общения участника чата. " +
+	"Пиши мягко и нейтрально, без категоричности. " +
+	"Не считай обращения к боту Оле-ням/Оленям/Оленька частью стиля участника и не упоминай их. " +
+	"Портрет должен быть подробным и живым: 3-5 связных абзацев, 15-25 предложений. " +
+	"Сохраняй конкретные нюансы: повторяющиеся темы и интересы, лексику, юмор, эмоциональные реакции, уязвимые места, границы, манеру реплаев и предпочтительный стиль ответа. " +
+	"Где уместно, приводи короткие характерные цитаты в кавычках — они делают портрет узнаваемым. " +
+	"Не превращай портрет в общие фразы; если данных мало, честно опиши только заметные признаки и не выдумывай."
+
+// botPortraitSystemPrompt drives the portrait of the bot itself: it must record
+// the bot's own persona (her manner, jokes, recurring bits), so the restrictions
+// that make member portraits neutral do not apply here.
+const botPortraitSystemPrompt = "Ты анализируешь характер и манеру бота Оле-ням по её собственным репликам в чате. " +
+	"Задача — зафиксировать её узнаваемые особенности: как она шутит, какие приёмы и обороты повторяет, " +
+	"как реагирует на разные типы сообщений, что для неё характерно и что она никогда не делает. " +
+	"Пиши живо и конкретно: 3-5 связных абзацев, 15-25 предложений. " +
+	"Обязательно сохраняй повторяющиеся речевые маркеры (характерные слова, обращения, структуру шуток) и приводи короткие цитаты в кавычках. " +
+	"Сохраняй устойчивые черты из старого портрета: она не должна терять свои фишки при обновлениях. " +
+	"Не выдумывай фактов, если данных мало — честно опиши только заметные признаки."
+
 func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
+	return generatePortraitWithPrompt(participantPortraitSystemPrompt, oldPortrait, messages)
+}
+
+func generateBotPortrait(oldPortrait string, messages []string) (string, error) {
+	return generatePortraitWithPrompt(botPortraitSystemPrompt, oldPortrait, messages)
+}
+
+func generatePortraitWithPrompt(systemPrompt string, oldPortrait string, messages []string) (string, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return "", errors.New("OPENAI_API_KEY is empty")
@@ -904,12 +914,6 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	userPrompt.WriteString("Новые сообщения участника:\n")
 	userPrompt.WriteString(strings.TrimSpace(batch.String()))
 
-	systemPrompt := "Ты анализируешь стиль общения участника чата. " +
-		"Пиши мягко и нейтрально, без категоричности. " +
-		"Не считай обращения к боту Оле-ням/Оленям/Оленька частью стиля участника и не упоминай их. " +
-		"Портрет должен быть подробным, но без воды: 2-3 связных абзаца, примерно 8-14 предложений. " +
-		"Сохраняй конкретные нюансы: повторяющиеся темы и интересы, лексику, юмор, эмоциональные реакции, уязвимые места, границы, манеру реплаев и предпочтительный стиль ответа. " +
-		"Не превращай портрет в общие фразы; если данных мало, честно опиши только заметные признаки и не выдумывай."
 	payload := map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{
@@ -917,7 +921,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 			{"role": "user", "content": userPrompt.String()},
 		},
 		"temperature": 0.3,
-		"max_tokens":  1000,
+		"max_tokens":  envInt("PORTRAIT_MAX_TOKENS", 2500),
 	}
 	body, _ := json.Marshal(payload)
 
@@ -955,6 +959,7 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
@@ -966,6 +971,9 @@ func generateParticipantPortrait(oldPortrait string, messages []string) (string,
 	out := strings.TrimSpace(result.Choices[0].Message.Content)
 	if out == "" {
 		return "", errors.New("empty portrait answer")
+	}
+	if strings.EqualFold(strings.TrimSpace(result.Choices[0].FinishReason), "length") {
+		log.Printf("portrait truncated by max_tokens=%d chars=%d", envInt("PORTRAIT_MAX_TOKENS", 2500), len([]rune(out)))
 	}
 	return out, nil
 }
@@ -1011,7 +1019,7 @@ func generateChatSummary(promptTemplate string, messages []summaryPromptMessage)
 			{"role": "user", "content": userPrompt},
 		},
 		"temperature": 0.2,
-		"max_tokens":  envInt("CHAT_SUMMARY_MAX_TOKENS", 3000),
+		"max_tokens":  envInt("CHAT_SUMMARY_MAX_TOKENS", 12000),
 	}
 	body, _ := json.Marshal(payload)
 
@@ -1053,6 +1061,7 @@ func generateChatSummary(promptTemplate string, messages []summaryPromptMessage)
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
@@ -1064,6 +1073,12 @@ func generateChatSummary(promptTemplate string, messages []summaryPromptMessage)
 	out := strings.TrimSpace(result.Choices[0].Message.Content)
 	if out == "" {
 		return "", errors.New("empty summary answer")
+	}
+	// finish_reason=length means the model was cut off mid-sentence: say so in
+	// the report instead of shipping a silently truncated answer.
+	if strings.EqualFold(strings.TrimSpace(result.Choices[0].FinishReason), "length") {
+		log.Printf("chat summary truncated by max_tokens=%d chars=%d", envInt("CHAT_SUMMARY_MAX_TOKENS", 12000), len([]rune(out)))
+		out += "\n\n_Отчёт обрезан лимитом модели (max_tokens) — увеличьте CHAT_SUMMARY_MAX_TOKENS._"
 	}
 	return out, nil
 }
@@ -1236,11 +1251,59 @@ func parseOrientationChoice(s string) string {
 	}
 }
 
+type chatMemberTagCacheEntry struct {
+	tag       string
+	expiresAt time.Time
+}
+
+const (
+	chatMemberTagCacheTTL = 15 * time.Minute
+	chatMemberTagCacheMax = 4096
+)
+
+var chatMemberTagCache = struct {
+	mu    sync.Mutex
+	items map[string]chatMemberTagCacheEntry
+}{
+	items: make(map[string]chatMemberTagCacheEntry),
+}
+
+// getChatMemberTagRaw returns the participant tag/custom title. The result is
+// cached: it used to be one blocking Telegram API call (6s timeout) per
+// rendered template, which starved action workers on a busy chat.
 func getChatMemberTagRaw(token string, chatID, userID int64) string {
 	token = strings.TrimSpace(token)
-	if token == "" {
+	if token == "" || chatID == 0 || userID == 0 {
 		return ""
 	}
+	key := strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(userID, 10)
+	now := time.Now()
+	chatMemberTagCache.mu.Lock()
+	if entry, ok := chatMemberTagCache.items[key]; ok && now.Before(entry.expiresAt) {
+		chatMemberTagCache.mu.Unlock()
+		return entry.tag
+	}
+	chatMemberTagCache.mu.Unlock()
+
+	tag := fetchChatMemberTagRaw(token, chatID, userID)
+
+	chatMemberTagCache.mu.Lock()
+	if len(chatMemberTagCache.items) >= chatMemberTagCacheMax {
+		for k, entry := range chatMemberTagCache.items {
+			if now.After(entry.expiresAt) {
+				delete(chatMemberTagCache.items, k)
+			}
+		}
+		if len(chatMemberTagCache.items) >= chatMemberTagCacheMax {
+			chatMemberTagCache.items = make(map[string]chatMemberTagCacheEntry)
+		}
+	}
+	chatMemberTagCache.items[key] = chatMemberTagCacheEntry{tag: tag, expiresAt: now.Add(chatMemberTagCacheTTL)}
+	chatMemberTagCache.mu.Unlock()
+	return tag
+}
+
+func fetchChatMemberTagRaw(token string, chatID, userID int64) string {
 	u := fmt.Sprintf(
 		"https://api.telegram.org/bot%s/getChatMember?chat_id=%s&user_id=%s",
 		token,
@@ -1282,10 +1345,34 @@ func reportChatFailure(bot *tgbotapi.BotAPI, chatID int64, context string, err e
 	if !chatErrorLogEnabled || bot == nil || chatID == 0 {
 		return
 	}
-	// Never expose raw upstream errors to chat (can leak sensitive internals/tokens).
+	// Never expose raw upstream errors to chat (can leak sensitive internals/tokens),
+	// but well-known states get an actionable line instead of "смотрите логи".
 	text := fmt.Sprintf("⚠️ %s. Подробности в логах.", context)
+	if hint := chatFailureHint(err); hint != "" {
+		text = fmt.Sprintf("⚠️ %s.\n%s", context, hint)
+	}
 	m := tgbotapi.NewMessage(chatID, text)
 	_, _ = bot.Send(m)
+}
+
+// chatFailureHint maps frequent upstream failures to a short instruction for the
+// chat. It never echoes request data, only the well-known error class.
+func chatFailureHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToUpper(err.Error())
+	switch {
+	case strings.Contains(text, "AUTH_KEY_UNREGISTERED"), strings.Contains(text, "AUTH_KEY_DUPLICATED"):
+		return "Сессия MTProto отозвана Telegram — нужна повторная авторизация: /set_mtproto в личке с ботом."
+	case strings.Contains(text, "SESSION_PASSWORD_NEEDED"), strings.Contains(text, "SESSION_PASSWORD_INVALID"):
+		return "У аккаунта включена двухфакторка — при привязке нужен пароль 2FA."
+	case strings.Contains(text, "FLOOD_WAIT"):
+		return "Telegram ограничил частоту запросов — повторите через пару минут."
+	case strings.Contains(text, "CHAT_FORBIDDEN"), strings.Contains(text, "CHANNEL_PRIVATE"):
+		return "Нет доступа к истории чата: привяжите чат заново через /set_mtproto с аккаунта, который в нём состоит."
+	}
+	return ""
 }
 
 type chatFailureTitleError struct {

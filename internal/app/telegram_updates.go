@@ -237,14 +237,14 @@ func hydrateReplyToMessageTextFromRaw(msg *tgbotapi.Message, rawMsg *rawMessageW
 	text := extractRawMessageText(rawMsg.ReplyToMessage)
 	if text == "" {
 		if debugTriggerLogEnabled {
-			log.Printf("reply_text raw empty chat=%d msg=%d reply_msg=%d raw_text=%v raw_caption=%v raw_rich_message_bytes=%d raw_rich_message=%q",
+			log.Printf("reply_text raw empty chat=%d msg=%d reply_msg=%d raw_text=%v raw_caption=%v raw_rich_message_bytes=%d raw_rich_message[%s]",
 				msg.Chat.ID,
 				msg.MessageID,
 				msg.ReplyToMessage.MessageID,
 				strings.TrimSpace(rawMsg.ReplyToMessage.Text) != "",
 				strings.TrimSpace(rawMsg.ReplyToMessage.Caption) != "",
 				len(rawMsg.ReplyToMessage.RichMessage),
-				clipLogText(normalizeRawRichText(string(rawMsg.ReplyToMessage.RichMessage)), 500),
+				logTextFingerprint(normalizeRawRichText(string(rawMsg.ReplyToMessage.RichMessage))),
 			)
 		}
 		return

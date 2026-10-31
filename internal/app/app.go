@@ -372,8 +372,8 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	}
 	editWaited, editChanged := waitForMessageEditsSettled(task.Msg, time.Duration(editQuietSec)*time.Second, time.Duration(editMaxSec)*time.Second)
 	if (debugTriggerLogEnabled || debugGPTLogEnabled) && editWaited > 0 {
-		log.Printf("gpt edit wait chat=%d msg=%d waited_ms=%d changed=%v text=%q",
-			task.Msg.Chat.ID, task.Msg.MessageID, editWaited.Milliseconds(), editChanged, clipLogText(firstNonEmptyUserText(task.Msg), 200))
+		log.Printf("gpt edit wait chat=%d msg=%d waited_ms=%d changed=%v text[%s]",
+			task.Msg.Chat.ID, task.Msg.MessageID, editWaited.Milliseconds(), editChanged, logTextFingerprint(firstNonEmptyUserText(task.Msg)))
 	}
 	tmplCtx := newTemplateContext(task.Bot, task.Msg, &task.Trigger, task.TemplateLookup)
 	result, err := generateChatGPTReply(tmplCtx, pickResponseVariantText(task.Trigger.ResponseText))
@@ -433,8 +433,8 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 		}
 	}
 	if debugGPTLogEnabled {
-		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical=%q",
-			task.Trigger.ID, len(out), countTGEmojiTags(out), clipText(out, 1400))
+		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical[%s]",
+			task.Trigger.ID, len(out), countTGEmojiTags(out), logTextFingerprint(out))
 	}
 	pause := estimateGPTReplyHumanPause(out)
 	if editWaited > 0 {
@@ -465,12 +465,19 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	}
 	sendCtx := sendContext{Bot: task.Bot, ChatID: task.Msg.Chat.ID, ReplyTo: replyTo}
 	if svgSource, ok := extractFirstSVGFromGPTResponse(out); ok {
-		pngBytes, err := renderGPTSVGResponseToPNG(svgSource)
+		pngBytes, refineTokens, err := refineGPTSVGPNG(svgSource)
 		if err != nil {
 			log.Printf("gpt svg render failed trigger=%d chat=%d msg=%d err=%v svg=%q",
 				task.Trigger.ID, task.Msg.Chat.ID, task.Msg.MessageID, err, clipText(svgSource, 900))
 			reportChatFailure(task.Bot, task.Msg.Chat.ID, "ошибка рендера SVG", err)
 			return
+		}
+		// Vision feedback rounds bill real tokens: count them against the user's
+		// DeepSeek quota instead of letting them bypass the limit silently.
+		if refineTokens > 0 && task.RecordDeepSeekGPTTokens != nil && task.Msg.From != nil {
+			if _, _, recErr := task.RecordDeepSeekGPTTokens(task.Msg.From.ID, refineTokens, time.Now()); recErr != nil {
+				log.Printf("gpt svg refine tokens record failed user=%d tokens=%d err=%v", task.Msg.From.ID, refineTokens, recErr)
+			}
 		}
 		if ok := sendPhoto(sendCtx, generatedImage{Bytes: pngBytes}, "", false); ok {
 			sent = true
@@ -495,8 +502,8 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	} else if hasRichArticle {
 		richOut := responseToRichMarkdownArticle(out)
 		if debugGPTLogEnabled {
-			log.Printf("gpt flow trigger=%d rich_article_len=%d rich_article_tgemoji=%d rich_article=%q",
-				task.Trigger.ID, len(richOut), countTGEmojiTags(richOut), clipText(richOut, 1400))
+			log.Printf("gpt flow trigger=%d rich_article_len=%d rich_article_tgemoji=%d rich_article[%s]",
+				task.Trigger.ID, len(richOut), countTGEmojiTags(richOut), logTextFingerprint(richOut))
 		}
 		if ok := sendRichMarkdownArticle(sendCtx, richOut, task.Trigger.Preview); ok {
 			sent = true
@@ -2047,7 +2054,7 @@ func Run() {
 	spotifyQueue := newSpotifyPickQueue(envInt("SPOTIFY_AUDIO_WORKERS", 1), envInt("SPOTIFY_AUDIO_QUEUE", 8))
 	yandexMusicQueue := newYandexMusicQueue(envInt("YANDEX_MUSIC_WORKERS", 1), envInt("YANDEX_MUSIC_QUEUE", 4))
 	vkMusicQueue := newVKMusicQueue(envInt("VK_AUDIO_WORKERS", 1), envInt("VK_AUDIO_QUEUE", 4))
-	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 1), envInt("MEDIA_DOWNLOAD_QUEUE", 8))
+	mediaQueue := newMediaDownloadQueue(envInt("MEDIA_DOWNLOAD_WORKERS", 2), envInt("MEDIA_DOWNLOAD_QUEUE", 32))
 	voiceTranslateQueue := newVoiceTranslateQueue(envInt("VOICE_TRANSLATE_WORKERS", 1), envInt("VOICE_TRANSLATE_QUEUE", 4))
 	chatErrorLogEnabled = envBool("CHAT_ERROR_LOG", true)
 	debugTriggerLogEnabled = envBool("DEBUG_TRIGGER_LOG", false)
@@ -2171,16 +2178,26 @@ func Run() {
 	idleTracker := trigger.NewIdleTracker()
 	actionQueue := newTriggerActionQueue(defaultTriggerActionWorkers(), defaultTriggerActionQueueSize())
 	mediaGroupImages := newDefaultMediaGroupImageStore()
+	mediaGroupImages.StartJanitor(time.Minute)
 	setGPTMediaGroupImageResolver(mediaGroupImages.MessagesFor)
 	defer setGPTMediaGroupImageResolver(nil)
 
-	adminBind := envOr("ADMIN_BIND", ":8090")
+	adminBind := envOr("ADMIN_BIND", "127.0.0.1:8090")
 	adminEnabled := envBool("ADMIN_ENABLED", true)
 	if adminEnabled {
 		admin := NewWebAdmin(store, os.Getenv("ADMIN_TOKEN"))
 		go func() {
 			log.Printf("Web admin listening on %s", adminBind)
-			if err := http.ListenAndServe(adminBind, admin.routes()); err != nil {
+			srv := &http.Server{
+				Addr:              adminBind,
+				Handler:           admin.routes(),
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      120 * time.Second,
+				IdleTimeout:       60 * time.Second,
+				MaxHeaderBytes:    1 << 20,
+			}
+			if err := srv.ListenAndServe(); err != nil {
 				log.Printf("web admin stopped: %v", err)
 			}
 		}()
@@ -2189,12 +2206,22 @@ func Run() {
 		tmpRoutes.HandleFunc("/trigger_bot/tmp/", NewWebAdmin(nil, "").voiceTranslateTempFile)
 		go func() {
 			log.Printf("Voice translate temp file server listening on %s", adminBind)
-			if err := http.ListenAndServe(adminBind, tmpRoutes); err != nil {
+			srv := &http.Server{
+				Addr:              adminBind,
+				Handler:           tmpRoutes,
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      120 * time.Second,
+				IdleTimeout:       60 * time.Second,
+				MaxHeaderBytes:    1 << 20,
+			}
+			if err := srv.ListenAndServe(); err != nil {
 				log.Printf("voice translate temp file server stopped: %v", err)
 			}
 		}()
 	}
 	go runScheduledUnmutes(bot, store)
+	StartReactionStateJanitor(5*time.Minute, 30*time.Minute)
 	startBotCommandsSyncLoop(bot)
 
 	startedAtUnix := time.Now().Unix()
@@ -2214,6 +2241,8 @@ func Run() {
 	}
 	updates := getUpdatesChanWithEmojiMeta(bot, u)
 	triggerEngine := engine.NewTriggerEngine()
+	triggerEngine.StartCooldownJanitor(10*time.Minute, 24*time.Hour)
+	StartStaticTmpJanitor(time.Hour, 7*24*time.Hour)
 	templateLookup := buildTemplateLookup(store)
 	handlerDeps := triggerHandlerDeps{
 		ActionQueue: actionQueue,
@@ -2272,81 +2301,504 @@ func Run() {
 		ChatRecent: chatRecent,
 	}
 
-	for update := range updates {
-		if isStartupBacklogRawMember(update.RawChatMember, startedAtUnix) {
-			if debugTriggerLogEnabled {
-				log.Printf("skip startup backlog chat_member update date=%d", update.RawChatMember.Date)
-			}
-			continue
-		}
-		if isStartupBacklogRawMember(update.RawMyChatMember, startedAtUnix) {
-			if debugTriggerLogEnabled {
-				log.Printf("skip startup backlog my_chat_member update date=%d", update.RawMyChatMember.Date)
-			}
-			continue
-		}
-		if isStartupBacklogReactionCount(update.RawMessageReactionCount, startedAtUnix) {
-			if debugTriggerLogEnabled {
-				log.Printf("skip startup backlog message_reaction_count update date=%d", update.RawMessageReactionCount.Date)
-			}
-			continue
-		}
-		if isStartupBacklogMessageReaction(update.RawMessageReaction, startedAtUnix) {
-			if debugTriggerLogEnabled {
-				log.Printf("skip startup backlog message_reaction update date=%d", update.RawMessageReaction.Date)
-			}
-			continue
-		}
-		if update.RawChatMember != nil {
-			handleNewMemberUpdate(handlerDeps, update.RawChatMember)
-		}
-		if update.RawMyChatMember != nil {
-			handleDisallowedMyChatMemberNotice(bot, allowedChats, disallowedNotifier, update.RawMyChatMember)
-			handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
-		}
-		if update.RawMessageReactionCount != nil {
-			handleReactionCountUpdate(handlerDeps, update.RawMessageReactionCount)
-			continue
-		}
-		if update.RawMessageReaction != nil {
-			handleMessageReactionUpdate(handlerDeps, update.RawMessageReaction)
-			continue
-		}
-		if update.Update.InlineQuery != nil {
-			handleRoleplayInlineQuery(bot, update.Update.InlineQuery)
-			continue
-		}
-		if update.Update.CallbackQuery != nil {
-			if handleSetMTProtoCallback(bot, mtprotoSetup, update.Update.CallbackQuery) {
+	runSupervisedLoop("update_loop", func() {
+		for update := range updates {
+			if isStartupBacklogRawMember(update.RawChatMember, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					log.Printf("skip startup backlog chat_member update date=%d", update.RawChatMember.Date)
+				}
 				continue
 			}
-			if handleClearChatCallback(
-				bot,
-				adminCache,
-				clearChatConfirms,
-				clearChatService,
-				update.Update.CallbackQuery,
-			) {
+			if isStartupBacklogRawMember(update.RawMyChatMember, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					log.Printf("skip startup backlog my_chat_member update date=%d", update.RawMyChatMember.Date)
+				}
 				continue
 			}
-			if handleModerationConfirmCallback(
-				bot,
-				adminCache,
-				userIndex,
-				store,
-				moderationConfirms,
-				update.Update.CallbackQuery,
-			) {
+			if isStartupBacklogReactionCount(update.RawMessageReactionCount, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					log.Printf("skip startup backlog message_reaction_count update date=%d", update.RawMessageReactionCount.Date)
+				}
 				continue
 			}
-			if musicpick.HandleChoiceCallback(
-				bot,
-				update.Update.CallbackQuery,
-				func(chatID int64, title string, err error) {
-					reportChatFailure(bot, chatID, title, err)
-				},
-				func(ctx context.Context, req musicpick.ChoiceRequest, provider string) error {
-					return processMusicProviderChoice(ctx, musicProviderDeps{
+			if isStartupBacklogMessageReaction(update.RawMessageReaction, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					log.Printf("skip startup backlog message_reaction update date=%d", update.RawMessageReaction.Date)
+				}
+				continue
+			}
+			if update.RawChatMember != nil {
+				handleNewMemberUpdate(handlerDeps, update.RawChatMember)
+			}
+			if update.RawMyChatMember != nil {
+				handleDisallowedMyChatMemberNotice(bot, allowedChats, disallowedNotifier, update.RawMyChatMember)
+				handleNewMemberUpdate(handlerDeps, update.RawMyChatMember)
+			}
+			if update.RawMessageReactionCount != nil {
+				handleReactionCountUpdate(handlerDeps, update.RawMessageReactionCount)
+				continue
+			}
+			if update.RawMessageReaction != nil {
+				handleMessageReactionUpdate(handlerDeps, update.RawMessageReaction)
+				continue
+			}
+			if update.Update.InlineQuery != nil {
+				handleRoleplayInlineQuery(bot, update.Update.InlineQuery)
+				continue
+			}
+			if update.Update.CallbackQuery != nil {
+				if handleSetMTProtoCallback(bot, mtprotoSetup, update.Update.CallbackQuery) {
+					continue
+				}
+				if handleClearChatCallback(
+					bot,
+					adminCache,
+					clearChatConfirms,
+					clearChatService,
+					update.Update.CallbackQuery,
+				) {
+					continue
+				}
+				if handleModerationConfirmCallback(
+					bot,
+					adminCache,
+					userIndex,
+					store,
+					moderationConfirms,
+					update.Update.CallbackQuery,
+				) {
+					continue
+				}
+				if musicpick.HandleChoiceCallback(
+					bot,
+					update.Update.CallbackQuery,
+					func(chatID int64, title string, err error) {
+						reportChatFailure(bot, chatID, title, err)
+					},
+					func(ctx context.Context, req musicpick.ChoiceRequest, provider string) error {
+						// Provider search takes up to two minutes; running it inline
+						// blocks the single update loop for every chat.
+						go runWorkerTask("music_provider_choice", func() {
+							bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+							defer cancel()
+							err := processMusicProviderChoice(bgCtx, musicProviderDeps{
+								Bot:               bot,
+								SpotifyMusic:      spotifyMusicClient,
+								SpotifyDownloader: spotifyDownloader,
+								SpotifyQueue:      spotifyQueue,
+								YandexDownloader:  yandexDownloader,
+								YandexQueue:       yandexMusicQueue,
+								VKDownloader:      vkDownloader,
+								VKQueue:           vkMusicQueue,
+								SoundCloudSearch:  mediaDownloader,
+								MediaDownloader:   mediaDownloader,
+								MediaQueue:        mediaQueue,
+								IdleTracker:       idleTracker,
+							}, req, provider)
+							if err != nil {
+								reportChatFailure(bot, req.ChatID, "ошибка обработки выбора музыкального сервиса", err)
+							}
+						})
+						_ = ctx
+						return nil
+					},
+				) {
+					continue
+				}
+				if handleYandexTop10Callback(
+					bot,
+					update.Update.CallbackQuery,
+					yandexDownloader,
+					idleTracker,
+				) {
+					continue
+				}
+				if pick.HandlePickCallback(
+					bot,
+					update.Update.CallbackQuery,
+					func(chatID int64, title string, err error) {
+						reportChatFailure(bot, chatID, title, err)
+					},
+					func(ctx context.Context, req pick.PickRequest) error {
+						_ = ctx
+						if strings.EqualFold(strings.TrimSpace(req.Provider), "yandex") {
+							targetURL := strings.TrimSpace(req.SourceURL)
+							if targetURL == "" {
+								return errors.New("empty yandex track url")
+							}
+							task := yandexMusicTask{
+								SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+								URL:      targetURL,
+								DL:       yandexDownloader,
+								ReportTo: req.ChatID,
+							}
+							if yandexMusicQueue == nil || !yandexMusicQueue.enqueue(task) {
+								return errors.New("yandex music queue is full")
+							}
+							return nil
+						}
+						if strings.EqualFold(strings.TrimSpace(req.Provider), "vk") {
+							task := vkMusicTask{
+								SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+								TrackID:  strings.TrimSpace(req.TrackID),
+								DL:       vkDownloader,
+								ReportTo: req.ChatID,
+							}
+							if vkMusicQueue == nil || !vkMusicQueue.enqueue(task) {
+								return errors.New("vk music queue is full")
+							}
+							return nil
+						}
+						if strings.EqualFold(strings.TrimSpace(req.Provider), "soundcloud") {
+							targetURL := strings.TrimSpace(req.SourceURL)
+							if targetURL == "" {
+								return errors.New("empty soundcloud track url")
+							}
+							task := mediaDownloadTask{
+								SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+								URL:      targetURL,
+								Mode:     mediadl.ModeAudio,
+								DL:       mediaDownloader,
+								ReportTo: req.ChatID,
+							}
+							if mediaQueue == nil || !mediaQueue.enqueue(task) {
+								return errors.New("media download queue is full")
+							}
+							return nil
+						}
+						task := spotifyPickTask{
+							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+							Req:      req,
+							DL:       spotifyDownloader,
+							ReportTo: req.ChatID,
+						}
+						if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
+							return errors.New("spotify queue is full")
+						}
+						return nil
+					},
+				) {
+					continue
+				}
+				if mediadl.HandleChoiceCallback(
+					bot,
+					update.Update.CallbackQuery,
+					func(chatID int64, title string, err error) {
+						reportChatFailure(bot, chatID, title, err)
+					},
+					func(ctx context.Context, req mediadl.ChoiceRequest, mode mediadl.Mode) error {
+						_ = ctx
+						log.Printf("media choice selected chat=%d user=%d mode=%s url=%q", req.ChatID, req.UserID, mode, clipText(req.URL, 220))
+						task := mediaDownloadTask{
+							SendCtx:      sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
+							URL:          req.URL,
+							Mode:         mode,
+							DL:           mediaDownloader,
+							SourceMsgID:  req.SourceMsgID,
+							DeleteSource: req.DeleteSource,
+							ReportTo:     req.ChatID,
+						}
+						if mediaQueue == nil || !mediaQueue.enqueue(task) {
+							return errors.New("media queue is full")
+						}
+						log.Printf("media choice enqueued chat=%d mode=%s replyTo=%d", req.ChatID, mode, req.ReplyTo)
+						return nil
+					},
+				) {
+					continue
+				}
+				if handleVoiceTranslateOptionCallback(bot, update.Update.CallbackQuery, voiceTranslateQueue) {
+					continue
+				}
+				if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
+					continue
+				}
+				if handleRoleplayCallback(bot, update.Update.CallbackQuery) {
+					continue
+				}
+			}
+			if update.Update.EditedMessage != nil {
+				if isStartupBacklogMessage(update.Update.EditedMessage, startedAtUnix) {
+					if debugTriggerLogEnabled {
+						log.Printf("skip startup backlog edited message chat=%d msg=%d date=%d",
+							update.Update.EditedMessage.Chat.ID, update.Update.EditedMessage.MessageID, update.Update.EditedMessage.Date)
+					}
+					continue
+				}
+				trackMessageRevision(update.Update.EditedMessage)
+				if debugTriggerLogEnabled {
+					em := update.Update.EditedMessage
+					log.Printf("edited message tracked chat=%d msg=%d text[%s]", em.Chat.ID, em.MessageID, logTextFingerprint(firstNonEmptyUserText(em)))
+				}
+				continue
+			}
+
+			if update.Update.Message == nil {
+				continue
+			}
+			msg := update.Update.Message
+			if isStartupBacklogMessage(msg, startedAtUnix) {
+				if debugTriggerLogEnabled {
+					chatID := int64(0)
+					if msg.Chat != nil {
+						chatID = msg.Chat.ID
+					}
+					log.Printf("skip startup backlog message chat=%d msg=%d date=%d", chatID, msg.MessageID, msg.Date)
+				}
+				continue
+			}
+			trackMessageRevision(msg)
+			rawMsg := update.RawMessage
+			hydrateReplyToMessageTextFromRaw(msg, rawMsg)
+			senderChatPresent := msg != nil && msg.SenderChat != nil
+			if senderChatPresent {
+				// Telegram anonymous/channel-posted messages may come with From=nil or GroupAnonymousBot.
+				// Normalize into a pseudo-user so regular trigger flow can process them.
+				senderID := msg.SenderChat.ID
+				senderTitle := strings.TrimSpace(msg.SenderChat.Title)
+				senderUsername := strings.TrimPrefix(strings.TrimSpace(msg.SenderChat.UserName), "@")
+				if senderTitle == "" {
+					senderTitle = senderUsername
+				}
+				if senderTitle == "" {
+					senderTitle = "sender_chat"
+				}
+				if senderID == 0 && msg.From != nil {
+					senderID = msg.From.ID
+				}
+				if msg.From == nil || msg.From.IsBot {
+					msg.From = &tgbotapi.User{
+						ID:        senderID,
+						FirstName: senderTitle,
+						UserName:  senderUsername,
+						IsBot:     false,
+					}
+					if debugTriggerLogEnabled {
+						log.Printf("sender_chat normalized chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q",
+							msg.Chat.ID, msg.MessageID, msg.SenderChat.ID, msg.SenderChat.Type, strings.TrimSpace(msg.SenderChat.Title))
+					}
+				}
+			}
+			if msg.Chat == nil {
+				if debugTriggerLogEnabled {
+					log.Printf("skip message: missing chat msg=%d", msg.MessageID)
+				}
+				continue
+			}
+			if msg.From == nil {
+				if debugTriggerLogEnabled {
+					senderChatID := int64(0)
+					senderChatType := ""
+					senderChatTitle := ""
+					if msg.SenderChat != nil {
+						senderChatID = msg.SenderChat.ID
+						senderChatType = msg.SenderChat.Type
+						senderChatTitle = strings.TrimSpace(msg.SenderChat.Title)
+					}
+					log.Printf("skip message: from=nil (likely sender_chat) chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q text[%s]",
+						msg.Chat.ID, msg.MessageID, senderChatID, senderChatType, senderChatTitle, logTextFingerprint(firstNonEmptyUserText(msg)))
+				}
+				continue
+			}
+			if msg.From.IsBot {
+				if debugTriggerLogEnabled {
+					log.Printf("skip message: from bot chat=%d msg=%d from_id=%d from_username=%q sender_chat_present=%v",
+						msg.Chat.ID, msg.MessageID, msg.From.ID, strings.TrimSpace(msg.From.UserName), msg.SenderChat != nil)
+				}
+				continue
+			}
+			mediaGroupImages.Observe(msg)
+			quoteHistory.Add(msg, rawMsg)
+			isPrivateChat := msg.Chat.IsPrivate()
+			if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
+				now := time.Now()
+				if disallowedNotifier.ShouldNotify(msg.Chat.ID, now) {
+					if err := notifyDisallowedChat(bot, msg.Chat.ID); err == nil {
+						disallowedNotifier.MarkNotified(msg.Chat.ID, now)
+					}
+				}
+				if debugTriggerLogEnabled {
+					log.Printf("skip message from disallowed chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+				}
+				continue
+			}
+			userIndex.RememberFromMessage(msg)
+			if !isPrivateChat {
+				if _, err := adminCache.EnsureChatAdminsFresh(bot, msg.Chat.ID); err != nil && debugTriggerLogEnabled {
+					log.Printf("admin cache warmup failed chat=%d: %v", msg.Chat.ID, err)
+				}
+			}
+			summaryHistory.ObserveMessage(msg, firstNonEmptyUserText(msg))
+
+			if handleRoleplayInlineSentMessage(bot, msg) {
+				continue
+			}
+
+			if handleModerationCommand(moderationContext{
+				Bot:        bot,
+				AdminCache: adminCache,
+				UserIndex:  userIndex,
+				Readonly:   readonly,
+				Store:      store,
+				Confirms:   moderationConfirms,
+			}, msg, strings.TrimSpace(msg.Text)) {
+				continue
+			}
+
+			cmdSendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID}
+			if msg.IsCommand() {
+				cmd := msg.Command()
+				switch cmd {
+				case cmdStart, cmdHelp:
+					s := ""
+					helpHTML := false
+					if isPrivateChat {
+						commands := []string{
+							cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
+							cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
+							cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
+							cmdTranslateVoice, cmdTranslateGPT, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
+							cmdChess, cmdSummary, cmdReadonly, cmdReloadAdmins, cmdBalance,
+						}
+						s = "Триггер-бот активен.\n\n" +
+							"Админка: /trigger_bot\n" +
+							"Команды: /" + strings.Join(commands, " /") + "\n" +
+							"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
+							"Теги для ChatGPT-промпта:\n" +
+							"{{message}} / {{user_text}} — текст сообщения\n" +
+							"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
+							"{{user_display_name}}, {{user_label}}\n" +
+							"{{user_portrait}}\n" +
+							"{{user_portrait_remaining}}\n" +
+							"{{bot_portrait}}\n" +
+							"{{gpt_4h_remaining}}, {{gpt_4h_limit}}, {{gpt_4h_low_threshold}}\n" +
+							"{{chat_context 12}}\n" +
+							"{{sender_tag}}\n" +
+							"{{chat_id}}, {{chat_title}}\n" +
+							"{{reply_text}}\n" +
+							"{{capturing_text}}\n" +
+							"{{capturing_choice}} / {{capturing_option}}\n" +
+							"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
+							"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
+							"{{reply_sender_tag}}\n\n" +
+							"Кастомный emoji ID:\n" +
+							fmt.Sprintf("— команда /%s\n", cmdEmojiID) +
+							"— или просто отправьте кастомный emoji в личку боту."
+					} else {
+						helpHTML = true
+						triggerInfo := "Триггеры: список временно недоступен."
+						if items, err := store.ListTriggers(); err == nil {
+							enabled := make([]string, 0, len(items))
+							for _, it := range items {
+								if !it.Enabled || !showTriggerInHelp(it) {
+									continue
+								}
+								enabled = append(enabled, triggerHelpHTMLItem(it))
+							}
+							if len(enabled) > 0 {
+								triggerInfo = fmt.Sprintf("Активные триггеры: %d\n%s", len(enabled), strings.Join(enabled, "\n"))
+							} else {
+								triggerInfo = "Активные триггеры: пока не настроены."
+							}
+						}
+						s = triggerInfo
+					}
+					if helpHTML {
+						sendHTML(cmdSendCtx.WithReply(msg.MessageID), s, false)
+					} else {
+						reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
+					}
+					continue
+				case cmdEmojiID, cmdEmojiIDAlias:
+					hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
+					if len(hits) == 0 && rawMsg != nil && rawMsg.ReplyToMessage != nil {
+						hits, entityCount = extractCustomEmojiFromRaw(rawMsg.ReplyToMessage)
+					}
+					if len(hits) == 0 {
+						if entityCount > 0 {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+							continue
+						}
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Кастомный emoji не найден. Отправьте сообщение с premium-эмодзи.", false)
+						continue
+					}
+					lines := make([]string, 0, len(hits)+2)
+					lines = append(lines, "Готовый код для вставки:")
+					for _, hit := range hits {
+						snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
+						lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+					}
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+					continue
+				case cmdStickerID, cmdStickerIDAlias:
+					stickerHit, stickerOK := extractStickerCode(msg)
+					if !stickerOK && msg != nil && msg.ReplyToMessage != nil {
+						stickerHit, stickerOK = extractStickerCode(msg.ReplyToMessage)
+					}
+					if !stickerOK {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Стикер не найден. Отправьте стикер или ответьте этой командой на стикер.", false)
+						continue
+					}
+					lines := []string{
+						"Коды стикера:",
+						"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
+					}
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+					continue
+				case cmdGifID, cmdGifIDAlias:
+					animationHit, animationOK := extractAnimationCode(msg)
+					if !animationOK && msg != nil && msg.ReplyToMessage != nil {
+						animationHit, animationOK = extractAnimationCode(msg.ReplyToMessage)
+					}
+					if !animationOK {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Гифка не найдена. Отправьте гифку или ответьте этой командой на гифку.", false)
+						continue
+					}
+					reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
+					continue
+				case cmdQuoteSticker, cmdQuoteStickerAlias:
+					handled, errText, st := handleQuoteStickerCommand(bot, quoteSessions, quoteHistory, msg)
+					if handled {
+						if errText != "" {
+							reply(cmdSendCtx.WithReply(msg.MessageID), errText, false)
+							continue
+						}
+						if st == nil {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось создать сессию quote-стикера.", false)
+							continue
+						}
+						if err := sendQuoteStickerPickerMessage(bot, msg.Chat.ID, *st); err != nil {
+							reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось показать меню выбора эмодзи.", false)
+							continue
+						}
+						_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
+							ChatID:    msg.Chat.ID,
+							MessageID: msg.MessageID,
+						})
+						continue
+					}
+				case cmdQuoteDelete:
+					handled, out := handleQuoteStickerDelete(bot, quoteHistory, msg)
+					if handled {
+						reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
+						continue
+					}
+				case cmdSpotifySearch, cmdSpotifySearchAlt, cmdYandexMusicSearch, cmdYandexMusicFind, cmdVKMusicSearch, cmdVKMusicFind, cmdSoundCloudSearch, cmdSoundCloudFind:
+					spec, ok := musicCommandSpecByCommand(cmd)
+					if !ok {
+						continue
+					}
+					query := strings.TrimSpace(msg.CommandArguments())
+					if query == "" {
+						reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", spec.UsageCommand), false)
+						continue
+					}
+					userID := int64(0)
+					if msg.From != nil {
+						userID = msg.From.ID
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					err := processMusicProviderChoice(ctx, musicProviderDeps{
 						Bot:               bot,
 						SpotifyMusic:      spotifyMusicClient,
 						SpotifyDownloader: spotifyDownloader,
@@ -2359,774 +2811,364 @@ func Run() {
 						MediaDownloader:   mediaDownloader,
 						MediaQueue:        mediaQueue,
 						IdleTracker:       idleTracker,
-					}, req, provider)
-				},
-			) {
-				continue
-			}
-			if handleYandexTop10Callback(
-				bot,
-				update.Update.CallbackQuery,
-				yandexDownloader,
-				idleTracker,
-			) {
-				continue
-			}
-			if pick.HandlePickCallback(
-				bot,
-				update.Update.CallbackQuery,
-				func(chatID int64, title string, err error) {
-					reportChatFailure(bot, chatID, title, err)
-				},
-				func(ctx context.Context, req pick.PickRequest) error {
-					_ = ctx
-					if strings.EqualFold(strings.TrimSpace(req.Provider), "yandex") {
-						targetURL := strings.TrimSpace(req.SourceURL)
-						if targetURL == "" {
-							return errors.New("empty yandex track url")
-						}
-						task := yandexMusicTask{
-							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-							URL:      targetURL,
-							DL:       yandexDownloader,
-							ReportTo: req.ChatID,
-						}
-						if yandexMusicQueue == nil || !yandexMusicQueue.enqueue(task) {
-							return errors.New("yandex music queue is full")
-						}
-						return nil
+					}, musicpick.ChoiceRequest{
+						Query:       query,
+						ChatID:      msg.Chat.ID,
+						ReplyTo:     msg.MessageID,
+						SourceMsgID: msg.MessageID,
+						UserID:      userID,
+					}, spec.Provider)
+					cancel()
+					if err != nil {
+						log.Printf("music command search failed provider=%s chat=%d msg=%d query=%q err=%v", spec.Provider, msg.Chat.ID, msg.MessageID, clipText(query, 160), err)
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка поиска "+spec.ServiceName+": "+clipText(err.Error(), 240), false)
 					}
-					if strings.EqualFold(strings.TrimSpace(req.Provider), "vk") {
-						task := vkMusicTask{
-							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-							TrackID:  strings.TrimSpace(req.TrackID),
-							DL:       vkDownloader,
-							ReportTo: req.ChatID,
-						}
-						if vkMusicQueue == nil || !vkMusicQueue.enqueue(task) {
-							return errors.New("vk music queue is full")
-						}
-						return nil
-					}
-					if strings.EqualFold(strings.TrimSpace(req.Provider), "soundcloud") {
-						targetURL := strings.TrimSpace(req.SourceURL)
-						if targetURL == "" {
-							return errors.New("empty soundcloud track url")
-						}
-						task := mediaDownloadTask{
-							SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-							URL:      targetURL,
-							Mode:     mediadl.ModeAudio,
-							DL:       mediaDownloader,
-							ReportTo: req.ChatID,
-						}
-						if mediaQueue == nil || !mediaQueue.enqueue(task) {
-							return errors.New("media download queue is full")
-						}
-						return nil
-					}
-					task := spotifyPickTask{
-						SendCtx:  sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-						Req:      req,
-						DL:       spotifyDownloader,
-						ReportTo: req.ChatID,
-					}
-					if spotifyQueue == nil || !spotifyQueue.enqueue(task) {
-						return errors.New("spotify queue is full")
-					}
-					return nil
-				},
-			) {
-				continue
-			}
-			if mediadl.HandleChoiceCallback(
-				bot,
-				update.Update.CallbackQuery,
-				func(chatID int64, title string, err error) {
-					reportChatFailure(bot, chatID, title, err)
-				},
-				func(ctx context.Context, req mediadl.ChoiceRequest, mode mediadl.Mode) error {
-					_ = ctx
-					log.Printf("media choice selected chat=%d user=%d mode=%s url=%q", req.ChatID, req.UserID, mode, clipText(req.URL, 220))
-					task := mediaDownloadTask{
-						SendCtx:      sendContext{Bot: bot, ChatID: req.ChatID, ReplyTo: req.ReplyTo},
-						URL:          req.URL,
-						Mode:         mode,
-						DL:           mediaDownloader,
-						SourceMsgID:  req.SourceMsgID,
-						DeleteSource: req.DeleteSource,
-						ReportTo:     req.ChatID,
-					}
-					if mediaQueue == nil || !mediaQueue.enqueue(task) {
-						return errors.New("media queue is full")
-					}
-					log.Printf("media choice enqueued chat=%d mode=%s replyTo=%d", req.ChatID, mode, req.ReplyTo)
-					return nil
-				},
-			) {
-				continue
-			}
-			if handleVoiceTranslateOptionCallback(bot, update.Update.CallbackQuery, voiceTranslateQueue) {
-				continue
-			}
-			if handleQuoteStickerCallback(bot, quoteSessions, quoteHistory, update.Update.CallbackQuery) {
-				continue
-			}
-			if handleRoleplayCallback(bot, update.Update.CallbackQuery) {
-				continue
-			}
-		}
-		if update.Update.EditedMessage != nil {
-			if isStartupBacklogMessage(update.Update.EditedMessage, startedAtUnix) {
-				if debugTriggerLogEnabled {
-					log.Printf("skip startup backlog edited message chat=%d msg=%d date=%d",
-						update.Update.EditedMessage.Chat.ID, update.Update.EditedMessage.MessageID, update.Update.EditedMessage.Date)
-				}
-				continue
-			}
-			trackMessageRevision(update.Update.EditedMessage)
-			if debugTriggerLogEnabled {
-				em := update.Update.EditedMessage
-				log.Printf("edited message tracked chat=%d msg=%d text=%q", em.Chat.ID, em.MessageID, clipLogText(firstNonEmptyUserText(em), 200))
-			}
-			continue
-		}
-
-		if update.Update.Message == nil {
-			continue
-		}
-		msg := update.Update.Message
-		if isStartupBacklogMessage(msg, startedAtUnix) {
-			if debugTriggerLogEnabled {
-				chatID := int64(0)
-				if msg.Chat != nil {
-					chatID = msg.Chat.ID
-				}
-				log.Printf("skip startup backlog message chat=%d msg=%d date=%d", chatID, msg.MessageID, msg.Date)
-			}
-			continue
-		}
-		trackMessageRevision(msg)
-		rawMsg := update.RawMessage
-		hydrateReplyToMessageTextFromRaw(msg, rawMsg)
-		senderChatPresent := msg != nil && msg.SenderChat != nil
-		if senderChatPresent {
-			// Telegram anonymous/channel-posted messages may come with From=nil or GroupAnonymousBot.
-			// Normalize into a pseudo-user so regular trigger flow can process them.
-			senderID := msg.SenderChat.ID
-			senderTitle := strings.TrimSpace(msg.SenderChat.Title)
-			senderUsername := strings.TrimPrefix(strings.TrimSpace(msg.SenderChat.UserName), "@")
-			if senderTitle == "" {
-				senderTitle = senderUsername
-			}
-			if senderTitle == "" {
-				senderTitle = "sender_chat"
-			}
-			if senderID == 0 && msg.From != nil {
-				senderID = msg.From.ID
-			}
-			if msg.From == nil || msg.From.IsBot {
-				msg.From = &tgbotapi.User{
-					ID:        senderID,
-					FirstName: senderTitle,
-					UserName:  senderUsername,
-					IsBot:     false,
-				}
-				if debugTriggerLogEnabled {
-					log.Printf("sender_chat normalized chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q",
-						msg.Chat.ID, msg.MessageID, msg.SenderChat.ID, msg.SenderChat.Type, strings.TrimSpace(msg.SenderChat.Title))
-				}
-			}
-		}
-		if msg.Chat == nil {
-			if debugTriggerLogEnabled {
-				log.Printf("skip message: missing chat msg=%d", msg.MessageID)
-			}
-			continue
-		}
-		if msg.From == nil {
-			if debugTriggerLogEnabled {
-				senderChatID := int64(0)
-				senderChatType := ""
-				senderChatTitle := ""
-				if msg.SenderChat != nil {
-					senderChatID = msg.SenderChat.ID
-					senderChatType = msg.SenderChat.Type
-					senderChatTitle = strings.TrimSpace(msg.SenderChat.Title)
-				}
-				log.Printf("skip message: from=nil (likely sender_chat) chat=%d msg=%d sender_chat_id=%d sender_chat_type=%q sender_chat_title=%q text=%q",
-					msg.Chat.ID, msg.MessageID, senderChatID, senderChatType, senderChatTitle, clipLogText(strings.TrimSpace(firstNonEmptyUserText(msg)), 180))
-			}
-			continue
-		}
-		if msg.From.IsBot {
-			if debugTriggerLogEnabled {
-				log.Printf("skip message: from bot chat=%d msg=%d from_id=%d from_username=%q sender_chat_present=%v",
-					msg.Chat.ID, msg.MessageID, msg.From.ID, strings.TrimSpace(msg.From.UserName), msg.SenderChat != nil)
-			}
-			continue
-		}
-		mediaGroupImages.Observe(msg)
-		quoteHistory.Add(msg, rawMsg)
-		isPrivateChat := msg.Chat.IsPrivate()
-		if !isPrivateChat && !allowedChats.Allows(msg.Chat.ID) {
-			now := time.Now()
-			if disallowedNotifier.ShouldNotify(msg.Chat.ID, now) {
-				if err := notifyDisallowedChat(bot, msg.Chat.ID); err == nil {
-					disallowedNotifier.MarkNotified(msg.Chat.ID, now)
-				}
-			}
-			if debugTriggerLogEnabled {
-				log.Printf("skip message from disallowed chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
-			}
-			continue
-		}
-		userIndex.RememberFromMessage(msg)
-		if !isPrivateChat {
-			if _, err := adminCache.EnsureChatAdminsFresh(bot, msg.Chat.ID); err != nil && debugTriggerLogEnabled {
-				log.Printf("admin cache warmup failed chat=%d: %v", msg.Chat.ID, err)
-			}
-		}
-		summaryHistory.ObserveMessage(msg, firstNonEmptyUserText(msg))
-
-		if handleRoleplayInlineSentMessage(bot, msg) {
-			continue
-		}
-
-		if handleModerationCommand(moderationContext{
-			Bot:        bot,
-			AdminCache: adminCache,
-			UserIndex:  userIndex,
-			Readonly:   readonly,
-			Store:      store,
-			Confirms:   moderationConfirms,
-		}, msg, strings.TrimSpace(msg.Text)) {
-			continue
-		}
-
-		cmdSendCtx := sendContext{Bot: bot, ChatID: msg.Chat.ID}
-		if msg.IsCommand() {
-			cmd := msg.Command()
-			switch cmd {
-			case cmdStart, cmdHelp:
-				s := ""
-				helpHTML := false
-				if isPrivateChat {
-					commands := []string{
-						cmdStart, cmdHelp, cmdEmojiID, cmdStickerID, cmdGifID, cmdQuoteSticker, cmdQuoteDelete,
-						cmdSpotifySearch, cmdYandexMusicSearch, cmdVKMusicSearch, cmdSoundCloudSearch,
-						cmdMyPortrait, cmdDeleteMyPortrait, cmdAnon,
-						cmdTranslateVoice, cmdTranslateGPT, cmdRoleplay, cmdBan, cmdUnban, cmdMute, cmdUnmute, cmdKick,
-						cmdChess, cmdSummary, cmdReadonly, cmdReloadAdmins, cmdBalance,
-					}
-					s = "Триггер-бот активен.\n\n" +
-						"Админка: /trigger_bot\n" +
-						"Команды: /" + strings.Join(commands, " /") + "\n" +
-						"Мод-команды: !ban/ban !unban/unban !mute/mute !unmute/unmute !kick/kick !readonly/readonly !reload_admins/reload_admins (+ тихие !sban/sban !smute/smute !skick/skick)\n\n" +
-						"Теги для ChatGPT-промпта:\n" +
-						"{{message}} / {{user_text}} — текст сообщения\n" +
-						"{{user_id}}, {{user_first_name}}, {{user_username}}\n" +
-						"{{user_display_name}}, {{user_label}}\n" +
-						"{{user_portrait}}\n" +
-						"{{user_portrait_remaining}}\n" +
-						"{{bot_portrait}}\n" +
-						"{{gpt_4h_remaining}}, {{gpt_4h_limit}}, {{gpt_4h_low_threshold}}\n" +
-						"{{chat_context 12}}\n" +
-						"{{sender_tag}}\n" +
-						"{{chat_id}}, {{chat_title}}\n" +
-						"{{reply_text}}\n" +
-						"{{capturing_text}}\n" +
-						"{{capturing_choice}} / {{capturing_option}}\n" +
-						"{{reply_user_id}}, {{reply_first_name}}, {{reply_username}}\n" +
-						"{{reply_display_name}}, {{reply_label}}, {{reply_user_link}}\n" +
-						"{{reply_sender_tag}}\n\n" +
-						"Кастомный emoji ID:\n" +
-						fmt.Sprintf("— команда /%s\n", cmdEmojiID) +
-						"— или просто отправьте кастомный emoji в личку боту."
-				} else {
-					helpHTML = true
-					triggerInfo := "Триггеры: список временно недоступен."
-					if items, err := store.ListTriggers(); err == nil {
-						enabled := make([]string, 0, len(items))
-						for _, it := range items {
-							if !it.Enabled || !showTriggerInHelp(it) {
-								continue
-							}
-							enabled = append(enabled, triggerHelpHTMLItem(it))
-						}
-						if len(enabled) > 0 {
-							triggerInfo = fmt.Sprintf("Активные триггеры: %d\n%s", len(enabled), strings.Join(enabled, "\n"))
-						} else {
-							triggerInfo = "Активные триггеры: пока не настроены."
-						}
-					}
-					s = triggerInfo
-				}
-				if helpHTML {
-					sendHTML(cmdSendCtx.WithReply(msg.MessageID), s, false)
-				} else {
-					reply(cmdSendCtx.WithReply(msg.MessageID), s, false)
-				}
-				continue
-			case cmdEmojiID, cmdEmojiIDAlias:
-				hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
-				if len(hits) == 0 && rawMsg != nil && rawMsg.ReplyToMessage != nil {
-					hits, entityCount = extractCustomEmojiFromRaw(rawMsg.ReplyToMessage)
-				}
-				if len(hits) == 0 {
-					if entityCount > 0 {
-						reply(cmdSendCtx.WithReply(msg.MessageID), "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+					continue
+				case cmdAnon:
+					if handleAnonCommand(bot, msg) {
 						continue
 					}
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Кастомный emoji не найден. Отправьте сообщение с premium-эмодзи.", false)
-					continue
-				}
-				lines := make([]string, 0, len(hits)+2)
-				lines = append(lines, "Готовый код для вставки:")
-				for _, hit := range hits {
-					snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
-					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
-				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
-				continue
-			case cmdStickerID, cmdStickerIDAlias:
-				stickerHit, stickerOK := extractStickerCode(msg)
-				if !stickerOK && msg != nil && msg.ReplyToMessage != nil {
-					stickerHit, stickerOK = extractStickerCode(msg.ReplyToMessage)
-				}
-				if !stickerOK {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Стикер не найден. Отправьте стикер или ответьте этой командой на стикер.", false)
-					continue
-				}
-				lines := []string{
-					"Коды стикера:",
-					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
-				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
-				continue
-			case cmdGifID, cmdGifIDAlias:
-				animationHit, animationOK := extractAnimationCode(msg)
-				if !animationOK && msg != nil && msg.ReplyToMessage != nil {
-					animationHit, animationOK = extractAnimationCode(msg.ReplyToMessage)
-				}
-				if !animationOK {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Гифка не найдена. Отправьте гифку или ответьте этой командой на гифку.", false)
-					continue
-				}
-				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
-				continue
-			case cmdQuoteSticker, cmdQuoteStickerAlias:
-				handled, errText, st := handleQuoteStickerCommand(bot, quoteSessions, quoteHistory, msg)
-				if handled {
-					if errText != "" {
-						reply(cmdSendCtx.WithReply(msg.MessageID), errText, false)
+				case cmdTranslateVoice, cmdTranslateGPT:
+					engine := voiceTranslateEngineVOT
+					usage := "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice."
+					needReply := "Нужен реплай на аудио/видео/voice."
+					menuTitle := "Действия с переводом:"
+					if cmd == cmdTranslateGPT {
+						engine = voiceTranslateEngineOpenAI
+						usage = "Использование: ответьте /translate_gpt на сообщение с аудио/видео/voice."
+						needReply = "Нужен реплай на аудио/видео/voice для GPT-перевода."
+						menuTitle = "Действия с GPT-переводом:"
+					}
+					if msg.ReplyToMessage == nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), usage, false)
 						continue
 					}
-					if st == nil {
-						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось создать сессию quote-стикера.", false)
+					srcMediaMsg, mediaInfo, mediaSize, mediaOK := detectReplyMediaSource(msg)
+					if !mediaOK {
+						reply(cmdSendCtx.WithReply(msg.MessageID), needReply, false)
 						continue
 					}
-					if err := sendQuoteStickerPickerMessage(bot, msg.Chat.ID, *st); err != nil {
-						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось показать меню выбора эмодзи.", false)
+					maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
+					if maxMB > 0 && mediaSize > 0 && mediaSize > int64(maxMB)<<20 {
+						replyToID := msg.ReplyToMessage.MessageID
+						if srcMediaMsg != nil {
+							replyToID = srcMediaMsg.MessageID
+						}
+						reply(cmdSendCtx.WithReply(replyToID), fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB), false)
 						continue
 					}
-					_, _ = bot.Request(tgbotapi.DeleteMessageConfig{
-						ChatID:    msg.Chat.ID,
-						MessageID: msg.MessageID,
-					})
-					continue
-				}
-			case cmdQuoteDelete:
-				handled, out := handleQuoteStickerDelete(bot, quoteHistory, msg)
-				if handled {
-					reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
-					continue
-				}
-			case cmdSpotifySearch, cmdSpotifySearchAlt, cmdYandexMusicSearch, cmdYandexMusicFind, cmdVKMusicSearch, cmdVKMusicFind, cmdSoundCloudSearch, cmdSoundCloudFind:
-				spec, ok := musicCommandSpecByCommand(cmd)
-				if !ok {
-					continue
-				}
-				query := strings.TrimSpace(msg.CommandArguments())
-				if query == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID), fmt.Sprintf("Использование: /%s исполнитель или трек", spec.UsageCommand), false)
-					continue
-				}
-				userID := int64(0)
-				if msg.From != nil {
-					userID = msg.From.ID
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				err := processMusicProviderChoice(ctx, musicProviderDeps{
-					Bot:               bot,
-					SpotifyMusic:      spotifyMusicClient,
-					SpotifyDownloader: spotifyDownloader,
-					SpotifyQueue:      spotifyQueue,
-					YandexDownloader:  yandexDownloader,
-					YandexQueue:       yandexMusicQueue,
-					VKDownloader:      vkDownloader,
-					VKQueue:           vkMusicQueue,
-					SoundCloudSearch:  mediaDownloader,
-					MediaDownloader:   mediaDownloader,
-					MediaQueue:        mediaQueue,
-					IdleTracker:       idleTracker,
-				}, musicpick.ChoiceRequest{
-					Query:       query,
-					ChatID:      msg.Chat.ID,
-					ReplyTo:     msg.MessageID,
-					SourceMsgID: msg.MessageID,
-					UserID:      userID,
-				}, spec.Provider)
-				cancel()
-				if err != nil {
-					log.Printf("music command search failed provider=%s chat=%d msg=%d query=%q err=%v", spec.Provider, msg.Chat.ID, msg.MessageID, clipText(query, 160), err)
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка поиска "+spec.ServiceName+": "+clipText(err.Error(), 240), false)
-				}
-				continue
-			case cmdAnon:
-				if handleAnonCommand(bot, msg) {
-					continue
-				}
-			case cmdTranslateVoice, cmdTranslateGPT:
-				engine := voiceTranslateEngineVOT
-				usage := "Использование: ответьте /translate_voice на сообщение с аудио/видео/voice."
-				needReply := "Нужен реплай на аудио/видео/voice."
-				menuTitle := "Действия с переводом:"
-				if cmd == cmdTranslateGPT {
-					engine = voiceTranslateEngineOpenAI
-					usage = "Использование: ответьте /translate_gpt на сообщение с аудио/видео/voice."
-					needReply = "Нужен реплай на аудио/видео/voice для GPT-перевода."
-					menuTitle = "Действия с GPT-переводом:"
-				}
-				if msg.ReplyToMessage == nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), usage, false)
-					continue
-				}
-				srcMediaMsg, mediaInfo, mediaSize, mediaOK := detectReplyMediaSource(msg)
-				if !mediaOK {
-					reply(cmdSendCtx.WithReply(msg.MessageID), needReply, false)
-					continue
-				}
-				maxMB := envInt("VOICE_TRANSLATE_MAX_MB", 300)
-				if maxMB > 0 && mediaSize > 0 && mediaSize > int64(maxMB)<<20 {
 					replyToID := msg.ReplyToMessage.MessageID
 					if srcMediaMsg != nil {
 						replyToID = srcMediaMsg.MessageID
 					}
-					reply(cmdSendCtx.WithReply(replyToID), fmt.Sprintf("Файл слишком большой для перевода. Лимит: до %d МБ.", maxMB), false)
+					token := putVoiceTranslateOption(voiceTranslateOptionEntry{
+						chatID:   msg.Chat.ID,
+						userID:   msg.From.ID,
+						replyTo:  replyToID,
+						engine:   engine,
+						provider: defaultVOTProvider(),
+						media:    mediaInfo,
+					})
+					menu := tgbotapi.NewMessage(msg.Chat.ID, menuTitle)
+					menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo, engine, defaultVOTProvider())
+					if replyToID > 0 {
+						menu.ReplyToMessageID = replyToID
+						menu.AllowSendingWithoutReply = true
+					}
+					_, _ = bot.Send(menu)
+					continue
+				case cmdRoleplay:
+					handleRoleplayCommand(bot, msg, msg.CommandArguments())
+					continue
+				case cmdChess:
+					if handleChessCommand(bot, msg) {
+						continue
+					}
+				case cmdSummary:
+					handleSummaryCommand(bot, clearChatService, summaryHistory, templateLookup, msg)
+					continue
+				case cmdEthics:
+					handleEthicsCommand(bot, clearChatService, adminCache, msg)
+					continue
+				case cmdBalance:
+					if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Команда /balance доступна только админам.", false)
+						continue
+					}
+					costs, err := fetchOpenAICurrentMonthCosts(time.Now())
+					if err != nil {
+						log.Printf("openai balance failed chat=%d user=%d err=%v", msg.Chat.ID, msg.From.ID, err)
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось получить баланс OpenAI. Подробности в логах.", false)
+						continue
+					}
+					reply(cmdSendCtx.WithReply(msg.MessageID), formatOpenAIBalanceMessage(costs), false)
+					continue
+				case cmdClearChat:
+					if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {
+						continue
+					}
+				case cmdSetMTProto:
+					if handleSetMTProtoCommand(bot, clearChatService, mtprotoSetup, msg) {
+						continue
+					}
+				case cmdMyPortrait, cmdMyPortraitAlias:
+					if msg.From == nil || msg.From.ID == 0 {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+						continue
+					}
+					if portraitManager == nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+						continue
+					}
+					portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
+					remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
+					if portrait == "" {
+						reply(cmdSendCtx.WithReply(msg.MessageID),
+							fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
+						continue
+					}
+					out := "Твой текущий портрет:\n" + portrait
+					if remaining > 0 {
+						out += fmt.Sprintf("\n\nДо следующего обновления: %d сообщений", remaining)
+					}
+					reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
+					continue
+				case cmdDeleteMyPortrait, cmdDeleteMyPortrait2:
+					if msg.From == nil || msg.From.ID == 0 {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
+						continue
+					}
+					if portraitManager == nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
+						continue
+					}
+					if err := portraitManager.DeletePortrait(msg.From.ID); err != nil {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка удаления портрета: "+clipText(err.Error(), 200), false)
+						continue
+					}
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
 					continue
 				}
-				replyToID := msg.ReplyToMessage.MessageID
-				if srcMediaMsg != nil {
-					replyToID = srcMediaMsg.MessageID
-				}
-				token := putVoiceTranslateOption(voiceTranslateOptionEntry{
-					chatID:   msg.Chat.ID,
-					userID:   msg.From.ID,
-					replyTo:  replyToID,
-					engine:   engine,
-					provider: defaultVOTProvider(),
-					media:    mediaInfo,
-				})
-				menu := tgbotapi.NewMessage(msg.Chat.ID, menuTitle)
-				menu.ReplyMarkup = renderVoiceTranslateOptionKeyboard(token, mediaInfo.HasVideo, engine, defaultVOTProvider())
-				if replyToID > 0 {
-					menu.ReplyToMessageID = replyToID
-					menu.AllowSendingWithoutReply = true
-				}
-				_, _ = bot.Send(menu)
-				continue
-			case cmdRoleplay:
-				handleRoleplayCommand(bot, msg, msg.CommandArguments())
-				continue
-			case cmdChess:
-				if handleChessCommand(bot, msg) {
-					continue
-				}
-			case cmdSummary:
-				handleSummaryCommand(bot, clearChatService, summaryHistory, templateLookup, msg)
-				continue
-			case cmdEthics:
-				handleEthicsCommand(bot, clearChatService, adminCache, msg)
-				continue
-			case cmdBalance:
-				if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Команда /balance доступна только админам.", false)
-					continue
-				}
-				costs, err := fetchOpenAICurrentMonthCosts(time.Now())
-				if err != nil {
-					log.Printf("openai balance failed chat=%d user=%d err=%v", msg.Chat.ID, msg.From.ID, err)
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось получить баланс OpenAI. Подробности в логах.", false)
-					continue
-				}
-				reply(cmdSendCtx.WithReply(msg.MessageID), formatOpenAIBalanceMessage(costs), false)
-				continue
-			case cmdClearChat:
-				if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {
-					continue
-				}
-			case cmdSetMTProto:
-				if handleSetMTProtoCommand(bot, clearChatService, mtprotoSetup, msg) {
-					continue
-				}
-			case cmdMyPortrait, cmdMyPortraitAlias:
-				if msg.From == nil || msg.From.ID == 0 {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
-					continue
-				}
-				if portraitManager == nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
-					continue
-				}
-				portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
-				remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
-				if portrait == "" {
-					reply(cmdSendCtx.WithReply(msg.MessageID),
-						fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
-					continue
-				}
-				out := "Твой текущий портрет:\n" + portrait
-				if remaining > 0 {
-					out += fmt.Sprintf("\n\nДо следующего обновления: %d сообщений", remaining)
-				}
-				reply(cmdSendCtx.WithReply(msg.MessageID), out, false)
-				continue
-			case cmdDeleteMyPortrait, cmdDeleteMyPortrait2:
-				if msg.From == nil || msg.From.ID == 0 {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
-					continue
-				}
-				if portraitManager == nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Портреты сейчас отключены.", false)
-					continue
-				}
-				if err := portraitManager.DeletePortrait(msg.From.ID); err != nil {
-					reply(cmdSendCtx.WithReply(msg.MessageID), "Ошибка удаления портрета: "+clipText(err.Error(), 200), false)
-					continue
-				}
-				reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
+			}
+			if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
 				continue
 			}
-		}
-		if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
-			continue
-		}
-		if handleChessMoveReply(bot, msg, rawMsg) {
-			continue
-		}
-		if isPrivateChat {
-			hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
-			if len(hits) > 0 {
-				lines := make([]string, 0, len(hits)+2)
-				lines = append(lines, "Готовый код для вставки:")
-				for _, hit := range hits {
-					snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
-					lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+			if handleChessMoveReply(bot, msg, rawMsg) {
+				continue
+			}
+			if isPrivateChat {
+				hits, entityCount := extractCustomEmojiFromRaw(rawMsg)
+				if len(hits) > 0 {
+					lines := make([]string, 0, len(hits)+2)
+					lines = append(lines, "Готовый код для вставки:")
+					for _, hit := range hits {
+						snippet := buildTGEmojiSnippet(hit.ID, hit.Fallback)
+						lines = append(lines, "<code>"+html.EscapeString(snippet)+"</code>")
+					}
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+					continue
 				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
-				continue
-			}
-			if entityCount > 0 {
-				reply(cmdSendCtx.WithReply(msg.MessageID), "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
-				continue
-			}
-			if stickerHit, ok := extractStickerCode(msg); ok {
-				lines := []string{
-					"Коды стикера:",
-					"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
+				if entityCount > 0 {
+					reply(cmdSendCtx.WithReply(msg.MessageID), "Нашла кастомный эмодзи, но не смогла извлечь его ID. Попробуйте отправить другой эмодзи ещё раз.", false)
+					continue
 				}
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+				if stickerHit, ok := extractStickerCode(msg); ok {
+					lines := []string{
+						"Коды стикера:",
+						"<code>" + html.EscapeString(buildStickerPairCode(stickerHit)) + "</code>",
+					}
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), strings.Join(lines, "\n"), false)
+					continue
+				}
+				if animationHit, ok := extractAnimationCode(msg); ok {
+					reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
+					continue
+				}
+				if out := buildFileIDReply(extractPrivateAutoFileIDs(msg)); out != "" {
+					sendHTML(cmdSendCtx.WithReply(msg.MessageID), out, false)
+					continue
+				}
+			}
+			if isPrivateChat {
+				if debugTriggerLogEnabled {
+					log.Printf("skip non-command message in private chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+				}
 				continue
 			}
-			if animationHit, ok := extractAnimationCode(msg); ok {
-				reply(cmdSendCtx.WithReply(msg.MessageID), buildAnimationReplyText(animationHit), false)
-				continue
-			}
-			if out := buildFileIDReply(extractPrivateAutoFileIDs(msg)); out != "" {
-				sendHTML(cmdSendCtx.WithReply(msg.MessageID), out, false)
-				continue
-			}
-		}
-		if isPrivateChat {
-			if debugTriggerLogEnabled {
-				log.Printf("skip non-command message in private chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
-			}
-			continue
-		}
 
-		text := strings.TrimSpace(firstNonEmptyUserText(msg))
-		if msg.Voice != nil && envBool("VOICE_TRANSCRIPTION_ENABLED", false) {
-			durSec := msg.Voice.Duration
-			if durSec >= 3 && durSec <= 180 {
-				transcribed, err := transcribeTelegramVoiceMessage(bot, msg)
-				if err != nil {
-					log.Printf("voice transcription failed chat=%d msg=%d err=%v", msg.Chat.ID, msg.MessageID, err)
-				} else if strings.TrimSpace(transcribed) != "" {
-					transcribedPlain := strings.TrimSpace(transcribed)
-					transcribedText := voiceTranscriptionPrefix + transcribedPlain
-					sendHTML(cmdSendCtx.WithReply(msg.MessageID), transcribedText, false)
-					if text == "" {
-						text = transcribedPlain
-					} else {
-						text = text + "\n" + transcribedPlain
+			text := strings.TrimSpace(firstNonEmptyUserText(msg))
+			if msg.Voice != nil && envBool("VOICE_TRANSCRIPTION_ENABLED", false) {
+				durSec := msg.Voice.Duration
+				if durSec >= 3 && durSec <= 180 {
+					transcribed, err := transcribeTelegramVoiceMessage(bot, msg)
+					if err != nil {
+						log.Printf("voice transcription failed chat=%d msg=%d err=%v", msg.Chat.ID, msg.MessageID, err)
+					} else if strings.TrimSpace(transcribed) != "" {
+						transcribedPlain := strings.TrimSpace(transcribed)
+						transcribedText := voiceTranscriptionPrefix + transcribedPlain
+						sendHTML(cmdSendCtx.WithReply(msg.MessageID), transcribedText, false)
+						if text == "" {
+							text = transcribedPlain
+						} else {
+							text = text + "\n" + transcribedPlain
+						}
+					}
+				} else {
+					log.Printf("voice transcription skipped by duration chat=%d msg=%d duration=%ds", msg.Chat.ID, msg.MessageID, durSec)
+				}
+			}
+			if text == "" {
+				continue
+			}
+			msg = messageWithEffectiveUserText(msg, text)
+			summaryHistory.ObserveMessage(msg, text)
+			now := time.Now()
+			idleTracker.Seen(msg.Chat.ID, now)
+			var quotaLowWarningTrigger *Trigger
+			checkGPTTokenQuota := func() bool {
+				if msg.From == nil || msg.From.ID == 0 || !userGPTTokenLimitApplies(msg.From.ID) {
+					return true
+				}
+				if userGPTTokenLimit <= 0 && deepseekUserGPTTokenLimit <= 0 {
+					return true
+				}
+				if userGPTTokenLimit > 0 {
+					remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit, "openai")
+					if err != nil {
+						log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
+						return true
+					}
+					if remaining > 0 {
+						return true
 					}
 				}
-			} else {
-				log.Printf("voice transcription skipped by duration chat=%d msg=%d duration=%ds", msg.Chat.ID, msg.MessageID, durSec)
-			}
-		}
-		if text == "" {
-			continue
-		}
-		msg = messageWithEffectiveUserText(msg, text)
-		summaryHistory.ObserveMessage(msg, text)
-		now := time.Now()
-		idleTracker.Seen(msg.Chat.ID, now)
-		var quotaLowWarningTrigger *Trigger
-		checkGPTTokenQuota := func() bool {
-			if msg.From == nil || msg.From.ID == 0 || !userGPTTokenLimitApplies(msg.From.ID) {
-				return true
-			}
-			if userGPTTokenLimit <= 0 && deepseekUserGPTTokenLimit <= 0 {
-				return true
-			}
-			if userGPTTokenLimit > 0 {
-				remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit, "openai")
-				if err != nil {
-					log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
-					return true
+				if deepseekUserGPTTokenLimit > 0 {
+					remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, deepseekUserGPTTokenLimit, "deepseek")
+					if err != nil {
+						log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
+						return true
+					}
+					if remaining > 0 {
+						return true
+					}
 				}
-				if remaining > 0 {
-					return true
+				if debugTriggerLogEnabled {
+					log.Printf("gpt user-token-limit reached user=%d chat=%d openai=%d/4h deepseek=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit, deepseekUserGPTTokenLimit)
 				}
+				return false
 			}
-			if deepseekUserGPTTokenLimit > 0 {
-				remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, deepseekUserGPTTokenLimit, "deepseek")
-				if err != nil {
-					log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
-					return true
+
+			if text != "" {
+				displayName := strings.TrimSpace(msg.From.FirstName)
+				if displayName == "" {
+					displayName = strings.TrimSpace(msg.From.UserName)
 				}
-				if remaining > 0 {
-					return true
-				}
+				chatRecent.Add(msg.Chat.ID, recentChatMessage{
+					MessageID: msg.MessageID,
+					UserName:  displayName,
+					Text:      text,
+					At:        time.Now(),
+				})
 			}
+
 			if debugTriggerLogEnabled {
-				log.Printf("gpt user-token-limit reached user=%d chat=%d openai=%d/4h deepseek=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit, deepseekUserGPTTokenLimit)
+				log.Printf("update chat=%d msg=%d from=%d user=%s text[%s]",
+					msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, logTextFingerprint(text))
 			}
-			return false
-		}
 
-		if text != "" {
-			displayName := strings.TrimSpace(msg.From.FirstName)
-			if displayName == "" {
-				displayName = strings.TrimSpace(msg.From.UserName)
-			}
-			chatRecent.Add(msg.Chat.ID, recentChatMessage{
-				MessageID: msg.MessageID,
-				UserName:  displayName,
-				Text:      text,
-				At:        time.Now(),
-			})
-		}
-
-		if debugTriggerLogEnabled {
-			log.Printf("update chat=%d msg=%d from=%d user=%s text=%q",
-				msg.Chat.ID, msg.MessageID, msg.From.ID, msg.From.UserName, clipLogText(text, 220))
-		}
-
-		items, err := store.ListTriggersCached()
-		if err != nil {
-			log.Printf("list triggers failed: %v", err)
-			reportChatFailure(bot, msg.Chat.ID, "ошибка загрузки триггеров", err)
-			continue
-		}
-		if debugTriggerLogEnabled {
-			log.Printf("triggers loaded (cached): %d", len(items))
-		}
-		isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
-		quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
-		runtimeItems := filterRuntimeTriggersForMessage(bot, msg, filterRuntimeTriggers(items))
-		matchedAny := false
-		used := make(map[int64]struct{}, 4)
-
-		primary := triggerEngine.Select(engine.SelectInput{
-			Bot:      bot,
-			Msg:      msg,
-			Text:     text,
-			Triggers: filterNonPassThroughTriggers(runtimeItems),
-			IsAdminFn: func() bool {
-				return isAdminAuthor
-			},
-		})
-		if primary != nil {
-			if primary.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
+			items, err := store.ListTriggersCached()
+			if err != nil {
+				log.Printf("list triggers failed: %v", err)
+				reportChatFailure(bot, msg.Chat.ID, "ошибка загрузки триггеров", err)
 				continue
 			}
-			matchedAny = true
-			used[primary.ID] = struct{}{}
 			if debugTriggerLogEnabled {
-				if response := triggerResponseDebugText(bot, msg, primary, templateLookup); response != "" {
-					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v response=%q", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough, response)
-				} else {
-					log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
-				}
+				log.Printf("triggers loaded (cached): %d", len(items))
 			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, quotaLowWarningTrigger)
-		}
+			isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+			quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
+			runtimeItems := filterRuntimeTriggersForMessage(bot, msg, filterRuntimeTriggers(items))
+			matchedAny := false
+			used := make(map[int64]struct{}, 4)
 
-		// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
-		for len(used) < len(runtimeItems) {
-			tr := triggerEngine.Select(engine.SelectInput{
+			primary := triggerEngine.Select(engine.SelectInput{
 				Bot:      bot,
 				Msg:      msg,
 				Text:     text,
-				Triggers: filterPassThroughTriggers(filterUnusedTriggers(runtimeItems, used)),
+				Triggers: filterNonPassThroughTriggers(runtimeItems),
 				IsAdminFn: func() bool {
 					return isAdminAuthor
 				},
 			})
-			if tr == nil {
-				break
-			}
-			if tr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
-				matchedAny = true
-				break
-			}
-			matchedAny = true
-			used[tr.ID] = struct{}{}
-			if debugTriggerLogEnabled {
-				if response := triggerResponseDebugText(bot, msg, tr, templateLookup); response != "" {
-					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s response=%q", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType, response)
-				} else {
-					log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
-				}
-			}
-			enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, quotaLowWarningTrigger)
-		}
-		if matchedAny {
-			continue
-		}
-		if debugTriggerLogEnabled {
-			log.Printf("no trigger matched for msg=%d", msg.MessageID)
-		}
-		if idleTracker != nil {
-			autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, runtimeItems, func() bool {
-				return isAdminAuthor
-			})
-			if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
-				if autoTr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
+			if primary != nil {
+				if primary.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
 					continue
 				}
-				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, quotaLowWarningTrigger)
+				matchedAny = true
+				used[primary.ID] = struct{}{}
 				if debugTriggerLogEnabled {
-					log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
+					if response := triggerResponseDebugText(bot, msg, primary, templateLookup); response != "" {
+						log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v response=%q", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough, response)
+					} else {
+						log.Printf("pick id=%d title=%q mode=%s action=%s pass_through=%v", primary.ID, primary.Title, primary.TriggerMode, primary.ActionType, primary.PassThrough)
+					}
 				}
+				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, primary, quotaLowWarningTrigger)
+			}
+
+			// Second pass: always execute all matching pass-through triggers, even if primary trigger was non-pass-through.
+			for len(used) < len(runtimeItems) {
+				tr := triggerEngine.Select(engine.SelectInput{
+					Bot:      bot,
+					Msg:      msg,
+					Text:     text,
+					Triggers: filterPassThroughTriggers(filterUnusedTriggers(runtimeItems, used)),
+					IsAdminFn: func() bool {
+						return isAdminAuthor
+					},
+				})
+				if tr == nil {
+					break
+				}
+				if tr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
+					matchedAny = true
+					break
+				}
+				matchedAny = true
+				used[tr.ID] = struct{}{}
+				if debugTriggerLogEnabled {
+					if response := triggerResponseDebugText(bot, msg, tr, templateLookup); response != "" {
+						log.Printf("pass-through pick id=%d title=%q mode=%s action=%s response=%q", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType, response)
+					} else {
+						log.Printf("pass-through pick id=%d title=%q mode=%s action=%s", tr.ID, tr.Title, tr.TriggerMode, tr.ActionType)
+					}
+				}
+				enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, tr, quotaLowWarningTrigger)
+			}
+			if matchedAny {
 				continue
 			}
+			if debugTriggerLogEnabled {
+				log.Printf("no trigger matched for msg=%d", msg.MessageID)
+			}
+			if idleTracker != nil {
+				autoTr, idleAfter := trigger.SelectIdleAutoReplyTrigger(bot, msg, runtimeItems, func() bool {
+					return isAdminAuthor
+				})
+				if autoTr != nil && idleTracker.ShouldAutoReply(msg.Chat.ID, idleAfter, now) {
+					if autoTr.ActionType == ActionTypeGPTPrompt && !checkGPTTokenQuota() {
+						continue
+					}
+					enqueueTriggerAction(handlerDeps.triggerActionDeps, handlerDeps.ActionQueue, msg, autoTr, quotaLowWarningTrigger)
+					if debugTriggerLogEnabled {
+						log.Printf("idle auto-reply queued trigger=%d chat=%d msg=%d idle_after=%s", autoTr.ID, msg.Chat.ID, msg.MessageID, idleAfter)
+					}
+					continue
+				}
+			}
+			continue
 		}
-		continue
-	}
+	})
 }
 
 type triggerActionDeps struct {

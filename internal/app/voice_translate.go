@@ -1543,7 +1543,7 @@ func newVoiceTranslateQueue(workers, size int) *voiceTranslateQueue {
 	for i := 0; i < workers; i++ {
 		go func() {
 			for task := range q.ch {
-				processVoiceTranslateTask(task)
+				runWorkerTask("voice_translate", func() { processVoiceTranslateTask(task) })
 			}
 		}()
 	}
@@ -1982,10 +1982,10 @@ func getTelegramFileDirectURL(bot *tgbotapi.BotAPI, fileID string) (string, erro
 }
 
 type voiceTranslateMixProfile struct {
-	OriginalVolume         float64
-	TranslatedVolume       float64
-	DuckThreshold          float64
-	DuckRatio              float64
+	OriginalVolume   float64
+	TranslatedVolume float64
+	DuckThreshold    float64
+	DuckRatio        float64
 	// Deprecated: static mixing is retained only as a temporary compatibility
 	// retry while the VOT-style sidechain mixer is verified in production.
 	StaticOriginalVolume   float64

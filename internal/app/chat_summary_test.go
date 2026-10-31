@@ -28,6 +28,16 @@ func (s *summaryTestService) CompleteAuth(context.Context, chatclear.AuthComplet
 	return chatclear.AuthCompleteResult{}, nil
 }
 func (s *summaryTestService) Available(context.Context) bool { return true }
+func (s *summaryTestService) StartQR(context.Context, int64) (chatclear.QRState, error) {
+	return chatclear.QRState{}, nil
+}
+func (s *summaryTestService) QRState(context.Context, int64) (chatclear.QRState, error) {
+	return chatclear.QRState{}, nil
+}
+func (s *summaryTestService) SubmitQRPassword(context.Context, int64, string) (chatclear.QRState, error) {
+	return chatclear.QRState{}, nil
+}
+func (s *summaryTestService) StopQR(context.Context, int64) error { return nil }
 func (s *summaryTestService) GetHistory(_ context.Context, req chatclear.HistoryRequest) (chatclear.HistoryResult, error) {
 	s.calls++
 	s.request = req

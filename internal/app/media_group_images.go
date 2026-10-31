@@ -44,6 +44,28 @@ func newMediaGroupImageStore(quiet, maxWait, ttl time.Duration) *mediaGroupImage
 	}
 }
 
+// mediaGroupStoreMax caps how many in-flight albums are tracked at once.
+const mediaGroupStoreMax = 512
+
+// StartJanitor sweeps expired albums even when no traffic arrives.
+func (s *mediaGroupImageStore) StartJanitor(interval time.Duration) {
+	if s == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.mu.Lock()
+			s.cleanupLocked(time.Now())
+			s.mu.Unlock()
+		}
+	}()
+}
+
 func newDefaultMediaGroupImageStore() *mediaGroupImageStore {
 	quietMS := envInt("GPT_MEDIA_GROUP_QUIET_MS", 900)
 	if quietMS < 100 {
@@ -86,6 +108,24 @@ func (s *mediaGroupImageStore) Observe(msg *tgbotapi.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupLocked(now)
+	if _, exists := s.groups[key]; !exists && len(s.groups) >= mediaGroupStoreMax {
+		// Hard cap: an album storm must not grow the store without bound.
+		var oldestKey string
+		var oldest time.Time
+		for k, e := range s.groups {
+			if e == nil {
+				oldestKey = k
+				break
+			}
+			if oldestKey == "" || e.expires.Before(oldest) {
+				oldestKey = k
+				oldest = e.expires
+			}
+		}
+		if oldestKey != "" {
+			delete(s.groups, oldestKey)
+		}
+	}
 	entry := s.groups[key]
 	if entry == nil {
 		entry = &mediaGroupImageEntry{}

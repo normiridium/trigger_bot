@@ -131,12 +131,27 @@
             <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_challenge_id" type="text" placeholder="challenge_id" readonly>
           </div>
           <div class="d-flex align-items-center gap-2 flex-wrap">
-            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_code" type="text" placeholder="Код из Telegram">
-            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_password" type="password" placeholder="2FA пароль (если включен)">
+            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Код из Telegram">
+            <input class="form-control form-control-sm bg-black text-light border-secondary" id="mtproto_password" type="password" autocomplete="new-password" placeholder="2FA пароль (если включен)">
             <button class="btn btn-success btn-sm" type="button" id="mtproto_complete_btn"><i class="bi bi-check2-circle"></i> Подтвердить код</button>
           </div>
           <span class="text-secondary small" id="mtproto_hint"></span>
         </form>
+
+        <hr class="border-secondary my-3">
+        <div class="text-secondary small mb-2">Вход по QR — если Telegram не присылает код. Сканируется из приложения, где аккаунт уже залогинен.</div>
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <button class="btn btn-primary btn-sm" type="button" id="mtproto_qr_start_btn"><i class="bi bi-qr-code"></i> Показать QR</button>
+          <button class="btn btn-outline-secondary btn-sm" type="button" id="mtproto_qr_stop_btn"><i class="bi bi-x-circle"></i> Остановить</button>
+          <span class="text-secondary small" id="mtproto_qr_hint"></span>
+        </div>
+        <div id="mtproto_qr_box" class="mt-2" style="display:none;">
+          <img id="mtproto_qr_img" alt="QR для входа" style="width:320px;height:320px;image-rendering:pixelated;background:#fff;padding:8px;border-radius:8px;">
+        </div>
+        <div id="mtproto_qr_pw_box" class="mt-2 d-flex align-items-center gap-2 flex-wrap" style="display:none;">
+          <input class="form-control form-control-sm bg-black text-light border-secondary" style="max-width:280px;" id="mtproto_qr_password" type="password" autocomplete="new-password" placeholder="Облачный пароль (2FA)">
+          <button class="btn btn-success btn-sm" type="button" id="mtproto_qr_pw_btn"><i class="bi bi-key"></i> Отправить пароль</button>
+        </div>
       </div>
     </div>
   </div>

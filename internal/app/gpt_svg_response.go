@@ -58,7 +58,7 @@ func renderGPTSVGResponseToPNG(svgSource string) ([]byte, error) {
 
 	svgPath := filepath.Join(workDir, "input.svg")
 	outPath := filepath.Join(workDir, "svg.png")
-	if err := os.WriteFile(svgPath, []byte(svgSource), 0o600); err != nil {
+	if err := os.WriteFile(svgPath, []byte(sanitizeGPTSVGForRender(svgSource)), 0o600); err != nil {
 		return nil, fmt.Errorf("write SVG input: %w", err)
 	}
 
@@ -101,6 +101,65 @@ func renderGPTSVGResponseToPNG(svgSource string) ([]byte, error) {
 		return nil, fmt.Errorf("decode rendered SVG PNG: %w", err)
 	}
 	return pngBytes, nil
+}
+
+var (
+	svgScriptBlockRe = regexp.MustCompile(`(?is)<script\b.*?</script\s*>`)
+	svgForeignObjRe  = regexp.MustCompile(`(?is)<foreignObject\b.*?</foreignObject\s*>`)
+	svgHrefAttrRe    = regexp.MustCompile(`(?is)(xlink:href|href)\s*=\s*("[^"]*"|'[^']*')`)
+	svgCSSURLFuncRe  = regexp.MustCompile(`(?is)url\s*\(\s*("[^"]*"|'[^']*'|[^)]*)\)`)
+	svgCSSImportRe   = regexp.MustCompile(`(?is)@import\s+[^;]+;?`)
+)
+
+// sanitizeGPTSVGForRender strips anything that could make the SVG renderer
+// fetch external resources (http(s)/file refs, scripts, embedded HTML). Model
+// output is untrusted: without this, rsvg-convert would happily dereference
+// attacker-chosen URLs from inside the SVG.
+func sanitizeGPTSVGForRender(svgSource string) string {
+	out := svgScriptBlockRe.ReplaceAllString(svgSource, "")
+	out = svgForeignObjRe.ReplaceAllString(out, "")
+	out = svgCSSImportRe.ReplaceAllString(out, "")
+	out = svgCSSURLFuncRe.ReplaceAllStringFunc(out, func(match string) string {
+		if svgRefIsLocal(match) {
+			return match
+		}
+		return "none"
+	})
+	out = svgHrefAttrRe.ReplaceAllStringFunc(out, func(match string) string {
+		name := match
+		if i := strings.IndexAny(match, "= \t\r\n"); i >= 0 {
+			name = match[:i]
+		}
+		if svgRefIsLocal(match) {
+			return match
+		}
+		return name + `=""`
+	})
+	return out
+}
+
+// svgRefIsLocal reports whether the reference only points inside the document
+// (fragment like #grad0) instead of to an external resource.
+func svgRefIsLocal(fragment string) bool {
+	quote := strings.IndexAny(fragment, "\"'")
+	if quote < 0 {
+		// url(#id) form without quotes
+		open := strings.LastIndex(fragment, "(")
+		if open < 0 {
+			return false
+		}
+		value := strings.TrimSpace(strings.TrimSuffix(fragment[open+1:], ")"))
+		return strings.HasPrefix(value, "#") || value == ""
+	}
+	q := fragment[quote]
+	rest := fragment[quote+1:]
+	endQuote := strings.IndexByte(rest, q)
+	value := rest
+	if endQuote >= 0 {
+		value = rest[:endQuote]
+	}
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "#") || value == ""
 }
 
 func normalizeGPTSVGForRender(svgSource string) string {

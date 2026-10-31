@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+// voiceShareFileNameRe matches generated share file names (32 hex + media ext).
+var voiceShareFileNameRe = regexp.MustCompile(`^[0-9a-f]{32}\.(mp3|mp4)$`)
 
 type voiceShareEntry struct {
 	path      string
@@ -154,20 +158,21 @@ func (w *WebAdmin) voiceTranslateTempFile(rw http.ResponseWriter, r *http.Reques
 	}
 	path, ok := resolveVoiceShareFile(token)
 	if !ok {
-		candidates := []string{
-			filepath.Join(voiceTranslateTmpDir(), filepath.Base(token)),
-			filepath.Join(strings.TrimSpace(envOr("WEB_STATIC_DIR", "./static")), "tmp", filepath.Base(token)),
-		}
-		for _, candidate := range candidates {
-			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-				path = candidate
-				break
-			}
-		}
-		if strings.TrimSpace(path) == "" {
+		// Anonymous access is limited to files that look like a generated share
+		// link; nothing else from the temp/static directories may be fetched by
+		// guessing a name (the panel is proxied publicly).
+		base := filepath.Base(token)
+		if !voiceShareFileNameRe.MatchString(base) {
 			http.NotFound(rw, r)
 			return
 		}
+		candidate := filepath.Join(voiceTranslateTmpDir(), base)
+		st, err := os.Stat(candidate)
+		if err != nil || st.IsDir() {
+			http.NotFound(rw, r)
+			return
+		}
+		path = candidate
 	}
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
