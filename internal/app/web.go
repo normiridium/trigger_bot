@@ -48,7 +48,7 @@ const adminCSRFCookieName = "trigger_admin_csrf"
 var adminSessionTTL = adminSessionTTLFromEnv()
 
 const webStaticCacheTTL = 0
-const webProxyCacheTTL = 0
+const webProxyCacheTTL = time.Hour
 const adminAuthStateSetupRequired = "setup_required"
 const adminAuthStateLoginRequired = "login_required"
 const adminAuthStateAuthenticated = "authenticated"
@@ -371,8 +371,6 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_delete", w.withAuth(w.templateDeletePost))
 	mux.HandleFunc("/trigger_bot/settings_get", w.withAuth(w.settingsGet))
 	mux.HandleFunc("/trigger_bot/settings_save", w.withAuth(w.settingsSave))
-	mux.HandleFunc("/trigger_bot/mtproto_challenge_start", w.withAuth(w.mtprotoChallengeStart))
-	mux.HandleFunc("/trigger_bot/mtproto_challenge_complete", w.withAuth(w.mtprotoChallengeComplete))
 	mux.HandleFunc("/trigger_bot/mtproto_chat_options", w.withAuth(w.mtprotoChatOptions))
 	mux.HandleFunc("/trigger_bot/mtproto_qr_start", w.withAuth(w.mtprotoQRStart))
 	mux.HandleFunc("/trigger_bot/mtproto_qr_state", w.withAuth(w.mtprotoQRState))
@@ -1366,67 +1364,6 @@ func (w *WebAdmin) settingsSave(rw http.ResponseWriter, r *http.Request) {
 		OK:              true,
 		RestartRequired: true,
 		Message:         "Настройки сохранены. Требуется перезапуск сервиса.",
-	})
-}
-
-func (w *WebAdmin) mtprotoChallengeStart(rw http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		ChatID int64  `json:"chat_id"`
-		Phone  string `json:"phone"`
-	}
-	if err := parseJSONBody(r, &payload); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if w == nil || w.clearOps == nil {
-		http.Error(rw, "chat clear service is not configured", http.StatusNotImplemented)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-	res, err := w.clearOps.StartAuth(ctx, chatclear.AuthStartRequest{
-		ChatID: payload.ChatID,
-		Phone:  strings.TrimSpace(payload.Phone),
-	})
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(rw, http.StatusOK, map[string]interface{}{
-		"ok":           true,
-		"challenge_id": res.ChallengeID,
-	})
-}
-
-func (w *WebAdmin) mtprotoChallengeComplete(rw http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		ChallengeID string `json:"challenge_id"`
-		Code        string `json:"code"`
-		Password    string `json:"password"`
-	}
-	if err := parseJSONBody(r, &payload); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if w == nil || w.clearOps == nil {
-		http.Error(rw, "chat clear service is not configured", http.StatusNotImplemented)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-	res, err := w.clearOps.CompleteAuth(ctx, chatclear.AuthCompleteRequest{
-		ChallengeID: strings.TrimSpace(payload.ChallengeID),
-		Code:        strings.TrimSpace(payload.Code),
-		Password:    strings.TrimSpace(payload.Password),
-	})
-	if err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
-	writeJSON(rw, http.StatusOK, map[string]interface{}{
-		"ok":          true,
-		"chat_id":     res.ChatID,
-		"access_hash": res.AccessHash,
 	})
 }
 

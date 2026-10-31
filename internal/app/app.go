@@ -2107,8 +2107,6 @@ func Run() {
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	clearChatConfirms := newClearChatConfirmManager(time.Duration(envInt("CLEAR_CHAT_CONFIRM_TTL_SEC", 600)) * time.Second)
 	clearChatService := chatclear.NewServiceFromEnv()
-	mtprotoSetup := newMTProtoSetupManager(time.Duration(envInt("MTPROTO_SETUP_TTL_SEC", 1200)) * time.Second)
-	setMTProtoSetupVisible(clearChatService != nil && clearChatService.Available(context.Background()))
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	summaryHistory := newSummaryHistoryStore(chatSummaryHistoryLimit)
 	ensureChatSummaryTemplate(store)
@@ -2243,6 +2241,7 @@ func Run() {
 	triggerEngine := engine.NewTriggerEngine()
 	triggerEngine.StartCooldownJanitor(10*time.Minute, 24*time.Hour)
 	StartStaticTmpJanitor(time.Hour, 7*24*time.Hour)
+	StartEmojiCacheJanitor(time.Hour, 0)
 	templateLookup := buildTemplateLookup(store)
 	handlerDeps := triggerHandlerDeps{
 		ActionQueue: actionQueue,
@@ -2347,9 +2346,6 @@ func Run() {
 				continue
 			}
 			if update.Update.CallbackQuery != nil {
-				if handleSetMTProtoCallback(bot, mtprotoSetup, update.Update.CallbackQuery) {
-					continue
-				}
 				if handleClearChatCallback(
 					bot,
 					adminCache,
@@ -2907,10 +2903,6 @@ func Run() {
 					if handleClearChatCommand(bot, adminCache, clearChatConfirms, msg) {
 						continue
 					}
-				case cmdSetMTProto:
-					if handleSetMTProtoCommand(bot, clearChatService, mtprotoSetup, msg) {
-						continue
-					}
 				case cmdMyPortrait, cmdMyPortraitAlias:
 					if msg.From == nil || msg.From.ID == 0 {
 						reply(cmdSendCtx.WithReply(msg.MessageID), "Не удалось определить пользователя.", false)
@@ -2949,9 +2941,6 @@ func Run() {
 					reply(cmdSendCtx.WithReply(msg.MessageID), "Портрет удалён. Начну собирать новый по следующим сообщениям.", false)
 					continue
 				}
-			}
-			if handleSetMTProtoPrivateText(bot, clearChatService, mtprotoSetup, msg) {
-				continue
 			}
 			if handleChessMoveReply(bot, msg, rawMsg) {
 				continue

@@ -21,13 +21,7 @@ type summaryTestService struct {
 }
 
 func (s *summaryTestService) Clear(context.Context, chatclear.Request) error { return nil }
-func (s *summaryTestService) StartAuth(context.Context, chatclear.AuthStartRequest) (chatclear.AuthStartResult, error) {
-	return chatclear.AuthStartResult{}, nil
-}
-func (s *summaryTestService) CompleteAuth(context.Context, chatclear.AuthCompleteRequest) (chatclear.AuthCompleteResult, error) {
-	return chatclear.AuthCompleteResult{}, nil
-}
-func (s *summaryTestService) Available(context.Context) bool { return true }
+func (s *summaryTestService) Available(context.Context) bool                 { return true }
 func (s *summaryTestService) StartQR(context.Context, int64) (chatclear.QRState, error) {
 	return chatclear.QRState{}, nil
 }

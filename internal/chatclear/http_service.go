@@ -41,30 +41,6 @@ type clearChatHTTPResp struct {
 	Error string `json:"error"`
 }
 
-type authStartPayload struct {
-	ChatID int64  `json:"chat_id"`
-	Phone  string `json:"phone"`
-}
-
-type authStartResp struct {
-	OK          bool   `json:"ok"`
-	Error       string `json:"error"`
-	ChallengeID string `json:"challenge_id"`
-}
-
-type authCompletePayload struct {
-	ChallengeID string `json:"challenge_id"`
-	Code        string `json:"code"`
-	Password    string `json:"password"`
-}
-
-type authCompleteResp struct {
-	OK         bool   `json:"ok"`
-	Error      string `json:"error"`
-	ChatID     int64  `json:"chat_id"`
-	AccessHash int64  `json:"access_hash"`
-}
-
 type historyPayload struct {
 	ChatID       int64  `json:"chat_id"`
 	Username     string `json:"username,omitempty"`
@@ -155,12 +131,6 @@ func (s *HTTPService) postAndCheck(ctx context.Context, path string, body []byte
 type noopService struct{}
 
 func (noopService) Clear(context.Context, Request) error { return ErrNotConfigured }
-func (noopService) StartAuth(context.Context, AuthStartRequest) (AuthStartResult, error) {
-	return AuthStartResult{}, ErrNotConfigured
-}
-func (noopService) CompleteAuth(context.Context, AuthCompleteRequest) (AuthCompleteResult, error) {
-	return AuthCompleteResult{}, ErrNotConfigured
-}
 func (noopService) GetHistory(context.Context, HistoryRequest) (HistoryResult, error) {
 	return HistoryResult{}, ErrNotConfigured
 }
@@ -209,71 +179,6 @@ func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (Histo
 		return HistoryResult{}, errors.New("get_history failed")
 	}
 	return HistoryResult{Messages: out.Messages}, nil
-}
-
-func (s *HTTPService) StartAuth(ctx context.Context, req AuthStartRequest) (AuthStartResult, error) {
-	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {
-		return AuthStartResult{}, ErrNotConfigured
-	}
-	body, err := json.Marshal(commandEnvelope{
-		RequestID: fmt.Sprintf("auth-start-%d", time.Now().UnixNano()),
-		Command:   "auth_user_start",
-		Payload: authStartPayload{
-			ChatID: req.ChatID,
-			Phone:  strings.TrimSpace(req.Phone),
-		},
-	})
-	if err != nil {
-		return AuthStartResult{}, fmt.Errorf("marshal auth_user_start: %w", err)
-	}
-	data, err := s.postForJSON(ctx, "/v1/command", body)
-	if err != nil {
-		return AuthStartResult{}, err
-	}
-	var out authStartResp
-	if err := json.Unmarshal(data, &out); err != nil {
-		return AuthStartResult{}, fmt.Errorf("decode auth_user_start: %w", err)
-	}
-	if !out.OK || strings.TrimSpace(out.ChallengeID) == "" {
-		if strings.TrimSpace(out.Error) != "" {
-			return AuthStartResult{}, errors.New(out.Error)
-		}
-		return AuthStartResult{}, errors.New("auth_user_start failed")
-	}
-	return AuthStartResult{ChallengeID: out.ChallengeID}, nil
-}
-
-func (s *HTTPService) CompleteAuth(ctx context.Context, req AuthCompleteRequest) (AuthCompleteResult, error) {
-	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {
-		return AuthCompleteResult{}, ErrNotConfigured
-	}
-	body, err := json.Marshal(commandEnvelope{
-		RequestID: fmt.Sprintf("auth-complete-%d", time.Now().UnixNano()),
-		Command:   "auth_user_complete",
-		Payload: authCompletePayload{
-			ChallengeID: strings.TrimSpace(req.ChallengeID),
-			Code:        strings.TrimSpace(req.Code),
-			Password:    strings.TrimSpace(req.Password),
-		},
-	})
-	if err != nil {
-		return AuthCompleteResult{}, fmt.Errorf("marshal auth_user_complete: %w", err)
-	}
-	data, err := s.postForJSON(ctx, "/v1/command", body)
-	if err != nil {
-		return AuthCompleteResult{}, err
-	}
-	var out authCompleteResp
-	if err := json.Unmarshal(data, &out); err != nil {
-		return AuthCompleteResult{}, fmt.Errorf("decode auth_user_complete: %w", err)
-	}
-	if !out.OK {
-		if strings.TrimSpace(out.Error) != "" {
-			return AuthCompleteResult{}, errors.New(out.Error)
-		}
-		return AuthCompleteResult{}, errors.New("auth_user_complete failed")
-	}
-	return AuthCompleteResult{ChatID: out.ChatID, AccessHash: out.AccessHash}, nil
 }
 
 func (s *HTTPService) Available(ctx context.Context) bool {

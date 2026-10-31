@@ -5,17 +5,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
-
-var mtprotoSetupVisible atomic.Bool
-
-func setMTProtoSetupVisible(v bool) {
-	mtprotoSetupVisible.Store(v)
-}
 
 func defaultBotCommands() []tgbotapi.BotCommand {
 	out := []tgbotapi.BotCommand{
@@ -37,9 +30,6 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdRoleplay, Description: "Roleplay-действие по реплаю"},
 		{Command: cmdChess, Description: "Новая шахматная доска"},
 		{Command: cmdSummary, Description: "Сводка чата за последние сутки"},
-	}
-	if mtprotoSetupVisible.Load() {
-		out = append(out, tgbotapi.BotCommand{Command: cmdSetMTProto, Description: "Привязать чат к MTProto"})
 	}
 	return out
 }
