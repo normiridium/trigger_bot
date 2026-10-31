@@ -202,6 +202,9 @@ func (s emojiProxyService) ResolveFileURL(ctx context.Context, fileID string) (s
 	if fileID == "" {
 		return "", errors.New("file id is empty")
 	}
+	if fp, ok := cachedFilePath(fileID); ok && strings.TrimSpace(fp) != "" {
+		return fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", strings.TrimSpace(s.Token), strings.TrimLeft(fp, "/")), nil
+	}
 	var out struct {
 		FilePath string `json:"file_path"`
 	}
@@ -211,10 +214,14 @@ func (s emojiProxyService) ResolveFileURL(ctx context.Context, fileID string) (s
 	if strings.TrimSpace(out.FilePath) == "" {
 		return "", errors.New("telegram returned empty file_path")
 	}
+	cacheFilePath(fileID, strings.TrimSpace(out.FilePath))
 	return fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", strings.TrimSpace(s.Token), strings.TrimLeft(out.FilePath, "/")), nil
 }
 
 func (s emojiProxyService) FetchFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	if data, ctype, ok := emojiCacheGet("file", fileID); ok {
+		return data, ctype, nil
+	}
 	u, err := s.ResolveFileURL(ctx, fileID)
 	if err != nil {
 		return nil, "", err
@@ -240,6 +247,7 @@ func (s emojiProxyService) FetchFile(ctx context.Context, fileID string) ([]byte
 	if ctype == "" {
 		ctype = "application/octet-stream"
 	}
+	emojiCachePut("file", fileID, body, ctype)
 	return body, ctype, nil
 }
 
@@ -247,6 +255,9 @@ func (s emojiProxyService) FetchPreviewImage(ctx context.Context, fileID string)
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {
 		return nil, "", errors.New("file id is empty")
+	}
+	if data, _, ok := emojiCacheGet("preview", fileID); ok {
+		return data, "image/webp", nil
 	}
 	fileURL, err := s.ResolveFileURL(ctx, fileID)
 	if err != nil {
@@ -257,9 +268,17 @@ func (s emojiProxyService) FetchPreviewImage(ctx context.Context, fileID string)
 	case ".webp", ".png", ".jpg", ".jpeg", ".gif":
 		return s.FetchFile(ctx, fileID)
 	case ".webm", ".mp4", ".mov":
-		return s.convertVideoURLToAnimatedWEBP(ctx, fileURL)
+		data, ctype, err := s.convertVideoURLToAnimatedWEBP(ctx, fileURL)
+		if err == nil {
+			emojiCachePut("preview", fileID, data, ctype)
+		}
+		return data, ctype, err
 	case ".tgs":
-		return s.convertTGSToWEBP(ctx, fileID)
+		data, ctype, err := s.convertTGSToWEBP(ctx, fileID)
+		if err == nil {
+			emojiCachePut("preview", fileID, data, ctype)
+		}
+		return data, ctype, err
 	default:
 		return s.FetchFile(ctx, fileID)
 	}
@@ -267,7 +286,7 @@ func (s emojiProxyService) FetchPreviewImage(ctx context.Context, fileID string)
 
 // emojiConvertSemaphore caps concurrent ffmpeg preview conversions so one
 // authorized client cannot exhaust CPU/memory with parallel requests.
-var emojiConvertSemaphore = make(chan struct{}, 2)
+var emojiConvertSemaphore = make(chan struct{}, 4)
 
 func acquireEmojiConvertSlot(ctx context.Context) (func(), error) {
 	select {
@@ -303,7 +322,7 @@ func (s emojiProxyService) convertVideoURLToAnimatedWEBP(ctx context.Context, fi
 		"-i", fileURL,
 		"-an",
 		"-t", "1.8",
-		"-vf", "fps=12,scale=96:-1:flags=lanczos:force_original_aspect_ratio=decrease",
+		"-vf", "scale=96:-1:flags=lanczos:force_original_aspect_ratio=decrease",
 		"-loop", "0",
 		"-quality", "70",
 		"-compression_level", "6",

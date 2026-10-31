@@ -70,6 +70,7 @@ func TestResolveSetByEmojiID_PreservesTelegramOrder(t *testing.T) {
 }
 
 func TestFetchFile_UsesTelegramGetFileAndDownload(t *testing.T) {
+	t.Setenv("TRIGGER_BOT_TMP_DIR", t.TempDir())
 	token := "TEST_TOKEN"
 	const fileBody = "WEBPTEST"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
