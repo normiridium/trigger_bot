@@ -22,6 +22,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"trigger-admin-bot/internal/mediadl"
+	"trigger-admin-bot/internal/musicpick"
 	"trigger-admin-bot/internal/pick"
 	"trigger-admin-bot/internal/trigger"
 	"trigger-admin-bot/internal/vkaudio"
@@ -584,6 +585,7 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 							}
 							log.Printf("yandex worker=%d panic chat=%d recover=%v", id, chatID, r)
 							reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", fmt.Errorf("panic: %v", r))
+							sendMusicProviderMenuAfterFailure(mediaDownloadTask{SendCtx: task.SendCtx, Query: "", Msg: task.Msg, Mode: mediadl.ModeAudio})
 						}
 					}()
 					if debugTriggerLogEnabled {
@@ -599,6 +601,7 @@ func newYandexMusicQueue(workers, size int) *yandexMusicQueue {
 						}
 						log.Printf("yandex queue send failed chat=%d err=%v", chatID, err)
 						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания Yandex Music", err)
+						sendMusicProviderMenuAfterFailure(mediaDownloadTask{SendCtx: task.SendCtx, Query: "", Msg: task.Msg, Mode: mediadl.ModeAudio})
 						return
 					}
 					if progress != nil {
@@ -661,6 +664,7 @@ func newVKMusicQueue(workers, size int) *vkMusicQueue {
 							}
 							log.Printf("vk music worker=%d panic chat=%d recover=%v", id, chatID, r)
 							reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания VK Music", fmt.Errorf("panic: %v", r))
+							sendMusicProviderMenuAfterFailure(mediaDownloadTask{SendCtx: task.SendCtx, Query: task.Query, Msg: task.Msg, Mode: mediadl.ModeAudio})
 						}
 					}()
 					if debugTriggerLogEnabled {
@@ -676,6 +680,7 @@ func newVKMusicQueue(workers, size int) *vkMusicQueue {
 						}
 						log.Printf("vk music queue send failed chat=%d err=%v", chatID, err)
 						reportChatFailure(task.SendCtx.Bot, chatID, "ошибка скачивания VK Music", err)
+						sendMusicProviderMenuAfterFailure(mediaDownloadTask{SendCtx: task.SendCtx, Query: task.Query, Msg: task.Msg, Mode: mediadl.ModeAudio})
 						return
 					}
 					if progress != nil {
@@ -783,8 +788,10 @@ func yandexPerformerTitleFromPath(path string) (string, string) {
 }
 
 type mediaDownloadTask struct {
-	SendCtx      sendContext
-	URL          string
+	SendCtx sendContext
+	URL     string
+	// Query — исходный запрос (для меню «где искать» после ошибки).
+	Query        string
 	Mode         mediadl.Mode
 	DL           MediaDownloadPort
 	Msg          *tgbotapi.Message
@@ -864,6 +871,9 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 							title = "неподдерживаемый формат медиа"
 						}
 						reportChatFailure(task.SendCtx.Bot, chatID, title, errors.New(userFacingMediaDownloadError(err)))
+						if task.Mode == mediadl.ModeAudio {
+							sendMusicProviderMenuAfterFailure(task)
+						}
 						return
 					}
 					log.Printf("media worker=%d success mode=%s chat=%d url=%q", id, task.Mode, task.SendCtx.ChatID, clipText(task.URL, 220))
@@ -884,6 +894,9 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 	}
 	return q
 }
+
+// errCoubLoopAssembly — не удалось собрать видео из кубика.
+var errCoubLoopAssembly = errors.New("coub loop assembly failed")
 
 func mediaTaskTimeout(mode mediadl.Mode, rawURL string) time.Duration {
 	baseSec := envInt("MEDIA_DOWNLOAD_TIMEOUT_SEC", 500)
@@ -909,8 +922,12 @@ func userFacingMediaDownloadError(err error) string {
 	compact := strings.Join(strings.Fields(strings.TrimSpace(err.Error())), " ")
 	msg := strings.ToLower(compact)
 	switch {
+	case errors.Is(err, errCoubLoopAssembly):
+		return "не удалось собрать видео из кубика — попробуй другую ссылку"
 	case errors.Is(err, mediadl.ErrTooLong):
 		return "видео слишком длинное для скачивания на сервер"
+	case strings.Contains(msg, "drm protected") || strings.Contains(msg, "drm-protected"):
+		return "трек защищён DRM — нужен другой трек или ссылка"
 	case strings.Contains(msg, "request entity too large"):
 		return "файл слишком большой для отправки в Telegram"
 	case strings.Contains(msg, "sign in to confirm your age"):
@@ -937,6 +954,40 @@ func userFacingMediaDownloadError(err error) string {
 			return "не удалось скачать: неизвестная ошибка"
 		}
 		return "не удалось скачать: " + clipText(compact, 220)
+	}
+}
+
+// musicRetryMenu собирает сообщение с меню «где искать трек», которое
+// возвращается после неудачного скачивания аудио.
+func musicRetryMenu(task mediaDownloadTask) (tgbotapi.MessageConfig, bool) {
+	if task.Msg == nil || task.Msg.From == nil {
+		return tgbotapi.MessageConfig{}, false
+	}
+	query := strings.TrimSpace(task.Query)
+	if query == "" {
+		query = strings.TrimSpace(firstNonEmptyUserText(task.Msg))
+	}
+	menu := tgbotapi.NewMessage(task.SendCtx.ChatID, "🎵 Где искать трек?")
+	menu.ReplyMarkup = musicpick.BuildChoiceKeyboard(task.Msg, task.SendCtx.ReplyTo, task.Msg.MessageID, false, query)
+	if task.SendCtx.ReplyTo > 0 {
+		menu.ReplyToMessageID = task.SendCtx.ReplyTo
+		menu.AllowSendingWithoutReply = true
+	}
+	return menu, true
+}
+
+// sendMusicProviderMenuAfterFailure повторяет меню выбора сервиса, чтобы
+// после неудачного скачивания можно было сразу поискать трек в другом месте.
+func sendMusicProviderMenuAfterFailure(task mediaDownloadTask) {
+	if task.SendCtx.Bot == nil {
+		return
+	}
+	menu, ok := musicRetryMenu(task)
+	if !ok {
+		return
+	}
+	if _, err := task.SendCtx.Bot.Send(menu); err != nil {
+		log.Printf("music menu after failure not sent chat=%d err=%v", task.SendCtx.ChatID, err)
 	}
 }
 
@@ -1021,10 +1072,30 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 	if mode == mediadl.Mode("") {
 		mode = mediadl.ModeAudio
 	}
+	// Instagram carousels go as a rich message ("article"): photos and videos
+	// scroll in one swipable message, which plain albums do not give.
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto || mode == mediadl.ModeVideo {
+		if handled, carouselErr := sendInstagramCarousel(ctx, sendCtx, dl, rawURL, mode, progress); handled {
+			return carouselErr
+		}
+	}
 	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto {
-		// Instagram carousels are posted as a Telegram album (swipeable gallery).
+		// Photo-only carousels fall back to a Telegram album.
 		if handled, albumErr := sendInstagramPhotoAlbum(ctx, sendCtx, dl, rawURL, progress); handled {
 			return albumErr
+		}
+	}
+	// Reddit: yt-dlp требует авторизацию, поэтому видео и картинки забираем
+	// из ленты поста (RSS) и HLS-плейлиста v.redd.it.
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto || mode == mediadl.ModeVideo {
+		if handled, redditErr := sendRedditMedia(ctx, sendCtx, dl, rawURL, mode, progress); handled {
+			return redditErr
+		}
+	}
+	// Bluesky (bsky.app / fxbsky.app): медиа из публичного AppView.
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto || mode == mediadl.ModeVideo {
+		if handled, bskyErr := sendBlueskyMedia(ctx, sendCtx, dl, rawURL, mode, progress); handled {
+			return bskyErr
 		}
 	}
 	log.Printf(
@@ -1111,8 +1182,11 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 			if looped, err := buildCoubLoopedVideo(ctx, res.FilePath, loopSec, coubLoopParts, progress); err == nil && strings.TrimSpace(looped) != "" {
 				coubLoopPath = looped
 				videoPath = looped
-			} else if debugTriggerLogEnabled {
-				log.Printf("coub loop postprocess skipped path=%q err=%v", res.FilePath, err)
+			} else if err != nil {
+				// Сырой файл — это 2 секунды видео и минуты звука: отправлять его
+				// как видео нельзя (кадр замирает), поэтому отдаём ошибку.
+				log.Printf("coub loop postprocess failed path=%q err=%v", res.FilePath, err)
+				return fmt.Errorf("%w: %v", errCoubLoopAssembly, err)
 			}
 		}
 		if err := ensureTelegramUploadLimit(videoPath); err != nil {
@@ -1202,8 +1276,9 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 				if looped, err := buildCoubLoopedVideo(ctx, mediaPath, loopSec, coubLoopParts, progress); err == nil && strings.TrimSpace(looped) != "" {
 					coubLoopPath = looped
 					mediaPath = looped
-				} else if debugTriggerLogEnabled {
-					log.Printf("coub loop postprocess skipped path=%q err=%v", mediaPath, err)
+				} else if err != nil {
+					log.Printf("coub loop postprocess failed path=%q err=%v", mediaPath, err)
+					return fmt.Errorf("%w: %v", errCoubLoopAssembly, err)
 				}
 			}
 			if err := ensureTelegramUploadLimit(mediaPath); err != nil {
@@ -1321,6 +1396,16 @@ func buildCoubLoopedVideo(ctx context.Context, inputPath string, loopDurationSec
 	}
 	if loopDurationSec <= 0 {
 		return "", errors.New("invalid coub loop duration")
+	}
+
+	// Быстрый путь: один проход по лупу + склейка копий без перекодирования,
+	// сразу под лимит загрузки. При любой ошибке — старая схема ниже.
+	if envBool("COUB_FAST_LOOP", true) {
+		if fastPath, fastErr := buildCoubLoopFast(ctx, inputPath, videoDuration, audioDuration, loopDurationSec, targetDuration, fps, progress); fastErr == nil && strings.TrimSpace(fastPath) != "" {
+			return fastPath, nil
+		} else if fastErr != nil {
+			log.Printf("coub fast loop failed, fallback to two-pass: %v", fastErr)
+		}
 	}
 
 	dir := filepath.Dir(inputPath)

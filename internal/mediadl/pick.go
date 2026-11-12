@@ -102,6 +102,24 @@ func BuildChoiceKeyboard(msg *tgbotapi.Message, req ChoiceRequest) tgbotapi.Inli
 		return tgbotapi.NewInlineKeyboardMarkup(rows...)
 	}
 
+	if service == ServiceReddit {
+		// Reddit-посты бывают и видео, и картинками — предлагаем оба варианта.
+		photoToken := putChoice(req)
+		videoToken := putChoice(req)
+		cancelToken := putChoice(req)
+		rows := [][]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Скачать картинку", "mdpick_p:"+photoToken),
+				tgbotapi.NewInlineKeyboardButtonData("Скачать видео", "mdpick_v:"+videoToken),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Отменить", "mdpick_c:"+cancelToken),
+			),
+		}
+		_ = msg
+		return tgbotapi.NewInlineKeyboardMarkup(rows...)
+	}
+
 	audioToken := putChoice(req)
 	videoToken := putChoice(req)
 	cancelToken := putChoice(req)

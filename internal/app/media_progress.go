@@ -51,10 +51,20 @@ type mediaProgressHandle struct {
 	frames    []string
 	lastText  string
 	lastEdit  time.Time
+
+	// widget != nil — прогресс рисуется HTML-виджетом, текстовый бар не нужен.
+	widget *widgetProgressHandle
 }
 
 func (h *mediaProgressHandle) SetFrame(frame int) {
-	if h == nil || h.bot == nil || h.chatID == 0 || h.messageID == 0 {
+	if h == nil {
+		return
+	}
+	if h.widget != nil {
+		h.widget.SetFrame(frame)
+		return
+	}
+	if h.bot == nil || h.chatID == 0 || h.messageID == 0 {
 		return
 	}
 	if frame < 0 {
@@ -76,7 +86,14 @@ func (h *mediaProgressHandle) SetFrame(frame int) {
 }
 
 func (h *mediaProgressHandle) SetStage(stage string) {
-	if h == nil || h.bot == nil || h.chatID == 0 || h.messageID == 0 {
+	if h == nil {
+		return
+	}
+	if h.widget != nil {
+		h.widget.SetStage(stage)
+		return
+	}
+	if h.bot == nil || h.chatID == 0 || h.messageID == 0 {
 		return
 	}
 	stage = strings.TrimSpace(stage)
@@ -138,6 +155,11 @@ func renderMediaProgressText(frames []string, frame int, stage string) string {
 }
 
 func startMediaDownloadProgress(task mediaDownloadTask) (*mediaProgressHandle, func()) {
+	// HTML-виджет (beta Bot API 10.4); при любом сбое — обычный текстовый бар.
+	if widget, stopWidget := startWidgetProgress(task); widget != nil {
+		return &mediaProgressHandle{widget: widget}, stopWidget
+	}
+
 	bot := task.SendCtx.Bot
 	chatID := task.SendCtx.ChatID
 	frames := mediaProgressFrames()

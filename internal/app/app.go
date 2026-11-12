@@ -81,9 +81,51 @@ type adminStatusCache struct {
 
 type recentChatMessage struct {
 	MessageID int
+	UserID    int64
 	UserName  string
 	Text      string
 	At        time.Time
+}
+
+// chatMemberTagResolverState resolves a participant's Telegram tag (the pronoun
+// badge: «она», «он», «они»). Registered at startup; lookups go through the
+// cached getChatMemberTagRaw.
+var chatMemberTagResolverState = struct {
+	mu sync.RWMutex
+	fn func(chatID, userID int64) string
+}{}
+
+func setChatMemberTagResolver(fn func(chatID, userID int64) string) {
+	chatMemberTagResolverState.mu.Lock()
+	chatMemberTagResolverState.fn = fn
+	chatMemberTagResolverState.mu.Unlock()
+}
+
+// chatMemberPronounLabel returns «она»/«он»/«они»/«оно» for a participant tag,
+// or an empty string when the tag says nothing about pronouns.
+func chatMemberPronounLabel(chatID, userID int64) string {
+	if chatID == 0 || userID == 0 {
+		return ""
+	}
+	chatMemberTagResolverState.mu.RLock()
+	fn := chatMemberTagResolverState.fn
+	chatMemberTagResolverState.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	flags := detectPronounFlags(fn(chatID, userID))
+	switch {
+	case flags.they:
+		return "они"
+	case flags.he:
+		return "он"
+	case flags.she:
+		return "она"
+	case flags.it:
+		return "оно"
+	default:
+		return ""
+	}
 }
 
 type chatRecentStore struct {
@@ -160,10 +202,10 @@ func (s *chatRecentStore) RecentText(chatID int64, limit int) string {
 	s.mu.RLock()
 	items := s.messages[chatID]
 	s.mu.RUnlock()
-	return renderRecentContextLines(items, s.maxAge, limit)
+	return renderRecentContextLines(chatID, items, s.maxAge, limit)
 }
 
-func renderRecentContextLines(items []recentChatMessage, maxAge time.Duration, limit int) string {
+func renderRecentContextLines(chatID int64, items []recentChatMessage, maxAge time.Duration, limit int) string {
 	if limit <= 0 {
 		limit = 12
 	}
@@ -188,6 +230,12 @@ func renderRecentContextLines(items []recentChatMessage, maxAge time.Duration, l
 		user := strings.TrimSpace(it.UserName)
 		if user == "" {
 			user = "участник"
+		}
+		// Местоимение участника: без него модель угадывает род и путает «он/она».
+		if it.UserID != 0 {
+			if label := chatMemberPronounLabel(chatID, it.UserID); label != "" {
+				user = user + " (" + label + ")"
+			}
 		}
 		candidates = append(candidates, fmt.Sprintf("[%s] %s: %s", it.At.Local().Format("02.01.2006 15:04"), user, txt))
 	}
@@ -435,6 +483,29 @@ func executeGPTPromptTask(task gpt.PromptTask) {
 	if debugGPTLogEnabled {
 		log.Printf("gpt flow trigger=%d canonical_len=%d canonical_tgemoji=%d canonical[%s]",
 			task.Trigger.ID, len(out), countTGEmojiTags(out), logTextFingerprint(out))
+	}
+	// Модель могла вернуть директиву расписания: `cron|действие`.
+	// Сохраняем её за участником и убираем из текста ответа.
+	if task.Msg != nil && task.Msg.From != nil {
+		if cleaned, directives := ExtractScheduleDirectives(out); len(directives) > 0 {
+			saved, err := saveScheduledDirectives(task.Msg.Chat.ID, task.Msg.From.ID, task.Msg.From.UserName, directives)
+			if errors.Is(err, errScheduleLimitReached) {
+				out = strings.TrimSpace(out)
+				if out == "" {
+					out = "Не записала: у тебя уже максимум расписаний."
+				}
+				out += "\n\n⚠️ У тебя уже " + strconv.Itoa(maxSchedulesPerUser) + " расписаний — это предел. Посмотри их: /my_schedules, удали лишние: /my_schedules_delete <id>."
+				log.Printf("schedule rejected: limit reached chat=%d user=%d", task.Msg.Chat.ID, task.Msg.From.ID)
+			} else if err != nil {
+				log.Printf("schedule save failed chat=%d user=%d err=%v", task.Msg.Chat.ID, task.Msg.From.ID, err)
+			} else {
+				log.Printf("schedule saved chat=%d user=%d count=%d", task.Msg.Chat.ID, task.Msg.From.ID, len(saved))
+				out = cleaned
+				if strings.TrimSpace(out) == "" {
+					out = "Записала: буду делать это по расписанию."
+				}
+			}
+		}
 	}
 	pause := estimateGPTReplyHumanPause(out)
 	if editWaited > 0 {
@@ -2039,6 +2110,7 @@ func Run() {
 	}
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:            strings.TrimSpace(os.Getenv("YTDLP_BIN")),
+		Impersonate:         strings.TrimSpace(os.Getenv("YTDLP_IMPERSONATE")),
 		ProxySocks:          strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
 		TikTokProxyURL:      strings.TrimSpace(os.Getenv("TIKTOK_PROXY_URL")),
 		AudioFormat:         strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
@@ -2119,6 +2191,24 @@ func Run() {
 	setOutgoingChatRecentStore(chatRecent, bot.Self.FirstName)
 	setChatContextResolver(func(chatID int64, limit int) string {
 		return chatRecent.RecentText(chatID, limit)
+	})
+	setChatMemberTagResolver(func(chatID, userID int64) string {
+		return getChatMemberTagRaw(bot.Token, chatID, userID)
+	})
+	// Большие файлы Bot API не отдаёт: качаем их через MTProto (tg-ops-service).
+	setVoiceMediaSourceHook(func(ctx context.Context, chatID int64, messageID int) (string, error) {
+		// Если сервис лежит, падаем быстро и внятно, а не висим на таймауте.
+		if !clearChatService.Available(ctx) {
+			return "", fmt.Errorf("tg-ops недоступен")
+		}
+		maxBytes := int64(envInt("VOICE_TRANSLATE_MAX_MB", 300)) << 20
+		media, err := clearChatService.DownloadMedia(ctx, chatclear.DownloadMediaRequest{
+			ChatID: chatID, MessageID: messageID, MaxBytes: maxBytes,
+		})
+		if err != nil {
+			return "", err
+		}
+		return media.Path, nil
 	})
 	setGPTLimitResolver(func(chatID, userID int64) gptLimitTemplateInfo {
 		if userGPTTokenLimit <= 0 || userID == 0 || !userGPTTokenLimitApplies(userID) {
@@ -2243,6 +2333,14 @@ func Run() {
 	StartStaticTmpJanitor(time.Hour, 7*24*time.Hour)
 	StartEmojiCacheJanitor(time.Hour, 0)
 	templateLookup := buildTemplateLookup(store)
+	// Жёсткий пре-чек бюджета: отказываем до вызова модели, а не после списания.
+	setGPTBudgetStore(store, userGPTTokenLimit, deepseekUserGPTTokenLimit)
+	setTokenBanStore(store)
+	// Расписания участников: сохранение из GPT-ответов и фоновый исполнитель.
+	SetScheduleSaver(func(chatID, userID int64, username string, directives []ScheduleDirective) ([]ParticipantSchedule, error) {
+		return store.SaveSchedules(chatID, userID, username, directives)
+	})
+	StartScheduleRunner(scheduleRunnerDeps{Bot: bot, Store: store, TemplateLookup: templateLookup})
 	handlerDeps := triggerHandlerDeps{
 		ActionQueue: actionQueue,
 		triggerActionDeps: triggerActionDeps{
@@ -2857,6 +2955,9 @@ func Run() {
 					if srcMediaMsg != nil {
 						replyToID = srcMediaMsg.MessageID
 					}
+					if engine == voiceTranslateEngineOpenAI && !ensureGPTBudget(bot, msg, gptCostVoiceTranslate, "перевод аудио") {
+						continue
+					}
 					token := putVoiceTranslateOption(voiceTranslateOptionEntry{
 						chatID:   msg.Chat.ID,
 						userID:   msg.From.ID,
@@ -2880,11 +2981,33 @@ func Run() {
 					if handleChessCommand(bot, msg) {
 						continue
 					}
+				case cmdMySchedules:
+					if handleMySchedulesCommand(bot, store, msg) {
+						continue
+					}
+				case cmdMySchedulesDelete:
+					if handleMySchedulesDeleteCommand(bot, store, msg) {
+						continue
+					}
 				case cmdSummary:
 					handleSummaryCommand(bot, clearChatService, summaryHistory, templateLookup, msg)
 					continue
 				case cmdEthics:
 					handleEthicsCommand(bot, clearChatService, adminCache, msg)
+					continue
+				case cmdTokenBan, cmdTokenUnban, cmdTokenBans:
+					if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
+						reply(cmdSendCtx.WithReply(msg.MessageID), "Команда доступна только админам чата.", false)
+						continue
+					}
+					switch cmd {
+					case cmdTokenBan:
+						handleTokenBanCommand(bot, store, userIndex, msg)
+					case cmdTokenUnban:
+						handleTokenUnbanCommand(bot, store, userIndex, msg)
+					default:
+						handleTokenBansCommand(bot, store, msg)
+					}
 					continue
 				case cmdBalance:
 					if !canUseSensitiveBotAdminCommand(bot, adminCache, msg) {
@@ -2915,6 +3038,14 @@ func Run() {
 					portrait := strings.TrimSpace(portraitManager.Portrait(msg.Chat.ID, msg.From.ID))
 					remaining := portraitManager.RemainingUntilUpdate(msg.From.ID)
 					if portrait == "" {
+						// No portrait yet: build the first one from the last 24h of
+						// this user's messages instead of asking them to keep writing.
+						if !ensureGPTBudget(bot, msg, gptCostPortrait, "портрет") {
+							continue
+						}
+						if bootstrapParticipantPortrait(bot, clearChatService, portraitManager, msg) {
+							continue
+						}
 						reply(cmdSendCtx.WithReply(msg.MessageID),
 							fmt.Sprintf("Портрет пока пуст. Для первого обновления нужно ещё сообщений: %d", remaining), false)
 						continue
@@ -3014,35 +3145,29 @@ func Run() {
 			now := time.Now()
 			idleTracker.Seen(msg.Chat.ID, now)
 			var quotaLowWarningTrigger *Trigger
+			quotaRefusalSent := false
 			checkGPTTokenQuota := func() bool {
 				if msg.From == nil || msg.From.ID == 0 || !userGPTTokenLimitApplies(msg.From.ID) {
 					return true
 				}
-				if userGPTTokenLimit <= 0 && deepseekUserGPTTokenLimit <= 0 {
+				if _, banned := isTokenBanned(msg.From.ID); banned {
+					if !quotaRefusalSent {
+						quotaRefusalSent = true
+						reply(cmdSendCtx.WithReply(msg.MessageID), tokenBanNotice(), false)
+					}
+					return false
+				}
+				snap := currentGPTBudget(msg.From.ID, now)
+				if !snap.Limited || snap.Remaining >= gptMinRequestTokens {
 					return true
 				}
-				if userGPTTokenLimit > 0 {
-					remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, userGPTTokenLimit, "openai")
-					if err != nil {
-						log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
-						return true
-					}
-					if remaining > 0 {
-						return true
-					}
-				}
-				if deepseekUserGPTTokenLimit > 0 {
-					remaining, err := store.UserGPTTokensRemaining(msg.From.ID, now, deepseekUserGPTTokenLimit, "deepseek")
-					if err != nil {
-						log.Printf("gpt user-token-limit check failed user=%d: %v", msg.From.ID, err)
-						return true
-					}
-					if remaining > 0 {
-						return true
-					}
-				}
 				if debugTriggerLogEnabled {
-					log.Printf("gpt user-token-limit reached user=%d chat=%d openai=%d/4h deepseek=%d/4h", msg.From.ID, msg.Chat.ID, userGPTTokenLimit, deepseekUserGPTTokenLimit)
+					log.Printf("gpt budget too low user=%d chat=%d remaining=%d/%d", msg.From.ID, msg.Chat.ID, snap.Remaining, snap.Limit)
+				}
+				// Говорим один раз на сообщение, даже если триггеров несколько.
+				if !quotaRefusalSent {
+					quotaRefusalSent = true
+					reply(cmdSendCtx.WithReply(msg.MessageID), gptBudgetRefusal(snap, gptMinRequestTokens, "ответ"), false)
 				}
 				return false
 			}
@@ -3054,6 +3179,7 @@ func Run() {
 				}
 				chatRecent.Add(msg.Chat.ID, recentChatMessage{
 					MessageID: msg.MessageID,
+					UserID:    msg.From.ID,
 					UserName:  displayName,
 					Text:      text,
 					At:        time.Now(),
@@ -4307,6 +4433,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			task := mediaDownloadTask{
 				SendCtx:  sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo},
 				URL:      targetURL,
+				Query:    query,
 				Mode:     mediadl.ModeAudio,
 				DL:       deps.MediaDownloader,
 				Msg:      msg,

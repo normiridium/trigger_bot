@@ -713,6 +713,26 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 	if linkCtx := strings.TrimSpace(buildLinkContextForMessage(ctx.Msg)); linkCtx != "" {
 		prompt += "\n\nКонтекст по ссылкам (режим чтения):\n" + linkCtx
 	}
+	// PII-маскирование: в модель уходят плейсхолдеры, в чат — исходный текст.
+	piiKey := piiKeyForMessage(ctx.Msg)
+	if piiKey != "" {
+		if masked := maskPIIForModel(piiKey, prompt); masked != prompt {
+			prompt = masked
+			if replaced, distribution := piiSessionStats(piiKey); replaced > 0 {
+				log.Printf("pii mask session=%s total=%d distribution=%v", piiKey, replaced, distribution)
+			}
+		} else if debugGPTLogEnabled {
+			// Диагностика: почему маскирование ничего не изменило.
+			_, distribution := piiSessionStats(piiKey)
+			log.Printf("pii mask noop session=%s enabled=%v store=%v prompt_len=%d plus7=%d cf=%d stats=%v",
+				piiKey, piiEnabled(), piiSessionsStore() != nil, len([]rune(prompt)), strings.Count(prompt, "+7"), countFormatRunes(prompt), distribution)
+		}
+	} else if debugGPTLogEnabled {
+		log.Printf("pii mask skipped: нет ключа сессии chat=%v from=%v", ctx.Msg.Chat, ctx.Msg.From)
+	}
+	if dumpPath := strings.TrimSpace(os.Getenv("PII_DEBUG_DUMP")); dumpPath != "" {
+		_ = os.WriteFile(dumpPath, []byte(prompt), 0o600)
+	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt request model=%s prompt[%s]", model, logTextFingerprint(prompt))
 	}
@@ -791,6 +811,9 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 	if out == "" {
 		return chatGPTReplyResult{}, errors.New("empty answer")
 	}
+	if piiKey != "" {
+		out = restorePIIFromModel(piiKey, out)
+	}
 	usage := openAITokenUsage{
 		PromptTokens:     result.Usage.PromptTokens,
 		CompletionTokens: result.Usage.CompletionTokens,
@@ -858,13 +881,16 @@ const participantPortraitSystemPrompt = "Ты анализируешь стил�
 // botPortraitSystemPrompt drives the portrait of the bot itself: it must record
 // the bot's own persona (her manner, jokes, recurring bits), so the restrictions
 // that make member portraits neutral do not apply here.
-const botPortraitSystemPrompt = "Ты анализируешь характер и манеру бота Оле-ням по её собственным репликам в чате. " +
-	"Задача — зафиксировать её узнаваемые особенности: как она шутит, какие приёмы и обороты повторяет, " +
-	"как реагирует на разные типы сообщений, что для неё характерно и что она никогда не делает. " +
-	"Пиши живо и конкретно: 3-5 связных абзацев, 15-25 предложений. " +
-	"Обязательно сохраняй повторяющиеся речевые маркеры (характерные слова, обращения, структуру шуток) и приводи короткие цитаты в кавычках. " +
-	"Сохраняй устойчивые черты из старого портрета: она не должна терять свои фишки при обновлениях. " +
-	"Не выдумывай фактов, если данных мало — честно опиши только заметные признаки."
+const botPortraitSystemPrompt = "Ты описываешь характер бота Оле-ням по её собственным репликам в чате. " +
+	"Нужен портрет ЛИЧНОСТИ, а не каталог речевых приёмов: что ей интересно, как она относится к людям, " +
+	"что считает важным, где шутит, где говорит всерьёз, что не приемлет и чего не делает никогда. " +
+	"Пиши живо и по существу: 2-3 абзаца, 8-12 предложений. " +
+	"Запрещено выписывать слова-паразиты, протокольные слова и повторяющиеся обороты (например «фиксирую», «принято», «этап») " +
+	"как её особенности и как то, что стоит повторять: это речевые тики, а не характер, и они превращают её ответы в пародию. " +
+	"Цитаты допустимы только как пример смысла сказанного, не как готовые формулы для копирования. " +
+	"Обновляя старый портрет, сохраняй содержательные черты, но убирай всё, что стало навязчивым повтором; " +
+	"если старая формулировка описывает тик — снимай её, а не закрепляй. " +
+	"Не выдумывай фактов, если данных мало — честно опиши только заметное."
 
 func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
 	return generatePortraitWithPrompt(participantPortraitSystemPrompt, oldPortrait, messages)
@@ -1371,6 +1397,8 @@ func chatFailureHint(err error) string {
 		return "Telegram ограничил частоту запросов — повторите через пару минут."
 	case strings.Contains(text, "CHAT_FORBIDDEN"), strings.Contains(text, "CHANNEL_PRIVATE"):
 		return "Нет доступа к истории чата: привяжите чат заново через /set_mtproto с аккаунта, который в нём состоит."
+	case strings.Contains(text, "DRM PROTECTED"), strings.Contains(text, "DRM-PROTECTED"):
+		return "Трек защищён DRM — скачать его нельзя. Попробуйте другой трек или другую ссылку."
 	}
 	return ""
 }

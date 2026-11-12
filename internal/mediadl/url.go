@@ -17,6 +17,8 @@ const (
 	ServiceSoundCloud Service = "soundcloud"
 	ServiceCoub       Service = "coub"
 	ServiceX          Service = "x"
+	ServiceReddit     Service = "reddit"
+	ServiceBluesky    Service = "bluesky"
 )
 
 func NormalizeSupportedURL(raw string) (normalized string, service Service, ok bool) {
@@ -46,6 +48,10 @@ func NormalizeSupportedURL(raw string) (normalized string, service Service, ok b
 		return raw, ServiceCoub, true
 	case host == "x.com" || host == "www.x.com" || host == "m.x.com" || host == "twitter.com" || host == "www.twitter.com" || host == "m.twitter.com" || host == "mobile.twitter.com":
 		return raw, ServiceX, true
+	case IsRedditHost(host):
+		return raw, ServiceReddit, true
+	case IsBlueskyHost(host):
+		return raw, ServiceBluesky, true
 	default:
 		return "", ServiceUnknown, false
 	}

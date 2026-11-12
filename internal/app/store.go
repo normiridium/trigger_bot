@@ -204,6 +204,65 @@ func (s *Store) GetParticipantPortrait(chatID, userID int64) (string, error) {
 	return s.mg.getParticipantPortrait(chatID, userID)
 }
 
+// SaveSchedules stores parsed schedule directives for a participant.
+func (s *Store) SaveSchedules(chatID, userID int64, username string, directives []ScheduleDirective) ([]ParticipantSchedule, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	if len(directives) == 0 {
+		return nil, nil
+	}
+	return s.mg.saveSchedules(chatID, userID, username, directives, time.Now())
+}
+
+// ListSchedules returns the participant's schedules in this chat.
+func (s *Store) ListSchedules(chatID, userID int64) ([]ParticipantSchedule, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.listSchedules(chatID, userID)
+}
+
+// ListEnabledSchedules returns every enabled schedule (used by the runner).
+func (s *Store) ListEnabledSchedules() ([]ParticipantSchedule, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.listEnabledSchedules()
+}
+
+// DeleteSchedule removes one schedule owned by the participant.
+func (s *Store) DeleteSchedule(chatID, userID int64, id string) (bool, error) {
+	if s == nil || s.mg == nil {
+		return false, errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteSchedule(chatID, userID, id)
+}
+
+// DeleteSchedulesForUser removes every schedule of the participant in this chat.
+func (s *Store) DeleteSchedulesForUser(chatID, userID int64) (int64, error) {
+	if s == nil || s.mg == nil {
+		return 0, errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteSchedulesForUser(chatID, userID)
+}
+
+// ScheduleRunsOnDate counts the participant's firings on the given date.
+func (s *Store) ScheduleRunsOnDate(chatID, userID int64, date string) (int, error) {
+	if s == nil || s.mg == nil {
+		return 0, errors.New("mongo backend not initialized")
+	}
+	return s.mg.runsOnDate(chatID, userID, date)
+}
+
+// MarkScheduleRun records one firing of the schedule.
+func (s *Store) MarkScheduleRun(id, prevDate, today string, now time.Time) error {
+	if s == nil || s.mg == nil {
+		return errors.New("mongo backend not initialized")
+	}
+	return s.mg.markScheduleRun(id, prevDate, today, now)
+}
+
 func (s *Store) SaveParticipantPortrait(chatID, userID int64, portrait string) error {
 	if s == nil || s.mg == nil {
 		return errors.New("mongo backend not initialized")

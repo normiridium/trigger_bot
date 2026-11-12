@@ -151,6 +151,9 @@ func handleSummaryCommand(bot *tgbotapi.BotAPI, service chatclear.Service, memor
 	if bot == nil || msg == nil || msg.Chat == nil {
 		return
 	}
+	if !ensureGPTBudget(bot, msg, gptCostSummary, "сводку чата") {
+		return
+	}
 	chatID := msg.Chat.ID
 	replyTo := msg.MessageID
 	chatUsername := strings.TrimPrefix(strings.TrimSpace(msg.Chat.UserName), "@")

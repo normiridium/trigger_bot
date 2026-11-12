@@ -192,31 +192,104 @@ func (d Downloader) downloadAudioURL(ctx context.Context, audioURL string) (stri
 	return outPath, nil
 }
 
-func (d Downloader) runFFmpeg(ctx context.Context, audioURL, outPath string) error {
-	webBase, err := normalizeVKWebBase(d.WebBaseURL)
-	if err != nil {
-		return err
-	}
-	args := []string{
+// ffmpegArgCandidates собирает варианты команды скачивания VK-аудио.
+//
+// ffmpeg отвергает опции, не относящиеся к выбранному демуксеру/протоколу
+// («Option ... not found»): -allowed_extensions есть только у HLS,
+// -http_persistent и -reconnect — у http. Поэтому варианты идут от самого
+// точного к самому простому, а runFFmpeg пробует их по очереди.
+func (d Downloader) ffmpegArgCandidates(audioURL, outPath, webBase string) [][]string {
+	base := []string{
 		"-nostdin",
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-y",
-		"-reconnect", "1",
-		"-reconnect_streamed", "1",
-		"-reconnect_delay_max", "5",
-		"-rw_timeout", "15000000",
-		"-http_persistent", "0",
 		"-headers", fmt.Sprintf("Referer: %s/\r\nOrigin: %s\r\nAccept: */*\r\n", webBase, webBase),
 		"-user_agent", d.userAgent(),
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-		"-allowed_extensions", "ALL",
+	}
+	tail := []string{
 		"-i", audioURL,
 		"-vn",
 		"-acodec", "libmp3lame",
 		"-b:a", "192k",
 		outPath,
 	}
+	lower := strings.ToLower(audioURL)
+	isHTTP := strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+	isHLS := strings.Contains(lower, ".m3u8")
+
+	candidates := make([][]string, 0, 3)
+
+	// 1. Точный набор: только те опции, что подходят под тип ссылки.
+	tuned := append([]string{}, base...)
+	if isHTTP {
+		tuned = append(tuned,
+			"-reconnect", "1",
+			"-reconnect_streamed", "1",
+			"-reconnect_delay_max", "5",
+			"-rw_timeout", "15000000",
+		)
+	}
+	if isHLS {
+		tuned = append(tuned,
+			"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+			"-allowed_extensions", "ALL",
+		)
+	}
+	candidates = append(candidates, append(tuned, tail...))
+
+	// 2. Без http-тюнинга (сборки ffmpeg без http_persistent/reconnect).
+	if isHTTP {
+		plain := append([]string{}, base...)
+		if isHLS {
+			plain = append(plain,
+				"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+				"-allowed_extensions", "ALL",
+			)
+		}
+		candidates = append(candidates, append(plain, tail...))
+	}
+
+	// 3. Голый минимум: только заголовки, вход и параметры кодирования.
+	candidates = append(candidates, append(append([]string{}, base...), tail...))
+
+	return candidates
+}
+
+func (d Downloader) runFFmpeg(ctx context.Context, audioURL, outPath string) error {
+	webBase, err := normalizeVKWebBase(d.WebBaseURL)
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, args := range d.ffmpegArgCandidates(audioURL, outPath, webBase) {
+		_ = os.Remove(outPath)
+		err := d.runFFmpegArgs(ctx, args)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isFFmpegUnknownOption(err) {
+			return err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("ffmpeg: не удалось собрать команду")
+	}
+	return lastErr
+}
+
+// isFFmpegUnknownOption — ffmpeg не знает переданную опцию (сборка без неё
+// или опция не относится к этому демуксеру).
+func isFFmpegUnknownOption(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "option") && strings.Contains(msg, "not found")
+}
+
+func (d Downloader) runFFmpegArgs(ctx context.Context, args []string) error {
 	cmd := exec.CommandContext(ctx, d.ffmpegBin(), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

@@ -108,6 +108,49 @@ func TriggerMatchCapture(t model.Trigger, incoming string) (bool, string) {
 	}
 }
 
+// TriggerMatchCaptureGroups — как TriggerMatchCapture, но возвращает все группы
+// захвата regex: [0] — всё совпадение, [1..] — группы в порядке скобок.
+func TriggerMatchCaptureGroups(t model.Trigger, incoming string) (bool, []string) {
+	matched, capture := TriggerMatchCapture(t, incoming)
+	if !matched {
+		return false, nil
+	}
+	if NormalizeMatchType(string(t.MatchType)) != "regex" {
+		if capture == "" {
+			return true, nil
+		}
+		return true, []string{capture}
+	}
+	needle := stripLeadingCaseInsensitiveFlag(strings.TrimSpace(t.MatchText))
+	if needle == "" {
+		return true, nil
+	}
+	if !t.CaseSensitive && !strings.HasPrefix(needle, "(?i)") {
+		needle = "(?i)" + needle
+	}
+	re := CompileRegex(needle)
+	if re == nil {
+		return true, []string{capture}
+	}
+	sub := re.FindStringSubmatch(strings.TrimSpace(incoming))
+	if len(sub) == 0 {
+		return true, []string{capture}
+	}
+	groups := make([]string, len(sub))
+	for i, item := range sub {
+		groups[i] = strings.TrimSpace(item)
+	}
+	return true, groups
+}
+
+// PickBestCapture отдаёт «главную» группу захвата (для {{ .capturing_text }}).
+func PickBestCapture(sub []string) string {
+	if len(sub) == 0 {
+		return ""
+	}
+	return pickBestCapture(sub)
+}
+
 func IsRuntimeOnlyMatchType(v model.MatchType) bool {
 	switch NormalizeMatchType(string(v)) {
 	case model.MatchTypeIdle,
@@ -136,22 +179,17 @@ func StripLeadingCaseInsensitiveFlag(pattern string) string {
 	return stripLeadingCaseInsensitiveFlag(pattern)
 }
 
+// pickBestCapture отдаёт главную группу захвата: первую непустую, а если
+// групп нет — всё совпадение. Раньше бралась самая длинная группа, из-за чего
+// на многоскобочных регулярках {{ .capturing_text }} подставлял не тот кусок.
 func pickBestCapture(sub []string) string {
 	if len(sub) <= 1 {
 		return strings.TrimSpace(sub[0])
 	}
-	best := ""
 	for i := 1; i < len(sub); i++ {
-		v := strings.TrimSpace(sub[i])
-		if v == "" {
-			continue
+		if v := strings.TrimSpace(sub[i]); v != "" {
+			return v
 		}
-		if len(v) > len(best) {
-			best = v
-		}
-	}
-	if best != "" {
-		return best
 	}
 	return strings.TrimSpace(sub[0])
 }

@@ -24,6 +24,8 @@ func defaultBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdVKMusicSearch, Description: "Поиск трека в VK"},
 		{Command: cmdSoundCloudSearch, Description: "Поиск трека в SoundCloud"},
 		{Command: cmdMyPortrait, Description: "Показать мой портрет"},
+		{Command: cmdMySchedules, Description: "Мои расписания напоминаний"},
+		{Command: cmdMySchedulesDelete, Description: "Удалить расписание: /my_schedules_delete <id|all>"},
 		{Command: cmdDeleteMyPortrait, Description: "Удалить мой портрет"},
 		{Command: cmdAnon, Description: "Анонимное сообщение: /anon текст"},
 		{Command: cmdTranslateVoice, Description: "Голосовой перевод (реплай на аудио/видео)"},
@@ -46,6 +48,9 @@ func adminBotCommands() []tgbotapi.BotCommand {
 		{Command: cmdClearChat, Description: "Очистить историю чата (через tg-ops-service)"},
 		{Command: cmdBalance, Description: "Показать расходы OpenAI"},
 		{Command: cmdEthics, Description: "Оценить этичность участника"},
+		{Command: cmdTokenBan, Description: "Запретить участнику тратить токены"},
+		{Command: cmdTokenUnban, Description: "Снять токенный бан"},
+		{Command: cmdTokenBans, Description: "Список токенных банов"},
 	}
 }
 

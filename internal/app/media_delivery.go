@@ -1138,6 +1138,10 @@ func mediaServiceEmoji(service mediadl.Service, mode mediadl.Mode) string {
 			return `<tg-emoji emoji-id="5465453979896913711">💬</tg-emoji>`
 		case mediadl.ServiceVK:
 			return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
+		case mediadl.ServiceReddit:
+			return `<tg-emoji emoji-id="5465648490375814741">💬</tg-emoji>`
+		case mediadl.ServiceBluesky:
+			return `<tg-emoji emoji-id="5411329510702331275">🦋</tg-emoji>`
 		case mediadl.ServiceSoundCloud:
 			return `<tg-emoji emoji-id="5359614685664523140">🎉</tg-emoji>`
 		default:
@@ -1157,6 +1161,10 @@ func mediaServiceEmoji(service mediadl.Service, mode mediadl.Mode) string {
 		return `<tg-emoji emoji-id="5465416081105493315">📹</tg-emoji>`
 	case mediadl.ServiceX:
 		return `<tg-emoji emoji-id="5465453979896913711">💬</tg-emoji>`
+	case mediadl.ServiceReddit:
+		return `<tg-emoji emoji-id="5465648490375814741">💬</tg-emoji>`
+	case mediadl.ServiceBluesky:
+		return `<tg-emoji emoji-id="5411329510702331275">🦋</tg-emoji>`
 	case mediadl.ServiceVK:
 		return `<tg-emoji emoji-id="5463101531819613579">💬</tg-emoji>`
 	default:
@@ -1201,17 +1209,10 @@ func buildMediaVideoCaption(path, title, sourceURL string, service mediadl.Servi
 }
 
 func buildMediaPhotoCaption(path, title, sourceURL string, service mediadl.Service) string {
+	// У фото достаточно иконки сервиса и заголовка: размер в подписи лишний.
 	title = strings.TrimSpace(title)
 	sourceURL = strings.TrimSpace(sourceURL)
-	sizeMB := 0.0
-	if st, err := os.Stat(path); err == nil && st != nil {
-		sizeMB = float64(st.Size()) / 1_000_000.0
-	}
 	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
-	stats := emoji
-	if sizeMB > 0 {
-		stats = fmt.Sprintf("%s %.2fMB", emoji, sizeMB)
-	}
 	head := strings.TrimSpace(title)
 	if sourceURL != "" {
 		if head == "" {
@@ -1223,9 +1224,9 @@ func buildMediaPhotoCaption(path, title, sourceURL string, service mediadl.Servi
 		head = html.EscapeString(head)
 	}
 	if strings.TrimSpace(head) == "" {
-		return stats
+		return emoji
 	}
-	return head + "\n" + stats
+	return emoji + " " + head
 }
 
 func buildMediaAlbumCaption(count int, title, sourceURL string, service mediadl.Service) string {

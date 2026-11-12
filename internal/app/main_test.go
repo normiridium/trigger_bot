@@ -801,12 +801,22 @@ func TestBuildMediaPhotoCaption(t *testing.T) {
 	if !strings.Contains(caption, `<a href="https://instagram.com/reel/abc">Demo</a>`) {
 		t.Fatalf("expected linked title in caption, got %q", caption)
 	}
-	if !strings.Contains(caption, "MB") {
-		t.Fatalf("expected size in caption, got %q", caption)
+	if strings.Contains(caption, "MB") {
+		t.Fatalf("photo caption must not carry file size, got %q", caption)
+	}
+	if !strings.HasPrefix(caption, `<tg-emoji`) {
+		t.Fatalf("service emoji must go first, got %q", caption)
+	}
+	if !strings.Contains(caption, "Demo") || strings.Index(caption, "Demo") < strings.Index(caption, "tg-emoji") {
+		t.Fatalf("title must follow the emoji, got %q", caption)
 	}
 }
 
 func TestMediaModeAndInteractivity(t *testing.T) {
+	if gotMode, gotInteractive := mediaModeAndInteractivity(mediadl.ServiceReddit, true); gotMode != mediadl.ModeAuto || gotInteractive {
+		t.Fatalf("reddit must download without asking, got mode=%q interactive=%v", gotMode, gotInteractive)
+	}
+
 	mode, interactive := mediaModeAndInteractivity(mediadl.ServiceSoundCloud, true)
 	if mode != "audio" || interactive {
 		t.Fatalf("soundcloud must force audio/no interactive, got mode=%q interactive=%v", mode, interactive)

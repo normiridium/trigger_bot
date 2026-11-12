@@ -158,6 +158,7 @@ type templateContext struct {
 	Bot            *tgbotapi.BotAPI
 	Msg            *tgbotapi.Message
 	CapturingText  string
+	CapturingTexts []string
 	MatchText      string
 	CaseSensitive  bool
 	TemplateLookup func(string) string
@@ -182,6 +183,7 @@ func newTemplateContext(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, tr *Trigger
 		Bot:            bot,
 		Msg:            msg,
 		CapturingText:  tr.CapturingText,
+		CapturingTexts: tr.CapturingTexts,
 		MatchText:      tr.MatchText,
 		CaseSensitive:  tr.CaseSensitive,
 		TemplateLookup: lookup,
@@ -1332,6 +1334,69 @@ var reservedTemplateWords = map[string]struct{}{
 	"chat_context": {},
 }
 
+// captureTextFunc — доступ к группам захвата в шаблонах:
+//
+//	{{ .capturing_text }}    — первая группа (как раньше),
+//	{{ .capturing_text 2 }}  — вторая группа,
+//	{{ .capturing_text 0 }}  — всё совпадение,
+//	{{ .capturing_count }}   — сколько групп всего.
+type captureTextFunc func(index ...int) string
+
+func newCaptureTextFunc(groups []string, fallback string) captureTextFunc {
+	cleaned := make([]string, len(groups))
+	for i, group := range groups {
+		cleaned[i] = strings.TrimSpace(group)
+	}
+	fallback = strings.TrimSpace(fallback)
+	return func(index ...int) string {
+		if len(index) == 0 {
+			if len(cleaned) > 1 {
+				return cleaned[1]
+			}
+			return fallback
+		}
+		n := index[0]
+		if n < 0 {
+			return ""
+		}
+		if len(cleaned) == 0 {
+			if n == 0 || n == 1 {
+				return fallback
+			}
+			return ""
+		}
+		if n >= len(cleaned) {
+			return ""
+		}
+		return cleaned[n]
+	}
+}
+
+// captureGroupsForTemplate отдаёт группы для {{ index .capturing_groups N }}:
+// [0] — всё совпадение, дальше — группы в порядке скобок.
+const captureGroupsTemplateSlots = 12
+
+func captureGroupsForTemplate(groups []string) []string {
+	size := len(groups)
+	if size < captureGroupsTemplateSlots {
+		// Пустые слоты, чтобы {{ index .capturing_groups N }} не ронял рендер
+		// на отсутствующей группе.
+		size = captureGroupsTemplateSlots
+	}
+	out := make([]string, size)
+	for i := 0; i < len(groups) && i < size; i++ {
+		out[i] = strings.TrimSpace(groups[i])
+	}
+	return out
+}
+
+func captureGroupCount(groups []string) int {
+	if len(groups) <= 1 {
+		return 0
+	}
+	return len(groups) - 1
+}
+
 func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) string {
 	if strings.TrimSpace(s) == "" {
 		return s
@@ -1340,6 +1405,8 @@ func applyCapturingTemplate(s, capture, matchText string, caseSensitive bool) st
 	choice := deriveCapturingChoice(matchText, cleanCapture, caseSensitive)
 	vars := map[string]interface{}{
 		"capturing_text":   cleanCapture,
+		"capturing_groups": captureGroupsForTemplate([]string{"", cleanCapture}),
+		"capturing_count":  1,
 		"capturing_choice": choice,
 		"capturing_option": choice,
 	}
@@ -1599,6 +1666,8 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 	cleanCapture := strings.TrimSpace(ctx.CapturingText)
 	choice := deriveCapturingChoice(ctx.MatchText, cleanCapture, ctx.CaseSensitive)
 	vars["capturing_text"] = cleanCapture
+	vars["capturing_groups"] = captureGroupsForTemplate(ctx.CapturingTexts)
+	vars["capturing_count"] = captureGroupCount(ctx.CapturingTexts)
 	vars["capturing_choice"] = choice
 	vars["capturing_option"] = choice
 	return vars
@@ -1902,13 +1971,17 @@ func mergedResponseTemplateFuncs(extra htmltmpl.FuncMap) htmltmpl.FuncMap {
 func applySimpleTemplateVars(input string, vars map[string]interface{}) string {
 	out := input
 	for key, val := range vars {
-		out = strings.ReplaceAll(out, "{{"+key+"}}", toTemplateString(val))
+		replacement := toTemplateString(val)
+		out = strings.ReplaceAll(out, "{{"+key+"}}", replacement)
+		out = strings.ReplaceAll(out, "{{ ."+key+" }}", replacement)
 	}
 	return strings.TrimSpace(out)
 }
 
 func toTemplateString(v interface{}) string {
 	switch t := v.(type) {
+	case captureTextFunc:
+		return strings.TrimSpace(t())
 	case string:
 		return strings.TrimSpace(t)
 	case []byte:
@@ -2135,6 +2208,13 @@ func mediaModeAndInteractivity(service mediadl.Service, interactive bool) (mode 
 		return mediadl.ModeAuto, false
 	case mediadl.ServiceX:
 		return mediadl.ModeVideo, false
+	case mediadl.ServiceReddit:
+		// Пост Reddit — всегда либо видео, либо картинки: выбирать нечего,
+		// вид определяем по самой ленте поста при скачивании.
+		return mediadl.ModeAuto, false
+	case mediadl.ServiceBluesky:
+		// Пост Bluesky тоже однозначен: картинки или видео из вложения.
+		return mediadl.ModeAuto, false
 	default:
 		return mediadl.ModeAudio, interactive
 	}

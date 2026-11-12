@@ -61,11 +61,12 @@ func (e *TriggerEngine) Select(input SelectInput) *model.Trigger {
 		if match.IsRuntimeOnlyMatchType(cand.MatchType) {
 			continue
 		}
-		matched, capture := match.TriggerMatchCapture(cand, input.Text)
+		matched, captures := match.TriggerMatchCaptureGroups(cand, input.Text)
 		if !matched {
 			continue
 		}
-		cand.CapturingText = capture
+		cand.CapturingTexts = captures
+		cand.CapturingText = match.PickBestCapture(captures)
 		if !TriggerModeMatches(input.Bot, &cand, input.Msg) {
 			continue
 		}

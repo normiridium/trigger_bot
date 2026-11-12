@@ -780,6 +780,8 @@ func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
 		{Value: "{{ .message }}", Label: "{{ .message }} — текст сообщения"},
 		{Value: "{{ .user_text }}", Label: "{{ .user_text }} — текст/подпись сообщения"},
 		{Value: "{{ .capturing_text }}", Label: "{{ .capturing_text }} — захват regex"},
+		{Value: "{{ index .capturing_groups 2 }}", Label: "{{ index .capturing_groups 2 }} — группа regex по номеру"},
+		{Value: "{{ .capturing_count }}", Label: "{{ .capturing_count }} — сколько групп захвата"},
 		{Value: "{{ .capturing_choice }}", Label: "{{ .capturing_choice }} — вариант из regex"},
 		{Value: "{{ .capturing_option }}", Label: "{{ .capturing_option }} — вариант из regex (алиас)"},
 		{Value: "{{ .user_id }}", Label: "{{ .user_id }} — ID автора"},

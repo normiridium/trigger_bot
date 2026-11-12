@@ -62,6 +62,9 @@ type MediaDownloadPort interface {
 	DownloadVideoFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)
 	DownloadMediaAutoFromURL(ctx context.Context, rawURL string) (mediadl.DownloadResult, error)
 	InstagramPhotoAlbum(ctx context.Context, rawURL string) (mediadl.PhotoAlbum, bool, error)
+	InstagramCarousel(ctx context.Context, rawURL string) (mediadl.Carousel, bool, error)
+	RedditPost(ctx context.Context, rawURL string) (mediadl.RedditMedia, bool, error)
+	BlueskyPost(ctx context.Context, rawURL string) (mediadl.BlueskyMedia, bool, error)
 	ConfiguredMaxSizeMB() int
 	ConfiguredMaxHeight() int
 }

@@ -7,8 +7,13 @@ node_modules/
 
 # secrets
 .env
+.env.*
+!.env.example
+*.session
 cookies.txt
 cookies.txt.*
+*_cookies.txt
+*cookies*.json
 
 # local databases
 *.db
@@ -44,3 +49,5 @@ static/tmp/
 
 # local manual DB/profile backups
 var/manual_profile_backups/
+trigger-admin-bot
+trigger-admin-bot.disabled-*

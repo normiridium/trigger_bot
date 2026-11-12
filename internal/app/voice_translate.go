@@ -89,6 +89,74 @@ const (
 	votTranslateStatusFailed  votTranslateStatus = "failed"
 )
 
+// botAPISourceLimitBytes — предел Bot API на getFile: больше он не отдаёт.
+const botAPISourceLimitBytes int64 = 20 << 20
+
+// voiceMediaSourceHook скачивает медиа через MTProto (tg-ops) и отдаёт путь.
+var voiceMediaSourceHook = struct {
+	mu sync.RWMutex
+	fn func(ctx context.Context, chatID int64, messageID int) (string, error)
+}{}
+
+func setVoiceMediaSourceHook(fn func(ctx context.Context, chatID int64, messageID int) (string, error)) {
+	voiceMediaSourceHook.mu.Lock()
+	voiceMediaSourceHook.fn = fn
+	voiceMediaSourceHook.mu.Unlock()
+}
+
+// voiceTranslateSourceURLViaMTProto выкачивает файл через MTProto и раздаёт его
+// публичным адресом бота, чтобы VOT мог его забрать.
+func voiceTranslateSourceURLViaMTProto(ctx context.Context, chatID int64, messageID int) (string, error) {
+	voiceMediaSourceHook.mu.RLock()
+	fn := voiceMediaSourceHook.fn
+	voiceMediaSourceHook.mu.RUnlock()
+	if fn == nil {
+		return "", fmt.Errorf("mtproto download is not configured")
+	}
+	path, err := fn(ctx, chatID, messageID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("empty media path")
+	}
+	token := registerVoiceShareFile(path, 45*time.Minute)
+	if token == "" {
+		return "", fmt.Errorf("не удалось подготовить публичную ссылку на файл")
+	}
+	url := buildVoiceSharePublicURL(token)
+	if strings.TrimSpace(url) == "" {
+		return "", fmt.Errorf("не задан VOICE_TRANSLATE_PUBLIC_BASE_URL")
+	}
+	return url, nil
+}
+
+// voiceTranslateSourceChatID — чат, в котором лежит исходное медиа. Задачи из
+// меню кнопок приходят без Msg, поэтому берём поля задачи, а не сообщение.
+func voiceTranslateSourceChatID(task voiceTranslateTask) int64 {
+	if task.ChatID != 0 {
+		return task.ChatID
+	}
+	if task.Msg != nil && task.Msg.Chat != nil {
+		return task.Msg.Chat.ID
+	}
+	return 0
+}
+
+// voiceTranslateSourceMessageID — id сообщения, из которого берём медиа.
+func voiceTranslateSourceMessageID(task voiceTranslateTask) int {
+	if task.ReplyTo > 0 {
+		return task.ReplyTo
+	}
+	if task.Msg == nil {
+		return 0
+	}
+	if task.Msg.ReplyToMessage != nil {
+		return task.Msg.ReplyToMessage.MessageID
+	}
+	return task.Msg.MessageID
+}
+
 type replyMediaInfo struct {
 	FileID   string
 	HasVideo bool
@@ -2268,10 +2336,33 @@ func processVoiceTranslateTask(task voiceTranslateTask) {
 	providerUsed := "cache"
 	sourceURL, err := getTelegramFileDirectURL(task.Bot, mediaInfo.FileID)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "file is too big") {
-			reply(sendCtx, "Telegram Bot API не даёт скачать файл больше 20 МБ. Для больших видео нужен local Bot API server/MTProto.", false)
-			return
+		// Bot API отдаёт только файлы до 20 МБ — остальное тянем через MTProto.
+		if strings.Contains(strings.ToLower(err.Error()), "file is too big") || strings.Contains(strings.ToLower(err.Error()), "too big") {
+			srcChatID := voiceTranslateSourceChatID(task)
+			srcMsgID := voiceTranslateSourceMessageID(task)
+			var fallbackURL string
+			var mtErr error
+			if srcChatID == 0 || srcMsgID == 0 {
+				mtErr = fmt.Errorf("не удалось определить сообщение с файлом")
+			} else {
+				mediaCtx, mediaCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+				fallbackURL, mtErr = voiceTranslateSourceURLViaMTProto(mediaCtx, srcChatID, srcMsgID)
+				mediaCancel()
+			}
+			if mtErr != nil {
+				log.Printf("voice translate: MTProto download failed chat=%d msg=%d: %v", srcChatID, srcMsgID, mtErr)
+				if strings.Contains(mtErr.Error(), "недоступен") {
+					reply(sendCtx, "Файл больше 20 МБ, а MTProto-сервис сейчас недоступен. Попробуйте позже или пришлите кусок поменьше.", false)
+				} else {
+					reply(sendCtx, "Не удалось скачать файл из Telegram. Попробуйте ещё раз.", false)
+				}
+				return
+			}
+			sourceURL = fallbackURL
+			err = nil
 		}
+	}
+	if err != nil {
 		reply(sendCtx, "Не удалось получить файл для перевода. Попробуйте ещё раз.", false)
 		return
 	}

@@ -23,6 +23,8 @@ type Trigger struct {
 	UpdatedAt     int64
 	RegexError    string
 	CapturingText string `json:"-"`
+	// CapturingTexts — все группы regex: [0] всё совпадение, [1..] скобки.
+	CapturingTexts []string `json:"-"`
 }
 
 type ResponseTextItem struct {

@@ -82,7 +82,7 @@ func buildLinkContextForMessage(msg *tgbotapi.Message) string {
 		urls = urls[:maxURLs]
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), linkContextTimeout(urls))
 	defer cancel()
 
 	out := make([]string, 0, len(urls))
@@ -109,6 +109,26 @@ func buildLinkContextForMessage(msg *tgbotapi.Message) string {
 	}
 
 	return strings.TrimSpace(strings.Join(out, "\n\n---\n\n"))
+}
+
+// linkContextTimeout даёт больше времени, если среди ссылок есть YouTube:
+// субтитры качаются через yt-dlp дольше, чем обычная страница.
+func linkContextTimeout(urls []string) time.Duration {
+	base := envInt("GPT_LINK_CONTEXT_TIMEOUT_SEC", 12)
+	if base <= 0 {
+		base = 12
+	}
+	timeout := time.Duration(base) * time.Second
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if isYouTubeContextURL(u) && timeout < 90*time.Second {
+			timeout = 90 * time.Second
+		}
+	}
+	return timeout
 }
 
 func extractUniqueHTTPURLs(input string) []string {
@@ -143,6 +163,15 @@ func fetchLinkContextParts(ctx context.Context, rawURL string, maxChars int) (st
 	key := u.String()
 	if t, txt, extra, ok := getLinkContextCache(key); ok {
 		return t, txt, extra, nil
+	}
+
+	// YouTube отдаёт страницу из скриптов — вместо HTML берём субтитры.
+	if isYouTubeContextURL(u) {
+		title, text, extra, ytErr := youTubeContextParts(ctx, key, maxChars)
+		if ytErr == nil {
+			setLinkContextCache(key, title, text, extra, 6*time.Hour)
+		}
+		return title, text, extra, ytErr
 	}
 
 	body, err := fetchHTMLBody(ctx, key)

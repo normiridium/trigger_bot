@@ -58,14 +58,17 @@ const (
 type MediaKind string
 
 type Downloader struct {
-	YTDLPBin            string
-	ProxySocks          string
-	TikTokProxyURL      string
-	AudioFormat         string
-	AudioQuality        string
-	ExtractorArgs       string
-	CookiesFile         string
-	CookiesFromBrowser  string
+	YTDLPBin           string
+	ProxySocks         string
+	TikTokProxyURL     string
+	AudioFormat        string
+	AudioQuality       string
+	ExtractorArgs      string
+	CookiesFile        string
+	CookiesFromBrowser string
+	// Impersonate включает TLS/HTTP-имитацию браузера (curl_cffi). Нужно для
+	// сайтов, которые отдают ботам заглушку вместо страницы — например TikTok.
+	Impersonate         string
 	MaxSizeMB           int
 	MaxHeight           int
 	MaxVideoDurationSec int
@@ -460,7 +463,7 @@ func (d Downloader) buildPhotoAlbumProbeArgs(url string) []string {
 		"--extractor-args", d.extractorArgs(),
 		"--dump-single-json",
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(ServiceInstagram), args...)
 	return append(args, url)
 }
 
@@ -477,7 +480,7 @@ func (d Downloader) downloadInstagramAlbumThumbs(ctx context.Context, url, dir s
 		"--extractor-args", d.extractorArgs(),
 		"-o", outTpl,
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(ServiceInstagram), args...)
 	args = append(args, url)
 	cmd := exec.CommandContext(ctx, d.binary(), args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
@@ -561,7 +564,7 @@ func (d Downloader) buildTikTokAudioSafeArgs(service Service, url, outTpl string
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(service), args...)
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
 	}
@@ -772,7 +775,7 @@ func (d Downloader) buildProbeArgs(service Service, url, formatSelector string) 
 		"--dump-single-json",
 		url,
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(service), args...)
 	if strings.TrimSpace(formatSelector) != "" {
 		args = append(args[:len(args)-1], "-f", formatSelector, url)
 	}
@@ -792,7 +795,7 @@ func (d Downloader) buildSoundCloudSearchArgs(query string, limit int) []string 
 		"--dump-single-json",
 		fmt.Sprintf("scsearch%d:%s", limit, strings.TrimSpace(query)),
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(ServiceSoundCloud), args...)
 	return args
 }
 
@@ -823,7 +826,7 @@ func (d Downloader) buildDownloadArgsWithOptions(service Service, url, outTpl, f
 		"-o", outTpl,
 	}
 	if includeAuth {
-		args = append(d.ytDLPAuthArgs(), args...)
+		args = append(d.ytDLPAuthArgs(service), args...)
 	}
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
@@ -852,7 +855,7 @@ func (d Downloader) buildVideoDownloadArgsWithOptions(service Service, url, outT
 		"-o", outTpl,
 	}
 	if includeAuth {
-		args = append(d.ytDLPAuthArgs(), args...)
+		args = append(d.ytDLPAuthArgs(service), args...)
 	}
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
@@ -870,7 +873,7 @@ func (d Downloader) buildGenericDownloadArgs(service Service, url, outTpl string
 		"--print", "after_move:__FILE__%(filepath)s",
 		"-o", outTpl,
 	}
-	args = append(d.ytDLPAuthArgs(), args...)
+	args = append(d.ytDLPAuthArgs(service), args...)
 	if maxMB := d.maxSizeMB(); maxMB > 0 {
 		args = append(args, "--max-filesize", strconv.Itoa(maxMB)+"M")
 	}
@@ -946,14 +949,61 @@ func (d Downloader) extractorArgs() string {
 	return "youtube:player_client=android,web"
 }
 
-func (d Downloader) ytDLPAuthArgs() []string {
+// ytDLPCookiesSkipped сообщает, нельзя ли отдавать cookies этому сервису.
+// TikTok со сторонними cookies отвечает «Your IP address is blocked from
+// accessing this post», поэтому по умолчанию cookies ему не передаём.
+func ytDLPCookiesSkipped(service Service) bool {
+	raw := strings.TrimSpace(os.Getenv("YTDLP_COOKIES_SKIP_SERVICES"))
+	if raw == "" {
+		raw = "tiktok"
+	}
+	want := strings.ToLower(strings.TrimSpace(string(service)))
+	if want == "" {
+		return false
+	}
+	for _, part := range strings.Split(raw, ",") {
+		if strings.ToLower(strings.TrimSpace(part)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ytDLPImpersonateForService сообщает, нужна ли этому сервису имитация
+// браузера: TikTok без неё отдаёт заглушку вместо страницы, остальным она
+// только меняет транспорт, поэтому по умолчанию включаем её лишь для TikTok.
+func ytDLPImpersonateForService(service Service) bool {
+	raw := strings.TrimSpace(os.Getenv("YTDLP_IMPERSONATE_SERVICES"))
+	if raw == "" {
+		raw = "tiktok"
+	}
+	want := strings.ToLower(strings.TrimSpace(string(service)))
+	if want == "" {
+		return false
+	}
+	for _, part := range strings.Split(raw, ",") {
+		if strings.ToLower(strings.TrimSpace(part)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (d Downloader) ytDLPAuthArgs(service Service) []string {
+	var out []string
+	if v := strings.TrimSpace(d.Impersonate); v != "" && ytDLPImpersonateForService(service) {
+		out = append(out, "--impersonate", v)
+	}
+	if ytDLPCookiesSkipped(service) {
+		return out
+	}
 	if v := strings.TrimSpace(d.CookiesFromBrowser); v != "" {
-		return []string{"--cookies-from-browser", v}
+		return append(out, "--cookies-from-browser", v)
 	}
 	if v := strings.TrimSpace(d.CookiesFile); v != "" {
-		return []string{"--cookies", v}
+		return append(out, "--cookies", v)
 	}
-	return nil
+	return out
 }
 
 func isYTDLPFormatUnavailable(err error) bool {

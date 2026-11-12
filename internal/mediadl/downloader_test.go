@@ -93,8 +93,8 @@ func TestTikTokAutoDownloadArgsUseTikTokProxy(t *testing.T) {
 	if !strings.Contains(got, "--proxy socks5://127.0.0.1:10809") {
 		t.Fatalf("expected TikTok proxy in auto download args, got: %s", got)
 	}
-	if !strings.Contains(got, "--cookies /tmp/cookies.txt") {
-		t.Fatalf("expected cookies in auto download args, got: %s", got)
+	if strings.Contains(got, "--cookies") {
+		t.Fatalf("TikTok must not receive cookies (they trigger IP-blocked responses), got: %s", got)
 	}
 }
 

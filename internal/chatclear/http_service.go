@@ -131,10 +131,73 @@ func (s *HTTPService) postAndCheck(ctx context.Context, path string, body []byte
 type noopService struct{}
 
 func (noopService) Clear(context.Context, Request) error { return ErrNotConfigured }
+func (noopService) DownloadMedia(context.Context, DownloadMediaRequest) (MediaFile, error) {
+	return MediaFile{}, ErrNotConfigured
+}
+
 func (noopService) GetHistory(context.Context, HistoryRequest) (HistoryResult, error) {
 	return HistoryResult{}, ErrNotConfigured
 }
 func (noopService) Available(context.Context) bool { return false }
+
+// DownloadMedia скачивает медиа сообщения через tg-ops-service (MTProto).
+func (s *HTTPService) DownloadMedia(ctx context.Context, req DownloadMediaRequest) (MediaFile, error) {
+	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {
+		return MediaFile{}, ErrNotConfigured
+	}
+	if req.ChatID == 0 || req.MessageID <= 0 {
+		return MediaFile{}, fmt.Errorf("%w: chat_id and message_id are required", ErrBadRequest)
+	}
+	body, err := json.Marshal(commandEnvelope{
+		RequestID: fmt.Sprintf("media-%d", time.Now().UnixNano()),
+		Command:   "download_media",
+		Payload: map[string]any{
+			"chat_id":    req.ChatID,
+			"message_id": req.MessageID,
+			"max_bytes":  req.MaxBytes,
+		},
+	})
+	if err != nil {
+		return MediaFile{}, fmt.Errorf("marshal download_media: %w", err)
+	}
+	mediaClient := *s.client
+	mediaTimeoutSec := envInt("TG_OPS_MEDIA_TIMEOUT_SEC", 900)
+	if mediaTimeoutSec <= 0 {
+		mediaTimeoutSec = 900
+	}
+	mediaClient.Timeout = time.Duration(mediaTimeoutSec) * time.Second
+	data, err := s.postForJSONWithClientLimit(ctx, &mediaClient, "/v1/command", body, 8<<20)
+	if err != nil {
+		return MediaFile{}, err
+	}
+	var out struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Path  string `json:"path"`
+		Media struct {
+			Size      int64  `json:"size"`
+			MimeType  string `json:"mime_type"`
+			FileName  string `json:"file_name"`
+			MediaType string `json:"media_type"`
+		} `json:"media"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return MediaFile{}, fmt.Errorf("decode download_media: %w", err)
+	}
+	if !out.OK {
+		if strings.TrimSpace(out.Error) != "" {
+			return MediaFile{}, errors.New(out.Error)
+		}
+		return MediaFile{}, errors.New("download_media failed")
+	}
+	return MediaFile{
+		Path:      strings.TrimSpace(out.Path),
+		Size:      out.Media.Size,
+		MimeType:  out.Media.MimeType,
+		FileName:  out.Media.FileName,
+		MediaType: out.Media.MediaType,
+	}, nil
+}
 
 func (s *HTTPService) GetHistory(ctx context.Context, req HistoryRequest) (HistoryResult, error) {
 	if s == nil || strings.TrimSpace(s.baseURL) == "" || s.client == nil {

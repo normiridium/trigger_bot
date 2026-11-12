@@ -1067,7 +1067,7 @@ function shouldShowStickerHelper(){
 }
 
 function shouldShowEmojiHelper(){
-  return currentActionType() !== 'send_sticker';
+  return currentActionType() === 'send';
 }
 
 function hideEmojiSetHelper(){
