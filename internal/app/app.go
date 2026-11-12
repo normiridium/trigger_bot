@@ -2182,6 +2182,7 @@ func Run() {
 	chatRecent := newChatRecentStore(envInt("CHAT_RECENT_MAX_MESSAGES", 8), time.Duration(envInt("CHAT_RECENT_MAX_AGE_SEC", 1800))*time.Second)
 	summaryHistory := newSummaryHistoryStore(chatSummaryHistoryLimit)
 	ensureChatSummaryTemplate(store)
+	ensurePortraitPromptTemplates(store)
 	quoteHistory := newQuoteStickerHistory(envInt("QS_HISTORY_MAX_MESSAGES", 1000))
 	qsSessionTTLSec := envInt("QS_SESSION_TTL_SEC", int(quoteStickerSessionTTL/time.Second))
 	if qsSessionTTLSec < 300 {

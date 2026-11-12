@@ -902,11 +902,27 @@ const botPortraitSystemPrompt = "Ты описываешь характер бо
 	"Если старый портрет противоречит этому блоку — приоритет у этого блока."
 
 func generateParticipantPortrait(oldPortrait string, messages []string) (string, error) {
-	return generatePortraitWithPrompt(participantPortraitSystemPrompt, oldPortrait, messages)
+	return generateParticipantPortraitWithPrompt(participantPortraitSystemPrompt, oldPortrait, messages)
 }
 
 func generateBotPortrait(oldPortrait string, messages []string) (string, error) {
-	return generatePortraitWithPrompt(botPortraitSystemPrompt, oldPortrait, messages)
+	return generateBotPortraitWithPrompt(botPortraitSystemPrompt, oldPortrait, messages)
+}
+
+// generateParticipantPortraitWithPrompt — тот же вызов, но с промптом из шаблона.
+func generateParticipantPortraitWithPrompt(systemPrompt, oldPortrait string, messages []string) (string, error) {
+	if strings.TrimSpace(systemPrompt) == "" {
+		systemPrompt = participantPortraitSystemPrompt
+	}
+	return generatePortraitWithPrompt(systemPrompt, oldPortrait, messages)
+}
+
+// generateBotPortraitWithPrompt — то же для портрета бота.
+func generateBotPortraitWithPrompt(systemPrompt, oldPortrait string, messages []string) (string, error) {
+	if strings.TrimSpace(systemPrompt) == "" {
+		systemPrompt = botPortraitSystemPrompt
+	}
+	return generatePortraitWithPrompt(systemPrompt, oldPortrait, messages)
 }
 
 func generatePortraitWithPrompt(systemPrompt string, oldPortrait string, messages []string) (string, error) {

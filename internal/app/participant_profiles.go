@@ -282,7 +282,8 @@ func (m *participantPortraitManager) worker() {
 }
 
 func (m *participantPortraitManager) processTask(task participantPortraitTask) {
-	portrait, err := generateParticipantPortrait(task.oldPortrait, task.messages)
+	prompt := portraitPromptFor(m.store, participantPortraitTemplateKey, participantPortraitSystemPrompt)
+	portrait, err := generateParticipantPortraitWithPrompt(prompt, task.oldPortrait, task.messages)
 	if err != nil {
 		log.Printf("participant portrait generation failed chat=%d user=%d err=%v", task.chatID, task.userID, err)
 		m.prependBatch(task.userID, task.messages)
@@ -503,7 +504,8 @@ func (m *botPortraitManager) worker() {
 }
 
 func (m *botPortraitManager) processTask(task botPortraitTask) {
-	portrait, err := generateBotPortrait(task.oldPortrait, task.messages)
+	prompt := portraitPromptFor(m.store, botPortraitTemplateKey, botPortraitSystemPrompt)
+	portrait, err := generateBotPortraitWithPrompt(prompt, task.oldPortrait, task.messages)
 	if err != nil {
 		log.Printf("bot portrait generation failed chat=%d bot=%d err=%v", task.chatID, m.botID, err)
 		m.prependBatch(task.chatID, task.messages)
