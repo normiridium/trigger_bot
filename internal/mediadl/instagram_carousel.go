@@ -160,7 +160,7 @@ func (d Downloader) downloadInstagramCarouselThumbs(ctx context.Context, url, di
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
 		return fmt.Errorf("instagram carousel thumbs: %w: %s", err, lastNonEmptyLine(errBuf.String()))
 	}
-	return nil
+	return normalizeHeicToJpg(dir)
 }
 
 // groupCarouselFiles раскладывает файлы по номеру элемента плейлиста.

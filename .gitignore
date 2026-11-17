@@ -51,3 +51,6 @@ static/tmp/
 var/manual_profile_backups/
 trigger-admin-bot
 trigger-admin-bot.disabled-*
+
+# source snapshots made before risky edits
+*.bak_*

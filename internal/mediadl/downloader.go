@@ -68,7 +68,9 @@ type Downloader struct {
 	CookiesFromBrowser string
 	// Impersonate включает TLS/HTTP-имитацию браузера (curl_cffi). Нужно для
 	// сайтов, которые отдают ботам заглушку вместо страницы — например TikTok.
-	Impersonate         string
+	Impersonate string
+	// VKToken — токен VK API: им читаются посты (wall.getById) для карусели.
+	VKToken             string
 	MaxSizeMB           int
 	MaxHeight           int
 	MaxVideoDurationSec int
@@ -490,7 +492,7 @@ func (d Downloader) downloadInstagramAlbumThumbs(ctx context.Context, url, dir s
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("instagram album download: %w: %s", err, lastNonEmptyLine(errBuf.String()))
 	}
-	return nil
+	return normalizeHeicToJpg(dir)
 }
 
 func entryHasVideoFormats(entry probeJSON) bool {
@@ -524,6 +526,43 @@ func listPhotoFiles(dir string) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+// normalizeHeicToJpg renames .heic files that are actually JPEG to .jpg.
+// Instagram serves carousel thumbnails with a .heic extension, but its CDN
+// converts them to JPEG on the fly (stp=dst-jpg), so the bytes are JPEG.
+// Telegram rejects .heic photos, so we fix the extension to .jpg.
+func normalizeHeicToJpg(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".heic") {
+			continue
+		}
+		oldPath := filepath.Join(dir, e.Name())
+		if !isJPEGFile(oldPath) {
+			continue
+		}
+		newPath := strings.TrimSuffix(oldPath, filepath.Ext(oldPath)) + ".jpg"
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isJPEGFile reports whether the file starts with a JPEG SOI marker.
+func isJPEGFile(path string) bool {
+	fh, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer fh.Close()
+	var magic [3]byte
+	n, _ := io.ReadFull(fh, magic[:])
+	return n == 3 && magic[0] == 0xff && magic[1] == 0xd8 && magic[2] == 0xff
 }
 
 func lastNonEmptyLine(raw string) string {

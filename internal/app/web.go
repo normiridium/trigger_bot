@@ -1457,6 +1457,8 @@ func (w *WebAdmin) restartPost(rw http.ResponseWriter, r *http.Request) {
 func settingsSchema() []settingField {
 	return []settingField{
 		{Key: "ALLOWED_CHAT_IDS", Label: "Разрешённые чаты (через запятую)", Type: "string", Description: ""},
+		{Key: "PRIVATE_CHAT_TRIGGERS_ENABLED", Label: "Отвечать на обычный текст в личке", Type: "bool", Description: "false"},
+		{Key: "PRIVATE_CHAT_TRIGGER_USER_IDS", Label: "Личка: кому отвечать (user id через запятую, пусто = всем)", Type: "string", Description: ""},
 		{Key: "ADMIN_CACHE_TTL_SEC", Label: "TTL кэша админов (сек)", Type: "int", Description: "120"},
 		{Key: "USER_INDEX_MAX", Label: "Лимит пользователей в индексе", Type: "int", Description: "800"},
 		{Key: "CHAT_RECENT_MAX_MESSAGES", Label: "Сообщений для контекста", Type: "int", Description: "8"},
@@ -1539,10 +1541,26 @@ func readEnvFile(path string) map[string]string {
 		if idx := strings.Index(line, "="); idx > 0 {
 			key := strings.TrimSpace(line[:idx])
 			val := strings.TrimSpace(line[idx+1:])
-			out[key] = strings.Trim(val, `"'`)
+			out[key] = unquoteEnvValue(val)
 		}
 	}
 	return out
+}
+
+// unquoteEnvValue reverses formatEnvValue: settings are written to .env as Go
+// double-quoted strings, so a double-quoted value is parsed back with
+// strconv.Unquote and a single-quoted value is taken literally. Bare values
+// return as-is.
+func unquoteEnvValue(v string) string {
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		if unq, err := strconv.Unquote(v); err == nil {
+			return unq
+		}
+	}
+	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		return v[1 : len(v)-1]
+	}
+	return v
 }
 
 func writeEnvFile(path string, updates map[string]string) error {

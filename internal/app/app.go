@@ -2111,6 +2111,7 @@ func Run() {
 	mediaDownloader := mediadl.Downloader{
 		YTDLPBin:            strings.TrimSpace(os.Getenv("YTDLP_BIN")),
 		Impersonate:         strings.TrimSpace(os.Getenv("YTDLP_IMPERSONATE")),
+		VKToken:             strings.TrimSpace(os.Getenv("VK_TOKEN")),
 		ProxySocks:          strings.TrimSpace(os.Getenv("FIXIE_SOCKS_HOST")),
 		TikTokProxyURL:      strings.TrimSpace(os.Getenv("TIKTOK_PROXY_URL")),
 		AudioFormat:         strings.TrimSpace(os.Getenv("AUDIO_FORMAT")),
@@ -3111,10 +3112,19 @@ func Run() {
 				}
 			}
 			if isPrivateChat {
-				if debugTriggerLogEnabled {
-					log.Printf("skip non-command message in private chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+				privateUserID := int64(0)
+				if msg.From != nil {
+					privateUserID = msg.From.ID
 				}
-				continue
+				if !privateChatTriggersAllows(privateUserID) {
+					if debugTriggerLogEnabled {
+						log.Printf("skip non-command message in private chat chat=%d msg=%d", msg.Chat.ID, msg.MessageID)
+					}
+					continue
+				}
+				if debugTriggerLogEnabled {
+					log.Printf("private chat triggers enabled chat=%d msg=%d user=%d", msg.Chat.ID, msg.MessageID, privateUserID)
+				}
 			}
 
 			text := strings.TrimSpace(firstNonEmptyUserText(msg))
@@ -3201,7 +3211,14 @@ func Run() {
 			if debugTriggerLogEnabled {
 				log.Printf("triggers loaded (cached): %d", len(items))
 			}
-			isAdminAuthor := adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+			var isAdminAuthor bool
+			if isPrivateChat {
+				// В личке нет «админов чата»: владелец бота считается админом,
+				// остальные — обычными участниками (запрос к Telegram не нужен).
+				isAdminAuthor = msg.From != nil && isConfiguredBotOwner(msg.From.ID)
+			} else {
+				isAdminAuthor = adminCache.IsChatAdmin(bot, msg.Chat.ID, msg.From.ID)
+			}
 			quotaLowWarningTrigger = pickUserLimitLowWarningTrigger(items, isAdminAuthor)
 			runtimeItems := filterRuntimeTriggersForMessage(bot, msg, filterRuntimeTriggers(items))
 			matchedAny := false
