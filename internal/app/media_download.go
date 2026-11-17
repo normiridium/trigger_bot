@@ -828,6 +828,21 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 					err := processMediaDownload(ctx, task.SendCtx, task.DL, task.URL, task.Mode, progress)
 					cancel()
 					if err != nil {
+						if errors.Is(err, errXPostNoMedia) {
+							// Пост без вложений — не сбой: одна строка вместо
+							// «ошибка скачивания», исходную ссылку не удаляем.
+							chatID := task.ReportTo
+							if chatID == 0 {
+								chatID = task.SendCtx.ChatID
+							}
+							log.Printf("media skipped: в посте нет медиа url=%q", clipText(task.URL, 180))
+							if task.SendCtx.Bot != nil {
+								if _, sendErr := task.SendCtx.Bot.Send(tgbotapi.NewMessage(chatID, "в этом твите нет ни видео, ни картинок")); sendErr != nil {
+									log.Printf("media no-media notice failed chat=%d err=%v", chatID, sendErr)
+								}
+							}
+							return
+						}
 						if errors.Is(err, mediadl.ErrTooLong) {
 							chatID := task.ReportTo
 							if chatID == 0 {
@@ -1083,6 +1098,19 @@ func processMediaDownload(ctx context.Context, sendCtx sendContext, dl MediaDown
 		// Photo-only carousels fall back to a Telegram album.
 		if handled, albumErr := sendInstagramPhotoAlbum(ctx, sendCtx, dl, rawURL, progress); handled {
 			return albumErr
+		}
+	}
+	// X/Twitter: yt-dlp умеет только видео, поэтому фото-посты и посты без
+	// вложений разбирает отдельная ветка (FixTweet API).
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto || mode == mediadl.ModeVideo {
+		if handled, xErr := sendXPostMedia(ctx, sendCtx, dl, rawURL, mode, progress); handled {
+			return xErr
+		}
+	}
+	// VK: карусель поста (фото и видео записи со стены) собирается через VK API.
+	if mode == mediadl.ModePhoto || mode == mediadl.ModeAuto || mode == mediadl.ModeVideo {
+		if handled, vkErr := sendVKCarousel(ctx, sendCtx, dl, rawURL, mode, progress); handled {
+			return vkErr
 		}
 	}
 	// Reddit: yt-dlp требует авторизацию, поэтому видео и картинки забираем

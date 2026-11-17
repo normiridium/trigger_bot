@@ -1424,6 +1424,8 @@ func chatFailureHint(err error) string {
 		return "Нет доступа к истории чата: привяжите чат заново через /set_mtproto с аккаунта, который в нём состоит."
 	case strings.Contains(text, "DRM PROTECTED"), strings.Contains(text, "DRM-PROTECTED"):
 		return "Трек защищён DRM — скачать его нельзя. Попробуйте другой трек или другую ссылку."
+	case strings.Contains(text, "ABC RENDER TOO SHORT"):
+		return "Мелодия получилась пустой: модель прислала битую ABC-нотацию. Скажи ещё раз — «Оле-ням, напиши музыку про …»."
 	}
 	return ""
 }

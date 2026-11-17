@@ -121,7 +121,7 @@ func sendInstagramCarousel(ctx context.Context, sendCtx sendContext, dl MediaDow
 		}
 	}
 
-	caption := buildCarouselCompositionCaption(carousel.Title, carousel.SourceURL, carousel.Items)
+	caption := buildCarouselCompositionCaption(mediadl.ServiceInstagram, carousel.Title, carousel.SourceURL, carousel.Items)
 	html, specs := buildCarouselSlideshow(caption, carousel.Items)
 
 	if progress != nil {
@@ -149,7 +149,7 @@ func countCarouselVideos(specs []carouselMediaSpec) int {
 
 // buildCarouselCompositionCaption подписывает карусель по составу:
 // «3 фото + 1 видео» вместо неверного «4 фото».
-func buildCarouselCompositionCaption(title, sourceURL string, items []mediadl.CarouselItem) string {
+func buildCarouselCompositionCaption(service mediadl.Service, title, sourceURL string, items []mediadl.CarouselItem) string {
 	photos, videos := 0, 0
 	for _, item := range items {
 		if item.Kind == "video" {
@@ -160,7 +160,7 @@ func buildCarouselCompositionCaption(title, sourceURL string, items []mediadl.Ca
 	}
 	title = strings.TrimSpace(title)
 	sourceURL = strings.TrimSpace(sourceURL)
-	emoji := mediaServiceEmoji(mediadl.ServiceInstagram, mediadl.ModeVideo)
+	emoji := mediaServiceEmoji(service, mediadl.ModeVideo)
 	stats := carouselCompositionStats(photos, videos)
 	head := html.EscapeString(title)
 	if sourceURL != "" {

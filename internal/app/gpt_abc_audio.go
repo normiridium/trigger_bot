@@ -3,8 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +22,79 @@ var (
 	gptResponseABCFenceRe = regexp.MustCompile("(?is)```[ \t]*abc[ \t]*\n(.*?)```")
 	gptResponseABCBareRe  = regexp.MustCompile(`(?m)^X:[ \t]*\d+`)
 	gptABCBadCharsRe      = regexp.MustCompile(`(?i)(javascript:|data:|file:|@import|https?://)`)
+
+	// errABCAudioTooShort — рендер дал почти пустое аудио: ABC битая, и в чат
+	// уходит ошибка, а не секунда тишины.
+	errABCAudioTooShort = errors.New("abc render too short")
 )
+
+// normalizeABCSource чистит ABC перед рендером.
+//
+// abc2midi считает пустую строку концом тюна: модель часто отделяет ею голоса
+// (V:1 / V:2), и тогда каждая часть рендерится как отдельная мелодия в пару
+// тактов — в чат приходит секунда звука вместо двух минут музыки. Поэтому
+// пустые строки (и остатки ``` -заборов) выбрасываем до abc2midi.
+func normalizeABCSource(src string) string {
+	lines := strings.Split(src, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimRight(line, " 	\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// wavDurationSeconds считает длительность WAV по заголовку (fmt + data),
+// без внешних утилит.
+func wavDurationSeconds(path string) (float64, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer fh.Close()
+	var header [12]byte
+	if _, err := io.ReadFull(fh, header[:]); err != nil {
+		return 0, err
+	}
+	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
+		return 0, errors.New("not a wav file")
+	}
+	var byteRate uint32
+	var dataSize uint32
+	for {
+		var chunk [8]byte
+		if _, err := io.ReadFull(fh, chunk[:]); err != nil {
+			break
+		}
+		id := string(chunk[0:4])
+		size := binary.LittleEndian.Uint32(chunk[4:8])
+		if id == "fmt " {
+			buf := make([]byte, size)
+			if _, err := io.ReadFull(fh, buf); err != nil {
+				return 0, err
+			}
+			if len(buf) >= 12 {
+				byteRate = binary.LittleEndian.Uint32(buf[8:12])
+			}
+			continue
+		}
+		if _, err := fh.Seek(int64(size), io.SeekCurrent); err != nil {
+			return 0, err
+		}
+		if id == "data" {
+			dataSize = size
+			break
+		}
+	}
+	if byteRate == 0 {
+		return 0, errors.New("wav has no fmt chunk")
+	}
+	return float64(dataSize) / float64(byteRate), nil
+}
 
 // extractFirstABCFromGPTResponse returns the first ABC notation block from a
 // GPT reply: either a fenced ```abc block or, when the model forgot the fence,
@@ -54,6 +128,10 @@ func renderGPTABCResponseToAudio(abcSource string) (string, error) {
 	maxBytes := envInt("GPT_ABC_RENDER_MAX_BYTES", 16*1024)
 	if len(abcSource) > maxBytes {
 		return "", fmt.Errorf("abc source too large (%d bytes)", len(abcSource))
+	}
+	abcSource = normalizeABCSource(abcSource)
+	if abcSource == "" {
+		return "", errors.New("empty abc source after normalization")
 	}
 	if !gptResponseABCBareRe.MatchString(abcSource) {
 		return "", errors.New("abc source has no X: header")
@@ -130,6 +208,15 @@ func renderGPTABCResponseToAudio(abcSource string) (string, error) {
 	if st, err := os.Stat(wavPath); err != nil || st.Size() == 0 {
 		cleanup()
 		return "", errors.New("timidity produced no audio")
+	}
+	// Защита от «пустышки»: битый ABC (например, пустые строки, которые
+	// abc2midi считает концом тюна) даёт секунду звука вместо мелодии —
+	// отправлять такое как музыку нельзя.
+	if minSec := envInt("GPT_ABC_MIN_AUDIO_SEC", 3); minSec > 0 {
+		if dur, durErr := wavDurationSeconds(wavPath); durErr == nil && dur < float64(minSec) {
+			cleanup()
+			return "", fmt.Errorf("%w: %.1f с < %d с", errABCAudioTooShort, dur, minSec)
+		}
 	}
 
 	// Step 3: WAV -> OGG/Opus voice note, capped at GPT_ABC_MAX_AUDIO_SEC.
