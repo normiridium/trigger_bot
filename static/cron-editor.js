@@ -1,6 +1,9 @@
 /*
  * <cron-editor> — визуальный редактор cron-выражения.
  *
+ * Источник: https://github.com/normiridium/cron-calendar (src/cron-editor.js).
+ * Правки делать в отдельном репозитории и копировать сюда — иначе версии разойдутся.
+ *
  * Один файл, без зависимостей: ни Bootstrap, ни jQuery, ни сборки.
  * Разметка живёт в shadow DOM (ничего не протекает наружу), оформление
  * настраивается CSS-переменными на самом теге:
@@ -303,7 +306,11 @@
     '.panel[hidden]{display:none}'
   ].join('\n');
 
-  class CronEditor extends HTMLElement {
+  // В Node нет HTMLElement — берём пустую базу, чтобы файл импортировался ради
+  // чистых функций (элемент в такой среде всё равно не создаётся).
+  const HTMLElementBase = typeof HTMLElement !== 'undefined' ? HTMLElement : class {};
+
+  class CronEditor extends HTMLElementBase {
     static parseToken(token, cfg) { return parseToken(token, cfg); }
     static formatToken(values, cfg, opts) { return formatToken(values, cfg, opts); }
     static get fields() { return FIELD_ORDER.slice(); }
@@ -842,8 +849,26 @@
     }
   }
 
-  if (!customElements.get('cron-editor')) {
+  // Регистрируем элемент только в браузере: файл должен грузиться и в Node,
+  // где нет DOM — иначе тесты форматтера не смогут его импортировать.
+  if (typeof customElements !== 'undefined' && !customElements.get('cron-editor')) {
     customElements.define('cron-editor', CronEditor);
   }
-  window.CronEditor = CronEditor;
+  if (typeof window !== 'undefined') {
+    window.CronEditor = CronEditor;
+  }
+  if (typeof module === 'object' && module.exports) {
+    module.exports = {
+      CronEditor: CronEditor,
+      parseToken: parseToken,
+      formatToken: formatToken,
+      runsString: runsString,
+      progressions: progressions,
+      coverCandidate: coverCandidate,
+      splitExpression: splitExpression,
+      DAYS_IN_MONTH: DAYS_IN_MONTH,
+      FIELDS: FIELDS,
+      FIELD_ORDER: FIELD_ORDER
+    };
+  }
 })();
