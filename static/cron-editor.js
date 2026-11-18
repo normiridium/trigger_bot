@@ -43,25 +43,156 @@
 (function () {
   'use strict';
 
-  const MONTH_SHORT_RU = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-  const MONTH_LONG_RU = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
-  const DOW_SHORT_RU = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
-  const DOW_LONG_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
-
-  const FIELDS = {
-    min: { key: 'min', label: 'минута', min: 0, max: 59, cols: 12 },
-    hour: { key: 'hour', label: 'час', min: 0, max: 23, cols: 6 },
-    dom: { key: 'dom', label: 'день', min: 1, max: 31, cols: 8 },
-    month: {
-      key: 'month', label: 'месяц', min: 1, max: 12, cols: 4,
-      short: MONTH_SHORT_RU,
-      long: MONTH_LONG_RU
+  // Названия месяцев и дней недели берём из нативного Intl.DateTimeFormat —
+  // он знает правильные формы и склонения для любого языка. Свои таблицы
+  // держим только как fallback для сред без Intl и как компактный вариант
+  // (русский Intl отдаёт «янв.» с точкой, нам нужна точка без «янв»).
+  const INTL_LOCALES = {
+    ru: {
+      monthsShort: ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'],
+      monthsLong: ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'],
+      dowShort: ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'],
+      dowLong: ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота']
     },
-    dow: {
-      key: 'dow', label: 'день недели', min: 0, max: 6, cols: 4,
-      short: DOW_SHORT_RU,
-      long: DOW_LONG_RU
+    en: {
+      monthsShort: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+      monthsLong: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+      dowShort: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+      dowLong: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
     }
+  };
+
+  // Подписи полей и тексты подсказок: у Intl такого API нет, поэтому маленький
+  // словарь. Незнакомый язык получает английские фразы, а месяцы/дни — всё равно
+  // свои, из Intl.
+  const MESSAGES = {
+    ru: {
+      fields: { min: 'минута', hour: 'час', dom: 'день', month: 'месяц', dow: 'день недели' },
+      expressionAria: 'выражение',
+      cronAria: 'cron-выражение',
+      dayDead: function (day) {
+        return day + '-го числа не бывает ни в одном из выбранных месяцев — этот день не сработает никогда';
+      },
+      dayPartial: function (day, months) {
+        return day + '-го числа не бывает в: ' + months + ' — в этих месяцах день пропустится';
+      },
+      monthDead: function (name, list) {
+        return 'в месяце «' + name + '» не бывает ' + list + ' числа — расписание не сработает никогда';
+      },
+      monthPartial: function (name, list) {
+        return 'в месяце «' + name + '» не бывает ' + list + ' числа — эти дни пропустятся';
+      }
+    },
+    en: {
+      fields: { min: 'minute', hour: 'hour', dom: 'day', month: 'month', dow: 'day of week' },
+      expressionAria: 'expression',
+      cronAria: 'cron expression',
+      dayDead: function (day) {
+        return englishOrdinal(day) + ' never exists in the selected months — this day will never run';
+      },
+      dayPartial: function (day, months) {
+        return englishOrdinal(day) + ' does not exist in ' + months + ' — skipped in those months';
+      },
+      monthDead: function (name, list) {
+        return name + ' has no ' + list + ' — the schedule will never run';
+      },
+      monthPartial: function (name, list) {
+        return name + ' has no ' + list + ' — those days will be skipped';
+      }
+    }
+  };
+
+  function englishOrdinal(value) {
+    const tail = value % 100;
+    if (tail >= 11 && tail <= 13) {
+      return value + 'th';
+    }
+    const last = value % 10;
+    if (last === 1) return value + 'st';
+    if (last === 2) return value + 'nd';
+    if (last === 3) return value + 'rd';
+    return value + 'th';
+  }
+
+  // Кэш имён: ключ — язык + вид + форма.
+  const nameCache = new Map();
+
+  function intlNames(locale, kind, style) {
+    const key = locale + '|' + kind + '|' + style;
+    if (nameCache.has(key)) {
+      return nameCache.get(key);
+    }
+    let names = null;
+    try {
+      if (typeof Intl !== 'undefined' && typeof Intl.DateTimeFormat === 'function') {
+        const options = { timeZone: 'UTC' };
+        options[kind === 'month' ? 'month' : 'weekday'] = style;
+        const format = new Intl.DateTimeFormat(locale, options);
+        names = [];
+        const start = kind === 'month' ? 0 : 7; // 7 июня 2020 — воскресенье
+        for (let i = 0; i < (kind === 'month' ? 12 : 7); i += 1) {
+          const date = kind === 'month' ? new Date(Date.UTC(2020, i, 15)) : new Date(Date.UTC(2020, 5, start + i));
+          let text = format.format(date);
+          if (style === 'short') {
+            // Русский Intl ставит точку: «янв.» → «янв», и отдаёт неровные
+            // сокращения («февр», «сент»). Ячейка рассчитана на три знака,
+            // поэтому короткую форму подрезаем до трёх символов.
+            text = text.replace(/\.$/, '').trim();
+            const chars = Array.from(text);
+            if (chars.length > 3) {
+              text = chars.slice(0, 3).join('');
+            }
+          }
+          names.push(text);
+        }
+      }
+    } catch (error) {
+      names = null;
+    }
+    if (!names || names.length !== (kind === 'month' ? 12 : 7) || names.some(function (n) { return !n; })) {
+      names = null;
+    }
+    nameCache.set(key, names);
+    return names;
+  }
+
+  function fallbackNames(lang, kind, style) {
+    const table = INTL_LOCALES[lang === 'ru' ? 'ru' : 'en'];
+    if (kind === 'month') {
+      return style === 'short' ? table.monthsShort : table.monthsLong;
+    }
+    return style === 'short' ? table.dowShort : table.dowLong;
+  }
+
+  function resolveLang(locale) {
+    const raw = String(locale || '').toLowerCase();
+    return raw.indexOf('ru') === 0 ? 'ru' : 'en';
+  }
+
+  // Первый день недели по стандарту CLDR: Intl.Locale.weekInfo / getWeekInfo.
+  // ru → понедельник, en-US → воскресенье.
+  function intlWeekStart(locale) {
+    try {
+      if (typeof Intl !== 'undefined' && typeof Intl.Locale === 'function') {
+        const loc = new Intl.Locale(locale);
+        const info = typeof loc.getWeekInfo === 'function' ? loc.getWeekInfo() : loc.weekInfo;
+        if (info && info.firstDay) {
+          return info.firstDay === 1 ? 'mon' : 'sun';
+        }
+      }
+    } catch (error) {
+      /* язык без данных CLDR — остаётся значение по умолчанию */
+    }
+    return 'sun';
+  }
+
+  // FIELDS — только метаданные поля: границы и число колонок. Подписи — в локали.
+  const FIELDS = {
+    min: { key: 'min', min: 0, max: 59, cols: 12 },
+    hour: { key: 'hour', min: 0, max: 23, cols: 6 },
+    dom: { key: 'dom', min: 1, max: 31, cols: 8 },
+    month: { key: 'month', min: 1, max: 12, cols: 4 },
+    dow: { key: 'dow', min: 0, max: 6, cols: 4 }
   };
 
   const FIELD_ORDER = ['min', 'hour', 'dom', 'month', 'dow'];
@@ -345,10 +476,67 @@
       }
     }
 
+    // locale — язык подписей и названий. По умолчанию берётся из <html lang>,
+    // иначе из navigator.language. Названия месяцев и дней идут из Intl,
+    // фразы подсказок — из MESSAGES (незнакомый язык получает английские).
+    get locale() {
+      const own = this.getAttribute('locale');
+      if (own) {
+        return own;
+      }
+      const docLang = typeof document !== 'undefined' && document.documentElement
+        ? document.documentElement.getAttribute('lang')
+        : '';
+      if (docLang) {
+        return docLang;
+      }
+      if (typeof navigator !== 'undefined' && navigator.language) {
+        return navigator.language;
+      }
+      return 'en';
+    }
+
+    set locale(next) {
+      if (next) {
+        this.setAttribute('locale', String(next));
+      } else {
+        this.removeAttribute('locale');
+      }
+    }
+
+    // dict — всё, что нужно разметке: подписи полей, названия, фразы.
+    get dict() {
+      const locale = this.locale;
+      const lang = resolveLang(locale);
+      const messages = MESSAGES[lang];
+      const pick = function (kind, style) {
+        return intlNames(locale, kind, style) || fallbackNames(lang, kind, style);
+      }.bind(this);
+      const dict = {
+        fields: messages.fields,
+        expressionAria: messages.expressionAria,
+        cronAria: messages.cronAria,
+        dayDead: messages.dayDead,
+        dayPartial: messages.dayPartial,
+        monthDead: messages.monthDead,
+        monthPartial: messages.monthPartial,
+        monthsShort: pick('month', 'short'),
+        monthsLong: pick('month', 'long'),
+        dowShort: pick('dow', 'short'),
+        dowLong: pick('dow', 'long')
+      };
+      return dict;
+    }
+
     // weekStart — с какого дня рисовать неделю: 'sun' (по умолчанию) или 'mon'.
+    // 'auto' — по данным CLDR для текущего языка (ru → mon, en-US → sun).
     // Порядок ячеек меняется, значения cron остаются прежними (0 = воскресенье).
     get weekStart() {
-      return String(this.getAttribute('week-start') || 'sun').toLowerCase() === 'mon' ? 'mon' : 'sun';
+      const raw = String(this.getAttribute('week-start') || 'sun').toLowerCase();
+      if (raw === 'auto') {
+        return intlWeekStart(this.locale);
+      }
+      return raw === 'mon' ? 'mon' : 'sun';
     }
 
     set weekStart(next) {
@@ -552,7 +740,7 @@
         trigger.type = 'text';
         trigger.spellcheck = false;
         trigger.autocomplete = 'off';
-        trigger.setAttribute('aria-label', 'cron-выражение');
+        trigger.setAttribute('aria-label', this.dict.cronAria);
         trigger.addEventListener('focus', this._openPanel.bind(this));
         trigger.addEventListener('click', this._openPanel.bind(this));
         trigger.addEventListener('change', function () {
@@ -596,15 +784,16 @@
 
       const head = document.createElement('div');
       head.className = 'head';
+      const dict = this.dict;
       const label = document.createElement('span');
       label.className = 'label';
-      label.textContent = cfg.label;
+      label.textContent = dict.fields[key] || key;
       const token = document.createElement('input');
       token.className = 'token';
       token.type = 'text';
       token.spellcheck = false;
       token.autocomplete = 'off';
-      token.setAttribute('aria-label', cfg.label + ' — выражение');
+      token.setAttribute('aria-label', (dict.fields[key] || key) + ' — ' + dict.expressionAria);
       token.addEventListener('input', function () {
         block.dataset.userToken = '1';
         self._raw[key] = '';
@@ -674,17 +863,23 @@
     }
 
     _caption(cfg, value) {
-      if (cfg.short) {
-        const index = cfg.key === 'month' ? value - 1 : value;
-        return cfg.short[index] || String(value);
+      const dict = this.dict;
+      if (cfg.key === 'month') {
+        return dict.monthsShort[value - 1] || String(value);
+      }
+      if (cfg.key === 'dow') {
+        return dict.dowShort[value] || String(value);
       }
       return String(value);
     }
 
     _title(cfg, value) {
-      if (cfg.long) {
-        const index = cfg.key === 'month' ? value - 1 : value;
-        return cfg.long[index] || String(value);
+      const dict = this.dict;
+      if (cfg.key === 'month') {
+        return dict.monthsLong[value - 1] || String(value);
+      }
+      if (cfg.key === 'dow') {
+        return dict.dowLong[value] || String(value);
       }
       return String(value);
     }
@@ -729,6 +924,7 @@
       if (!this._blocks || !this._blocks.dom || !this._blocks.month) {
         return;
       }
+      const dict = this.dict;
       const days = this._fieldSet('dom');
       const months = this._fieldSet('month');
       const limitOf = function (month) { return DAYS_IN_MONTH[month] || 31; };
@@ -793,21 +989,18 @@
 
       paint('dom', dayMarks, function (day, cls) {
         if (cls === 'error') {
-          return day + '-го числа не бывает ни в одном из выбранных месяцев — этот день не сработает никогда';
+          return dict.dayDead(day);
         }
         const missing = months.filter(function (month) { return day > limitOf(month); })
-          .map(function (month) { return FIELDS.month.long[month - 1] || month; });
-        return day + '-го числа не бывает в: ' + missing.join(', ') + ' — в этих месяцах день пропустится';
+          .map(function (month) { return dict.monthsLong[month - 1] || month; });
+        return dict.dayPartial(day, missing.join(', '));
       });
       paint('month', monthMarks, function (month, cls) {
-        const name = FIELDS.month.long[month - 1] || String(month);
+        const name = dict.monthsLong[month - 1] || String(month);
         const limit = limitOf(month);
         const missing = days.filter(function (day) { return day > limit; });
         const list = missing.join(', ');
-        if (cls === 'error') {
-          return 'в месяце «' + name + '» не бывает ' + list + ' числа — расписание не сработает никогда';
-        }
-        return 'в месяце «' + name + '» не бывает ' + list + ' числа — эти дни пропустятся';
+        return cls === 'error' ? dict.monthDead(name, list) : dict.monthPartial(name, list);
       });
     }
 
@@ -821,6 +1014,21 @@
         entry.token.value = value;
       }
       this._paintCells(key, value);
+    }
+
+    static get observedAttributes() {
+      return ['locale', 'week-start', 'mode', 'fields', 'enumeration'];
+    }
+
+    attributeChangedCallback(name, previous, next) {
+      if (previous === next || !this._built) {
+        return;
+      }
+      if (name === 'enumeration') {
+        this._syncUI();
+        return;
+      }
+      this._rebuild();
     }
 
     _rebuild() {
@@ -868,7 +1076,12 @@
       splitExpression: splitExpression,
       DAYS_IN_MONTH: DAYS_IN_MONTH,
       FIELDS: FIELDS,
-      FIELD_ORDER: FIELD_ORDER
+      FIELD_ORDER: FIELD_ORDER,
+      LOCALES: Object.keys(MESSAGES),
+      MESSAGES: MESSAGES,
+      intlNames: intlNames,
+      intlWeekStart: intlWeekStart,
+      resolveLang: resolveLang
     };
   }
 })();
