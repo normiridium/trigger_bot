@@ -369,6 +369,11 @@ func (w *WebAdmin) routes() http.Handler {
 	mux.HandleFunc("/trigger_bot/template_get", w.withAuth(w.templateGetJSON))
 	mux.HandleFunc("/trigger_bot/template_save", w.withAuth(w.templateSavePost))
 	mux.HandleFunc("/trigger_bot/template_delete", w.withAuth(w.templateDeletePost))
+	mux.HandleFunc("/trigger_bot/schedules", w.withAuth(w.schedulesJSON))
+	mux.HandleFunc("/trigger_bot/schedule_create", w.withAuth(w.scheduleCreatePost))
+	mux.HandleFunc("/trigger_bot/schedule_update", w.withAuth(w.scheduleUpdatePost))
+	mux.HandleFunc("/trigger_bot/schedule_toggle", w.withAuth(w.scheduleTogglePost))
+	mux.HandleFunc("/trigger_bot/schedule_delete", w.withAuth(w.scheduleDeletePost))
 	mux.HandleFunc("/trigger_bot/settings_get", w.withAuth(w.settingsGet))
 	mux.HandleFunc("/trigger_bot/settings_save", w.withAuth(w.settingsSave))
 	mux.HandleFunc("/trigger_bot/mtproto_chat_options", w.withAuth(w.mtprotoChatOptions))
@@ -771,57 +776,211 @@ func (w *WebAdmin) enumsJSON(rw http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(rw).Encode(out)
 }
 
+// schedulesJSON отдаёт все расписания участников для вкладки «Расписания».
+func (w *WebAdmin) schedulesJSON(rw http.ResponseWriter, r *http.Request) {
+	items, err := w.store.ListAllSchedules()
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if items == nil {
+		items = []ParticipantSchedule{}
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		Items []ParticipantSchedule `json:"items"`
+	}{Items: items})
+}
+
+// scheduleCreatePost создаёт расписание вручную: cron проверяется тем же
+// парсером, что и у планировщика, лимит на участника не обходится.
+func (w *WebAdmin) scheduleCreatePost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ChatID   int64  `json:"chat_id"`
+		UserID   int64  `json:"user_id"`
+		Username string `json:"username"`
+		Cron     string `json:"cron"`
+		Action   string `json:"action"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	cronExpr := strings.TrimSpace(payload.Cron)
+	action := strings.TrimSpace(payload.Action)
+	switch {
+	case payload.ChatID == 0:
+		http.Error(rw, "нужен chat_id (например -1002329738424)", http.StatusBadRequest)
+		return
+	case payload.UserID == 0:
+		http.Error(rw, "нужен user_id автора", http.StatusBadRequest)
+		return
+	case action == "":
+		http.Error(rw, "нужно задание расписания", http.StatusBadRequest)
+		return
+	case len([]rune(action)) > maxScheduleActionRunes:
+		http.Error(rw, fmt.Sprintf("задание длиннее %d символов", maxScheduleActionRunes), http.StatusBadRequest)
+		return
+	}
+	if _, err := parseCronSpec(cronExpr); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	count, err := w.store.CountSchedulesForUser(payload.ChatID, payload.UserID)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if count >= maxSchedulesPerUser {
+		http.Error(rw, fmt.Sprintf("у участника уже %d расписаний, лимит %d", count, maxSchedulesPerUser), http.StatusConflict)
+		return
+	}
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	item, err := w.store.CreateSchedule(payload.ChatID, payload.UserID, payload.Username, cronExpr, action, enabled)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK   bool                `json:"ok"`
+		Item ParticipantSchedule `json:"item"`
+	}{OK: true, Item: item})
+}
+
+// scheduleUpdatePost правит расписание: те же проверки, что при создании.
+func (w *WebAdmin) scheduleUpdatePost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ID       string `json:"id"`
+		ChatID   int64  `json:"chat_id"`
+		UserID   int64  `json:"user_id"`
+		Username string `json:"username"`
+		Cron     string `json:"cron"`
+		Action   string `json:"action"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(payload.ID)
+	cronExpr := strings.TrimSpace(payload.Cron)
+	action := strings.TrimSpace(payload.Action)
+	switch {
+	case id == "":
+		http.Error(rw, "нужен id расписания", http.StatusBadRequest)
+		return
+	case payload.ChatID == 0:
+		http.Error(rw, "нужен chat_id (например -1002329738424)", http.StatusBadRequest)
+		return
+	case payload.UserID == 0:
+		http.Error(rw, "нужен user_id автора", http.StatusBadRequest)
+		return
+	case action == "":
+		http.Error(rw, "нужно задание расписания", http.StatusBadRequest)
+		return
+	case len([]rune(action)) > maxScheduleActionRunes:
+		http.Error(rw, fmt.Sprintf("задание длиннее %d символов", maxScheduleActionRunes), http.StatusBadRequest)
+		return
+	}
+	if _, err := parseCronSpec(cronExpr); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	item, ok, err := w.store.UpdateSchedule(id, payload.ChatID, payload.UserID, payload.Username, cronExpr, action, enabled)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(rw, "расписание не найдено", http.StatusNotFound)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK   bool                `json:"ok"`
+		Item ParticipantSchedule `json:"item"`
+	}{OK: true, Item: item})
+}
+
+// scheduleTogglePost включает или выключает расписание.
+func (w *WebAdmin) scheduleTogglePost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(payload.ID)
+	if id == "" {
+		http.Error(rw, "нужен id расписания", http.StatusBadRequest)
+		return
+	}
+	ok, err := w.store.SetScheduleEnabled(id, payload.Enabled)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(rw, "расписание не найдено", http.StatusNotFound)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
+// scheduleDeletePost удаляет расписание — админское действие, без проверки
+// владельца.
+func (w *WebAdmin) scheduleDeletePost(rw http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(payload.ID)
+	if id == "" {
+		http.Error(rw, "нужен id расписания", http.StatusBadRequest)
+		return
+	}
+	ok, err := w.store.DeleteScheduleByID(id)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(rw, "расписание не найдено", http.StatusNotFound)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(rw).Encode(struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
 func (w *WebAdmin) templateTagsJSON(rw http.ResponseWriter, r *http.Request) {
+	// Список тегов — из единого реестра (tags.go): та же таблица питает рендер
+	// заданий расписаний, поэтому наборы не могут разъехаться.
 	type item struct {
 		Value string `json:"value"`
 		Label string `json:"label"`
 	}
-	items := []item{
-		{Value: "{{ .message }}", Label: "{{ .message }} — текст сообщения"},
-		{Value: "{{ .user_text }}", Label: "{{ .user_text }} — текст/подпись сообщения"},
-		{Value: "{{ .capturing_text }}", Label: "{{ .capturing_text }} — захват regex"},
-		{Value: "{{ index .capturing_groups 2 }}", Label: "{{ index .capturing_groups 2 }} — группа regex по номеру"},
-		{Value: "{{ .capturing_count }}", Label: "{{ .capturing_count }} — сколько групп захвата"},
-		{Value: "{{ .capturing_choice }}", Label: "{{ .capturing_choice }} — вариант из regex"},
-		{Value: "{{ .capturing_option }}", Label: "{{ .capturing_option }} — вариант из regex (алиас)"},
-		{Value: "{{ .user_id }}", Label: "{{ .user_id }} — ID автора"},
-		{Value: "{{ .user_first_name }}", Label: "{{ .user_first_name }} — имя автора"},
-		{Value: "{{ .user_username }}", Label: "{{ .user_username }} — username автора"},
-		{Value: "{{ .user_display_name }}", Label: "{{ .user_display_name }} — отображаемое имя автора"},
-		{Value: "{{ .user_label }}", Label: "{{ .user_label }} — метка из скобок в имени автора"},
-		{Value: "{{ .user_link }}", Label: "{{ .user_link }} — ссылка на автора"},
-		{Value: "{{ .sender_tag }}", Label: "{{ .sender_tag }} — тег автора в чате"},
-		{Value: "{{ .admins | get \"full_name\" | join \", \" }}", Label: "{{ .admins | get \"full_name\" | join \", \" }} — имена админов чата (без ботов)"},
-		{Value: "{{ .user_portrait }}", Label: "{{ .user_portrait }} — портрет участника"},
-		{Value: "{{ .user_portrait_remaining }}", Label: "{{ .user_portrait_remaining }} — сколько сообщений осталось до обновления портрета"},
-		{Value: "{{ .bot_portrait }}", Label: "{{ .bot_portrait }} — портрет бота в этом чате"},
-		{Value: "{{ .gpt_4h_remaining }}", Label: "{{ .gpt_4h_remaining }} — остаток GPT-токенов автора в текущем 4-часовом окне"},
-		{Value: "{{ .gpt_4h_limit }}", Label: "{{ .gpt_4h_limit }} — лимит GPT-токенов автора на 4 часа"},
-		{Value: "{{ .gpt_4h_low_threshold }}", Label: "{{ .gpt_4h_low_threshold }} — порог усталости GPT-токенов автора"},
-		{Value: "{{ chat_context 12 }}", Label: "{{ chat_context 12 }} — последние сообщения чата в бюджете ~150×N символов (без обрезки строк)"},
-		{Value: "{{ weather \"Рязань\" }}", Label: "{{ weather \"Рязань\" }} — погода сейчас по городу (кэшируется)"},
-		{Value: "{{ .message | web_search }}", Label: "{{ .message | web_search }} — веб-поиск по запросу (pipeline-стиль)"},
-		{Value: "{{ .message | web_search \"компактно\" }}", Label: "{{ .message | web_search \"компактно\" }} — компактная поисковая выдача"},
-		{Value: "{{ .message | regexp_replace \"pattern\" \"replacement\" }}", Label: "{{ .message | regexp_replace ... }} — regex-замена в строке (pipeline-стиль)"},
-		{Value: "{{ rune_len .message }}", Label: "{{ rune_len .message }} — длина сообщения в символах"},
-		{Value: "{{ time_of_day \"Europe/Moscow\" }}", Label: "{{ time_of_day \"Europe/Moscow\" }} — время суток по часовому поясу"},
-		{Value: "{{ weekday \"Europe/Moscow\" }}", Label: "{{ weekday \"Europe/Moscow\" }} — день недели по часовому поясу"},
-		{Value: "{{ .chat_id }}", Label: "{{ .chat_id }} — ID чата"},
-		{Value: "{{ .chat_title }}", Label: "{{ .chat_title }} — название чата"},
-		{Value: "{{ .reply_text }}", Label: "{{ .reply_text }} — текст сообщения, на которое ответили"},
-		{Value: "{{ .reply_user_id }}", Label: "{{ .reply_user_id }} — ID адресата реплая"},
-		{Value: "{{ .reply_first_name }}", Label: "{{ .reply_first_name }} — имя адресата реплая"},
-		{Value: "{{ .reply_username }}", Label: "{{ .reply_username }} — username адресата реплая"},
-		{Value: "{{ .reply_display_name }}", Label: "{{ .reply_display_name }} — отображаемое имя адресата реплая"},
-		{Value: "{{ .reply_label }}", Label: "{{ .reply_label }} — метка из скобок в имени адресата"},
-		{Value: "{{ .reply_user_link }}", Label: "{{ .reply_user_link }} — ссылка на адресата реплая"},
-		{Value: "{{ .reply_sender_tag }}", Label: "{{ .reply_sender_tag }} — тег адресата в чате"},
-		{Value: "{{ .reply_audio_title }}", Label: "{{ .reply_audio_title }} — название трека в реплае (если это аудио)"},
-		{Value: "{{ .reply_audio_artist }}", Label: "{{ .reply_audio_artist }} — исполнитель трека в реплае"},
-		{Value: "{{ .reply_audio_album }}", Label: "{{ .reply_audio_album }} — альбом трека в реплае"},
-		{Value: "{{ .reply_audio_year }}", Label: "{{ .reply_audio_year }} — год трека в реплае"},
-		{Value: "{{ .reply_audio_track }}", Label: "{{ .reply_audio_track }} — номер дорожки в реплае"},
-		{Value: "{{ .reply_audio_text }}", Label: "{{ .reply_audio_text }} — текст песни из тега TEXT в реплае"},
+	items := make([]item, 0, len(responseTagList))
+	for _, tag := range responseTagList {
+		items = append(items, item{Value: tag.Value, Label: tag.Label})
 	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(rw).Encode(struct {

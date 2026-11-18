@@ -391,8 +391,10 @@ type PhotoAlbum struct {
 }
 
 // InstagramPhotoAlbum downloads every photo of an Instagram carousel/sidecar post.
-// supported=false means the url is not a multi-photo Instagram post and the caller
-// should continue with the regular single-media download flow.
+// supported=false means the url is not a photo post (a video post, a reel or a
+// non-Instagram link), and the caller should continue with the regular
+// single-media download flow. Пост из одного фото тоже отдаём альбомом:
+// yt-dlp такой пост не качает («There is no video in this post»).
 func (d Downloader) InstagramPhotoAlbum(ctx context.Context, rawURL string) (PhotoAlbum, bool, error) {
 	normURL, service, ok := NormalizeSupportedURL(rawURL)
 	if !ok || service != ServiceInstagram {
@@ -406,10 +408,14 @@ func (d Downloader) downloadInstagramPhotoAlbum(ctx context.Context, normURL str
 	if err != nil {
 		return PhotoAlbum{}, false, fmt.Errorf("instagram album probe: %w", err)
 	}
-	if len(probe.Entries) < 2 {
-		return PhotoAlbum{}, false, nil
+	// Одиночный пост yt-dlp отдаёт не плейлистом, а самим элементом: берём
+	// его как единственный entry, иначе пост из одного фото уходит в общий
+	// путь и падает на «There is no video in this post».
+	entries := probe.Entries
+	if len(entries) == 0 {
+		entries = []probeJSON{probe}
 	}
-	for _, entry := range probe.Entries {
+	for _, entry := range entries {
 		if entryHasVideoFormats(entry) {
 			// Photo+video carousels keep the regular single-media flow.
 			return PhotoAlbum{}, false, nil
@@ -429,7 +435,7 @@ func (d Downloader) downloadInstagramPhotoAlbum(ctx context.Context, normURL str
 		_ = os.RemoveAll(tmpDir)
 		return PhotoAlbum{}, true, err
 	}
-	if len(paths) < 2 {
+	if len(paths) < 1 {
 		_ = os.RemoveAll(tmpDir)
 		return PhotoAlbum{}, false, nil
 	}

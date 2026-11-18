@@ -737,6 +737,12 @@ var responseTemplateFuncs = htmltmpl.FuncMap{
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return time.Now().In(loc).Format("15:04")
 	},
+	// chat_context переопределяется в renderTemplateWithMessage замыканием с
+	// конкретным чатом; в общем наборе нужен, чтобы тег разбирался везде
+	// (в заданиях расписания контекста чата нет — вернётся пустая строка).
+	"chat_context": func(args ...interface{}) string {
+		return ""
+	},
 	"weekday": func(tz interface{}) string {
 		loc := loadTemplateLocation(toTemplateString(tz))
 		return russianWeekdayName(time.Now().In(loc).Weekday())
@@ -1670,6 +1676,10 @@ func buildTemplateVars(ctx templateContext) map[string]interface{} {
 	vars["capturing_count"] = captureGroupCount(ctx.CapturingTexts)
 	vars["capturing_choice"] = choice
 	vars["capturing_option"] = choice
+	if ctx.Msg != nil && ctx.Msg.Chat != nil {
+		// {{ random_username }} — случайный @username из наблюдённых в чате.
+		vars["random_username"] = randomChatUsername(ctx.Msg.Chat.ID)
+	}
 	return vars
 }
 

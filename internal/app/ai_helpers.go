@@ -188,6 +188,21 @@ func transcribeAudioBytes(apiKey, model, fileName string, audioBytes []byte) (st
 	return strings.TrimSpace(payload.Text), nil
 }
 
+// serpImagesRequested — сколько результатов просим у SerpAPI. Меньше десяти,
+// чтобы выбор был из более релевантной верхушки выдачи.
+const serpImagesRequested = 6
+
+// searchImageCaption — подпись найденной картинки: ссылка на страницу-источник.
+func searchImageCaption(sourceURL string) string {
+	src := strings.TrimSpace(sourceURL)
+	if src == "" {
+		return ""
+	}
+	// Лимит подписи Telegram — 1024 символа: длинная ссылка не должна
+	// обнулять отправку картинки.
+	return clipText("Источник: "+src, 1020)
+}
+
 func searchImageInSerpAPI(query string) (generatedImage, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -209,7 +224,7 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 	params.Set("q", query)
 	params.Set("hl", "ru")
 	params.Set("gl", "ru")
-	params.Set("num", "10")
+	params.Set("num", strconv.Itoa(serpImagesRequested))
 	params.Set("safe", "active")
 
 	endpoint := "https://serpapi.com/search.json?" + params.Encode()
@@ -247,7 +262,7 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 		return generatedImage{}, errors.New("nothing found")
 	}
 
-	candidates := collectSerpImageCandidateURLs(payload.ImagesResult)
+	candidates := collectSerpImageCandidates(payload.ImagesResult)
 	if len(candidates) == 0 {
 		return generatedImage{}, errors.New("image URL is empty")
 	}
@@ -255,13 +270,15 @@ func searchImageInSerpAPI(query string) (generatedImage, error) {
 	perm := rand.Perm(len(candidates))
 	var lastErr error
 	for _, idx := range perm {
-		u := candidates[idx]
-		imgBytes, err := fetchImageBytes(u)
+		candidate := candidates[idx]
+		imgBytes, err := fetchImageBytes(candidate.ImageURL)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		return generatedImage{Bytes: imgBytes}, nil
+		log.Printf("search image picked query=%q image=%q source=%q",
+			clipText(query, 160), clipText(candidate.ImageURL, 200), clipText(candidate.SourceURL, 200))
+		return generatedImage{Bytes: imgBytes, SourceURL: candidate.SourceURL}, nil
 	}
 	if lastErr != nil {
 		return generatedImage{}, fmt.Errorf("all image links failed: %w", lastErr)
@@ -333,11 +350,18 @@ type serpImageResult struct {
 	Thumbnail string `json:"thumbnail"`
 }
 
-func collectSerpImageCandidateURLs(results []serpImageResult) []string {
-	candidates := make([]string, 0, len(results)*2)
-	seen := make(map[string]struct{}, len(results)*2)
-	appendURL := func(raw string) {
-		u := strings.TrimSpace(raw)
+// imageCandidate — ссылка на картинку вместе со страницей, откуда она взята:
+// страница идёт в подпись, чтобы было видно источник.
+type imageCandidate struct {
+	ImageURL  string
+	SourceURL string
+}
+
+func collectSerpImageCandidates(results []serpImageResult) []imageCandidate {
+	candidates := make([]imageCandidate, 0, len(results)*3)
+	seen := make(map[string]struct{}, len(results)*3)
+	appendURL := func(rawImage, rawSource string) {
+		u := strings.TrimSpace(rawImage)
 		if u == "" {
 			return
 		}
@@ -345,12 +369,12 @@ func collectSerpImageCandidateURLs(results []serpImageResult) []string {
 			return
 		}
 		seen[u] = struct{}{}
-		candidates = append(candidates, u)
+		candidates = append(candidates, imageCandidate{ImageURL: u, SourceURL: strings.TrimSpace(rawSource)})
 	}
 	for _, it := range results {
-		appendURL(it.Original)
-		appendURL(it.Thumbnail)
-		appendURL(it.Link)
+		appendURL(it.Original, it.Link)
+		appendURL(it.Thumbnail, it.Link)
+		appendURL(it.Link, it.Link)
 	}
 	return candidates
 }

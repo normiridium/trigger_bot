@@ -1053,6 +1053,15 @@ func sendInstagramPhotoAlbum(ctx context.Context, sendCtx sendContext, dl MediaD
 	if title == "" {
 		title = strings.TrimSpace(rawURL)
 	}
+	// Пост из одного фото: yt-dlp его не качает, а слайдшоу из одной картинки
+	// Telegram показывает как статью с одной страницей — отправляем фото.
+	if len(album.Paths) == 1 {
+		if progress != nil {
+			progress.SetFrame(7)
+			progress.SetStage("Отправка фото")
+		}
+		return true, sendPhotoFromFile(sendCtx, album.Paths[0], buildMediaPhotoCaption(album.Paths[0], title, album.SourceURL, album.Service))
+	}
 	if envInt("MEDIA_RICH_CAROUSEL", 1) == 1 {
 		err := sendRichPhotoCarousel(sendCtx, album.Paths, buildRichCarouselCaption(len(album.Paths), title, album.SourceURL, album.Service))
 		if err == nil {

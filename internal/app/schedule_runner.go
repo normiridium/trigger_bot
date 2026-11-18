@@ -130,7 +130,14 @@ func executeSchedule(deps scheduleRunnerDeps, item ParticipantSchedule) {
 			UserName: item.Username,
 		},
 	}
-	prompt := strings.Replace(scheduleSelfPrompt, "%s", item.Action, 1)
+	action := item.Action
+	if expanded, replaced := renderRandomUsernameTag(action, item.ChatID); replaced {
+		if randomChatUsername(item.ChatID) == "" {
+			log.Printf("schedule %s: тег random_username не раскрыт — индекс участников чата пуст", item.ID)
+		}
+		action = expanded
+	}
+	prompt := strings.Replace(scheduleSelfPrompt, "%s", action, 1)
 	reply, err := generateChatGPTReply(templateContext{
 		Bot:            deps.Bot,
 		Msg:            synthetic,

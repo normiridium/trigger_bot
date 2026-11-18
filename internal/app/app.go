@@ -1753,6 +1753,11 @@ func (i *chatUserIndex) remember(chatID int64, u *tgbotapi.User) {
 	if i == nil || chatID == 0 || u == nil || u.ID == 0 {
 		return
 	}
+	// Боты не участвуют в тегах: {{ .random_username }} должен указывать на
+	// живого человека, а не на бота (в том числе на самого себя через reply-to).
+	if u.IsBot {
+		return
+	}
 	uname := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u.UserName), "@"))
 	label := strings.TrimSpace(u.FirstName)
 	if label == "" {
@@ -1794,6 +1799,31 @@ func (i *chatUserIndex) RememberFromMessage(msg *tgbotapi.Message) {
 	if msg.ReplyToMessage != nil {
 		i.remember(msg.Chat.ID, msg.ReplyToMessage.From)
 	}
+}
+
+// RandomUsername отдаёт случайный username участника, наблюдённого в чате.
+// Пустая строка — индекс пуст (после рестарта тег работает только по тем,
+// кто уже написал).
+func (i *chatUserIndex) RandomUsername(chatID int64) string {
+	if i == nil || chatID == 0 {
+		return ""
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	users := i.byChat[chatID]
+	if len(users) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(users))
+	for name := range users {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return names[rand.Intn(len(names))]
 }
 
 func (i *chatUserIndex) Resolve(chatID int64, raw string) (int64, string, bool) {
@@ -2176,6 +2206,21 @@ func Run() {
 	adminCacheTTL := time.Duration(envInt("ADMIN_CACHE_TTL_SEC", 120)) * time.Second
 	adminCache := newAdminStatusCache(adminCacheTTL, store)
 	userIndex := newChatUserIndex(envInt("USER_INDEX_MAX", 800))
+	chatUsers := newChatUserPersister(store.RememberChatUser, chatUsersPersistInterval)
+	if warm, err := warmChatUserIndex(store, userIndex, chatUsersWarmupLimit); err != nil {
+		log.Printf("chat users warmup failed: %v", err)
+	} else if warm > 0 {
+		log.Printf("chat users warmed from mongo: %d", warm)
+	}
+	// Тег {{ .random_username }}: случайный ник строго из своего чата ($sample по
+	// chat_id в Mongo); память — только запасной путь, если база недоступна.
+	setChatRandomUsernameResolver(func(chatID int64) string {
+		if nick, err := store.SampleChatUsername(chatID); err == nil && strings.TrimSpace(nick) != "" {
+			return nick
+		}
+		return userIndex.RandomUsername(chatID)
+	})
+	defer setChatRandomUsernameResolver(nil)
 	readonly := newReadonlyManager()
 	moderationConfirms := newModerationConfirmManager(time.Duration(envInt("MOD_CONFIRM_TTL_SEC", 600)) * time.Second)
 	clearChatConfirms := newClearChatConfirmManager(time.Duration(envInt("CLEAR_CHAT_CONFIRM_TTL_SEC", 600)) * time.Second)
@@ -2719,6 +2764,7 @@ func Run() {
 				continue
 			}
 			userIndex.RememberFromMessage(msg)
+			persistChatUserMessage(chatUsers, msg)
 			if !isPrivateChat {
 				if _, err := adminCache.EnsureChatAdminsFresh(bot, msg.Chat.ID); err != nil && debugTriggerLogEnabled {
 					log.Printf("admin cache warmup failed chat=%d: %v", msg.Chat.ID, err)
@@ -4140,7 +4186,7 @@ func handleTriggerActionForMessage(deps triggerActionDeps, msg *tgbotapi.Message
 			replyTo = msg.MessageID
 		}
 		sendCtx := sendContext{Bot: deps.Bot, ChatID: msg.Chat.ID, ReplyTo: replyTo}
-		if ok := sendPhoto(sendCtx, img, "", false); ok && deps.IdleTracker != nil {
+		if ok := sendPhoto(sendCtx, img, searchImageCaption(img.SourceURL), false); ok && deps.IdleTracker != nil {
 			deps.IdleTracker.MarkActivity(msg.Chat.ID, time.Now())
 			deleteTriggerSourceMessage(deps.Bot, msg, tr)
 		}

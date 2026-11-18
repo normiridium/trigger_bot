@@ -642,6 +642,9 @@ func sendGIF(ctx sendContext, fileID, caption string) bool {
 type generatedImage struct {
 	URL   string
 	Bytes []byte
+	// SourceURL — страница, откуда взята найденная картинка: её показываем
+	// в подписи, чтобы было видно источник.
+	SourceURL string
 }
 
 func sendPhoto(ctx sendContext, img generatedImage, caption string, spoiler bool) bool {

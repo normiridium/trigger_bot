@@ -100,6 +100,26 @@ tr.dragging-row {
 .template-actions .btn {
   line-height: 1.1;
 }
+/* Расписания: кнопки в строке и cron не переносятся по буквам. */
+.schedules-table .col-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+.schedules-table .col-cron,
+.schedules-table .col-chat,
+.schedules-table .col-last {
+  white-space: nowrap;
+}
+.schedules-table .col-user {
+  min-width: 150px;
+}
+.schedules-table .col-action-text {
+  min-width: 220px;
+}
+.schedule-actions .btn {
+  line-height: 1.1;
+  white-space: nowrap;
+}
 .settings-panel {
   background: #2b3035;
 }

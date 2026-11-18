@@ -4,6 +4,8 @@ function triggerApp(){
     updateImportFileName,
     openNew,
     openTemplateNew,
+    openScheduleNew,
+    submitScheduleForm,
     submitTemplateForm,
     submitTriggerForm,
     saveSettings,
@@ -33,6 +35,8 @@ let activeResponseVariant = 0;
 const enumCache = {};
 let templatesCache = [];
 let templatesLoadInFlight = false;
+let schedulesCache = [];
+let schedulesLoadInFlight = false;
 let settingsLoadInFlight = false;
 let settingsCache = {fields: [], values: {}};
 let emojiHelperTimer = null;
@@ -255,6 +259,7 @@ async function initAuthenticatedApp(){
     loadEnums(),
     loadTemplateTags(),
     loadTemplates(),
+    loadSchedules(),
     loadSettings(),
     loadMTProtoChatOptions(),
     loadRecentSetsHistory(),
@@ -404,10 +409,7 @@ async function loadEnums(){
 }
 
 async function loadTemplateTags(){
-  const pickers = [
-    document.getElementById('f_template_tag_picker'),
-    document.getElementById('tpl_template_tag_picker'),
-  ].filter(Boolean);
+  const pickers = Array.from(document.querySelectorAll('.template-tag-picker'));
   if(pickers.length === 0){
     return;
   }
@@ -753,6 +755,268 @@ async function deleteTemplate(id, key){
     return;
   }
   await loadTemplates();
+}
+
+async function loadSchedules(){
+  const tbody = document.getElementById('schedules_tbody');
+  if(!tbody){ return; }
+  try{
+    if(schedulesLoadInFlight){ return; }
+    schedulesLoadInFlight = true;
+    const r = await fetchAdmin(withToken('/trigger_bot/schedules'));
+    if(!r.ok){
+      renderSchedulesError('Не удалось загрузить расписания');
+      return;
+    }
+    const data = await r.json();
+    schedulesCache = Array.isArray(data?.items) ? data.items : [];
+    renderSchedulesTable();
+  } catch(err){
+    renderSchedulesError('Не удалось загрузить расписания');
+  } finally {
+    schedulesLoadInFlight = false;
+  }
+}
+
+function renderSchedulesError(msg){
+  const tbody = document.getElementById('schedules_tbody');
+  if(!tbody){ return; }
+  tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger py-4">${escapeHtml(msg)}</td></tr>`;
+}
+
+function formatScheduleTime(unix){
+  const ts = Number(unix);
+  if(!Number.isFinite(ts) || ts <= 0){ return '—'; }
+  try{
+    return new Date(ts * 1000).toLocaleString('ru-RU', {timeZone: 'Europe/Moscow'});
+  } catch(_){
+    return new Date(ts * 1000).toISOString();
+  }
+}
+
+function renderSchedulesTable(){
+  const tbody = document.getElementById('schedules_tbody');
+  if(!tbody){ return; }
+  if(!Array.isArray(schedulesCache) || schedulesCache.length === 0){
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-secondary py-4">Расписаний нет</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  schedulesCache.forEach((sch) => {
+    const id = String(sch?.ID ?? sch?.id ?? '').trim();
+    const chatID = String(sch?.ChatID ?? sch?.chat_id ?? '').trim();
+    const userID = String(sch?.UserID ?? sch?.user_id ?? '').trim();
+    const username = String(sch?.Username ?? sch?.username ?? '').trim();
+    const cron = String(sch?.Cron ?? sch?.cron ?? '').trim();
+    const action = String(sch?.Action ?? sch?.action ?? '').trim();
+    const enabled = Boolean(sch?.Enabled ?? sch?.enabled);
+    const lastRun = sch?.LastRunAt ?? sch?.last_run_at ?? 0;
+    const runsToday = Number(sch?.RunsToday ?? sch?.runs_today ?? 0);
+    const userCell = username ? `@${escapeHtml(username)}` : (userID ? escapeHtml(userID) : '—');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="col-chat"><code>${escapeHtml(chatID)}</code></td>
+      <td class="col-user">${userCell}<div class="text-secondary small">${escapeHtml(userID)}</div></td>
+      <td class="col-cron text-nowrap"><code>${escapeHtml(cron)}</code></td>
+      <td class="text-wrap col-action-text" title="${escapeHtml(action)}">${escapeHtml(clipTemplatePreview(action, 90))}</td>
+      <td class="col-state text-center"><small class="text-secondary">${runsToday}</small></td>
+      <td class="col-last text-nowrap">${escapeHtml(formatScheduleTime(lastRun))}</td>
+      <td class="text-nowrap col-actions">
+        <button class="btn btn-sm action-mini action-visibility ${enabled ? 'btn-outline-success' : 'btn-outline-secondary'}" type="button" data-schedule-toggle="${escapeHtml(id)}" data-schedule-enabled="${enabled ? '1' : '0'}" title="Переключить статус" aria-label="Переключить статус">
+          <i class="bi ${statusIcon(enabled)}"></i>
+        </button>
+        <button class="btn btn-sm action-mini btn-outline-info ms-1" type="button" data-schedule-edit="${escapeHtml(id)}" title="Редактировать" aria-label="Редактировать">
+          <i class="bi bi-pencil"></i>
+        </button>
+        <button class="btn btn-sm action-mini btn-outline-danger ms-1" type="button" data-schedule-delete="${escapeHtml(id)}" title="Удалить" aria-label="Удалить">
+          <i class="bi bi-trash"></i>
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function openScheduleNew(){
+  document.getElementById('sch_id').value = '';
+  const title = document.getElementById('schedule_modal_title');
+  if(title){ title.textContent = 'Новое расписание'; }
+  document.getElementById('sch_chat_id').value = '';
+  document.getElementById('sch_user_id').value = '';
+  document.getElementById('sch_username').value = '';
+  bindCronEditor();
+  writeCronExpression(CRON_DEFAULT);
+  document.getElementById('sch_action').value = '';
+  document.getElementById('sch_enabled').checked = true;
+  ensureScheduleModal().show();
+}
+
+function openScheduleEdit(id){
+  id = String(id || '').trim();
+  if(!id){ return; }
+  const sch = (Array.isArray(schedulesCache) ? schedulesCache : []).find((it) => String(it?.ID ?? it?.id ?? '') === id);
+  if(!sch){
+    alert('Расписание не найдено в списке — обнови страницу');
+    return;
+  }
+  document.getElementById('sch_id').value = id;
+  const title = document.getElementById('schedule_modal_title');
+  if(title){ title.textContent = 'Правка расписания'; }
+  document.getElementById('sch_chat_id').value = String(sch?.ChatID ?? sch?.chat_id ?? '');
+  document.getElementById('sch_user_id').value = String(sch?.UserID ?? sch?.user_id ?? '');
+  document.getElementById('sch_username').value = String(sch?.Username ?? sch?.username ?? '');
+  bindCronEditor();
+  writeCronExpression(String(sch?.Cron ?? sch?.cron ?? ''));
+  document.getElementById('sch_action').value = String(sch?.Action ?? sch?.action ?? '');
+  document.getElementById('sch_enabled').checked = Boolean(sch?.Enabled ?? sch?.enabled);
+  ensureScheduleModal().show();
+}
+
+// Cron: штатное поле #sch_cron — видимое значение, <cron-editor> — визуальный
+// редактор. Вся разметка, разбор и форматирование живут в компоненте
+// static/cron-editor.js; здесь только связка двух элементов.
+const CRON_FIELD_COUNT = 5;
+const CRON_DEFAULT = '0 9 * * *';
+
+function cronEditorEl(){
+  return document.getElementById('sch_cron_grid');
+}
+
+function normalizeCronParts(expr){
+  const parts = String(expr || '').trim().split(/\s+/).filter(Boolean);
+  while(parts.length < CRON_FIELD_COUNT){ parts.push('*'); }
+  return parts.slice(0, CRON_FIELD_COUNT).map((v) => v || '*');
+}
+
+function readCronExpression(){
+  const input = document.getElementById('sch_cron');
+  return normalizeCronParts(input ? input.value : '').join(' ');
+}
+
+function writeCronExpression(expr){
+  const normalized = normalizeCronParts(expr).join(' ');
+  const input = document.getElementById('sch_cron');
+  if(input){ input.value = normalized; }
+  const editor = cronEditorEl();
+  if(editor){ editor.value = normalized; }
+}
+
+function bindCronEditor(){
+  const editor = cronEditorEl();
+  if(!editor || editor.dataset.boundChange === '1'){ return; }
+  editor.dataset.boundChange = '1';
+  editor.addEventListener('change', (ev) => {
+    const input = document.getElementById('sch_cron');
+    const next = ev && ev.detail && typeof ev.detail.value === 'string' ? ev.detail.value : '';
+    if(input && next && input.value !== next){ input.value = next; }
+  });
+}
+
+// cloneSchedule повторяет поведение кнопки «Клонировать» у триггеров: поля
+// остаются, id сбрасывается — сохранение создаст новое расписание.
+function cloneSchedule(){
+  const idEl = document.getElementById('sch_id');
+  if(!idEl){ return; }
+  const hadID = String(idEl.value || '').trim() !== '';
+  if(!hadID){ return; }
+  idEl.value = '';
+  const title = document.getElementById('schedule_modal_title');
+  if(title){ title.textContent = 'Новое расписание (копия)'; }
+  document.getElementById('sch_action')?.focus();
+}
+
+async function submitScheduleForm(ev){
+  ev.preventDefault();
+  const scheduleID = String(document.getElementById('sch_id')?.value || '').trim();
+  const payload = {
+    chat_id: Number(String(document.getElementById('sch_chat_id')?.value || '').trim()),
+    user_id: Number(String(document.getElementById('sch_user_id')?.value || '').trim()),
+    username: String(document.getElementById('sch_username')?.value || '').trim(),
+    cron: readCronExpression(),
+    action: String(document.getElementById('sch_action')?.value || '').trim(),
+    enabled: Boolean(document.getElementById('sch_enabled')?.checked),
+  };
+  if(!Number.isFinite(payload.chat_id) || payload.chat_id === 0){
+    alert('Укажи chat_id, например -1002329738424');
+    return false;
+  }
+  if(!Number.isFinite(payload.user_id) || payload.user_id === 0){
+    alert('Укажи user_id автора расписания');
+    return false;
+  }
+  if(!payload.cron){
+    alert('Укажи cron, например “0 9 * * *”');
+    return false;
+  }
+  if(!payload.action){
+    alert('Опиши задание для ИИ-агента');
+    return false;
+  }
+  const endpoint = scheduleID ? '/trigger_bot/schedule_update' : '/trigger_bot/schedule_create';
+  if(scheduleID){ payload.id = scheduleID; }
+  const r = await fetch(withToken(endpoint), {
+    method: 'POST',
+    headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+    body: JSON.stringify(payload),
+  });
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка сохранения расписания: ' + (txt || r.status));
+    return false;
+  }
+  ensureScheduleModal().hide();
+  await loadSchedules();
+  return false;
+}
+
+async function toggleSchedule(id, enabled, btn){
+  if(!id){ return; }
+  const r = await fetch(withToken('/trigger_bot/schedule_toggle'), {
+    method: 'POST',
+    headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+    body: JSON.stringify({id, enabled: !enabled}),
+  });
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка переключения расписания: ' + (txt || r.status));
+    return;
+  }
+  // Как у триггеров: обновляем кнопку на месте, без перерисовки таблицы.
+  const nextEnabled = !enabled;
+  const item = (Array.isArray(schedulesCache) ? schedulesCache : [])
+    .find((it) => String(it?.ID ?? it?.id ?? '') === String(id));
+  if(item){
+    if('Enabled' in item){ item.Enabled = nextEnabled; } else { item.enabled = nextEnabled; }
+  }
+  if(btn){
+    btn.classList.toggle('btn-outline-success', nextEnabled);
+    btn.classList.toggle('btn-outline-secondary', !nextEnabled);
+    btn.setAttribute('data-schedule-enabled', nextEnabled ? '1' : '0');
+    const icon = btn.querySelector('i');
+    if(icon){ icon.className = 'bi ' + statusIcon(nextEnabled); }
+  }
+}
+
+async function deleteSchedule(id){
+  if(!id){ return; }
+  if(!confirm('Удалить расписание?')){ return; }
+  const r = await fetch(withToken('/trigger_bot/schedule_delete'), {
+    method: 'POST',
+    headers: withCSRFHeaders({'Content-Type': 'application/json', 'Accept': 'application/json'}),
+    body: JSON.stringify({id}),
+  });
+  if(!r.ok){
+    const txt = await r.text();
+    alert('Ошибка удаления расписания: ' + (txt || r.status));
+    return;
+  }
+  await loadSchedules();
+}
+
+function ensureScheduleModal(){
+  if(!window.__schModal){
+    window.__schModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
+  }
+  return window.__schModal;
 }
 
 function ensureTemplateModal(){
@@ -1949,6 +2213,18 @@ function getTemplateTextArea(){
   return document.getElementById('tpl_text');
 }
 
+// resolveEditorTarget находит поле по имени из data-target: тулбары и списки
+// тегов больше не зависят от конкретных id — новое поле достаточно пометить
+// data-editor-target="<имя>".
+function resolveEditorTarget(name){
+  const key = String(name || '').trim();
+  if(key){
+    const el = document.querySelector(`[data-editor-target="${key}"]`);
+    if(el){ return el; }
+  }
+  return getResponseTextArea();
+}
+
 function replaceTextAreaSelection(el, before, after){
   const editor = getEditorView();
   if(editor){
@@ -2037,8 +2313,8 @@ function showTelegramHtmlHelp(){
 
 function insertTemplateTagFromPicker(sel){
   if(!sel || !sel.value){ return; }
-  const isTemplate = sel.id === 'tpl_template_tag_picker';
-  insertTextAtCursor(isTemplate ? getTemplateTextArea() : getResponseTextArea(), sel.value);
+  const target = sel.getAttribute('data-target') || '';
+  insertTextAtCursor(resolveEditorTarget(target), sel.value);
   sel.value = '';
 }
 
@@ -2049,7 +2325,7 @@ function bindMiniToolbarFallback(){
     const btn = e.target && e.target.closest ? e.target.closest('button[data-action]') : null;
     if(!btn){ return; }
     const target = btn.closest('.mini-toolbar')?.getAttribute('data-target') || '';
-    const targetEl = target === 'template' ? getTemplateTextArea() : getResponseTextArea();
+    const targetEl = resolveEditorTarget(target);
     const action = btn.getAttribute('data-action');
     if(action === 'wrap'){
       const before = btn.getAttribute('data-before') || '';
@@ -2090,6 +2366,37 @@ function bindMiniToolbarFallback(){
   });
 
   document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-schedule-clone-current]') : null;
+    if(!btn){ return; }
+    cloneSchedule();
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-schedule-edit]') : null;
+    if(!btn){ return; }
+    const id = String(btn.getAttribute('data-schedule-edit') || '');
+    if(!id){ return; }
+    openScheduleEdit(id);
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-schedule-toggle]') : null;
+    if(!btn){ return; }
+    const id = String(btn.getAttribute('data-schedule-toggle') || '');
+    const enabled = String(btn.getAttribute('data-schedule-enabled') || '1') === '1';
+    if(!id){ return; }
+    toggleSchedule(id, enabled, btn);
+  });
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-schedule-delete]') : null;
+    if(!btn){ return; }
+    const id = String(btn.getAttribute('data-schedule-delete') || '');
+    if(!id){ return; }
+    deleteSchedule(id);
+  });
+
+  document.addEventListener('click', (e) => {
     const btn = e.target && e.target.closest ? e.target.closest('button[data-trigger-delete]') : null;
     if(!btn){ return; }
     const id = Number(btn.getAttribute('data-trigger-delete') || 0);
@@ -2097,9 +2404,19 @@ function bindMiniToolbarFallback(){
     deleteTrigger(id, btn);
   });
 
+  document.addEventListener('input', (ev) => {
+    const target = ev.target;
+    if(!target || target.id !== 'sch_cron'){ return; }
+    const editor = cronEditorEl();
+    if(editor){
+      const next = normalizeCronParts(target.value).join(' ');
+      if(editor.value !== next){ editor.value = next; }
+    }
+  });
+
   document.addEventListener('change', (ev) => {
     const target = ev.target;
-    if(!target || target.id !== 'f_template_tag_picker'){ return; }
+    if(!target || !target.classList || !target.classList.contains('template-tag-picker')){ return; }
     insertTemplateTagFromPicker(target);
   });
 

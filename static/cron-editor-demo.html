@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>cron-editor — два режима</title>
+<style>
+  /* Никакого Bootstrap: страница только задаёт тему через CSS-переменные. */
+  body { margin: 0; padding: 24px; background: #0f1115; color: #d7dbe0; font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 15px; font-weight: 500; margin: 24px 0 8px; color: #9aa2ad; }
+  h1:first-child { margin-top: 0; }
+  .wrap { max-width: 1100px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+  .row > * { flex: 1 1 auto; }
+  cron-editor {
+    --cron-border: #3a3f46;
+    --cron-accent: #2f7d5d;
+    --cron-accent-text: #eaf6f0;
+    --cron-label: #7b838d;
+    --cron-cell-border: #33383f;
+    --cron-cell-color: #b9bfc7;
+    --cron-focus: #4d90fe;
+    --cron-input-bg: #0b0d10;
+    --cron-panel-bg: #14171b;
+  }
+  output { display: block; margin-top: 12px; font-family: ui-monospace, monospace; color: #6f7681; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>mode="always" (по умолчанию) — сетка видна всегда</h1>
+  <cron-editor id="ed-always" value="*/5,58 19-20,22-23 11,14,29 1,4,6 1-2"></cron-editor>
+  <output id="out-always">ждём change</output>
+
+  <h1>mode="popover" + week-start="mon" — неделя с понедельника, понедельник первым</h1>
+  <div class="row">
+    <cron-editor id="ed-pop" mode="popover" week-start="mon" value="0 9 * * 1-5"></cron-editor>
+    <div style="color:#6f7681">соседний элемент — проверка, что панель закрывается по клику вне</div>
+  </div>
+  <output id="out-pop">ждём change</output>
+</div>
+<script src="cron-editor.js"></script>
+<script>
+  const always = document.getElementById('ed-always');
+  const pop = document.getElementById('ed-pop');
+  always.addEventListener('change', (e) => {
+    document.getElementById('out-always').textContent = 'change → ' + e.detail.value;
+  });
+  pop.addEventListener('change', (e) => {
+    document.getElementById('out-pop').textContent = 'change → ' + e.detail.value;
+  });
+</script>
+</body>
+</html>

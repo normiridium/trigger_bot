@@ -245,3 +245,114 @@ func (m *mongoBackend) ensureScheduleIndexes() error {
 	})
 	return err
 }
+
+// listAllSchedules отдаёт все расписания для админки: свежие сверху.
+func (m *mongoBackend) listAllSchedules() ([]ParticipantSchedule, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	cur, err := m.schedules.Find(ctx, bson.M{},
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(500))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	out := make([]ParticipantSchedule, 0, 16)
+	for cur.Next(ctx) {
+		var d mongoScheduleDoc
+		if err := cur.Decode(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, scheduleFromDoc(d))
+	}
+	return out, cur.Err()
+}
+
+// countSchedulesForUser считает расписания участника: админка не должна
+// обходить лимит, который действует для участников.
+func (m *mongoBackend) countSchedulesForUser(chatID, userID int64) (int64, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	return m.schedules.CountDocuments(ctx, bson.M{"chat_id": chatID, "user_id": userID})
+}
+
+// createSchedule вставляет расписание, созданное вручную в админке.
+func (m *mongoBackend) createSchedule(chatID, userID int64, username, cronExpr, action string, enabled bool, now time.Time) (ParticipantSchedule, error) {
+	doc := mongoScheduleDoc{
+		ID:        newScheduleID(),
+		ChatID:    chatID,
+		UserID:    userID,
+		Username:  strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(username), "@")),
+		Cron:      strings.TrimSpace(cronExpr),
+		Action:    clipScheduleAction(action),
+		Enabled:   enabled,
+		CreatedAt: now.Unix(),
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	if _, err := m.schedules.InsertOne(ctx, doc); err != nil {
+		return ParticipantSchedule{}, err
+	}
+	return scheduleFromDoc(doc), nil
+}
+
+// setScheduleEnabled включает/выключает расписание по id.
+func (m *mongoBackend) setScheduleEnabled(id string, enabled bool) (bool, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	res, err := m.schedules.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"enabled": enabled}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// deleteScheduleByID удаляет расписание по id без привязки к автору — это
+// админское действие.
+func (m *mongoBackend) deleteScheduleByID(id string) (bool, error) {
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	res, err := m.schedules.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return false, err
+	}
+	return res.DeletedCount > 0, nil
+}
+
+// scheduleFromDoc сводит документ Mongo к структуре для админки и раннера.
+func scheduleFromDoc(d mongoScheduleDoc) ParticipantSchedule {
+	return ParticipantSchedule{
+		ID: d.ID, ChatID: d.ChatID, UserID: d.UserID, Username: d.Username,
+		Cron: d.Cron, Action: d.Action, Enabled: d.Enabled, CreatedAt: d.CreatedAt,
+		LastRunAt: d.LastRunAt, RunDate: d.RunDate, RunsToday: d.RunsToday,
+	}
+}
+
+// updateSchedule перезаписывает поля расписания по id (правка из админки).
+func (m *mongoBackend) updateSchedule(id string, chatID, userID int64, username, cronExpr, action string, enabled bool) (ParticipantSchedule, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ParticipantSchedule{}, false, errors.New("schedule id required")
+	}
+	set := bson.M{
+		"chat_id":  chatID,
+		"user_id":  userID,
+		"username": strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(username), "@")),
+		"cron":     strings.TrimSpace(cronExpr),
+		"action":   clipScheduleAction(action),
+		"enabled":  enabled,
+	}
+	ctx, cancel := mongoCtx()
+	defer cancel()
+	res, err := m.schedules.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
+	if err != nil {
+		return ParticipantSchedule{}, false, err
+	}
+	if res.MatchedCount == 0 {
+		return ParticipantSchedule{}, false, nil
+	}
+	var d mongoScheduleDoc
+	if err := m.schedules.FindOne(ctx, bson.M{"_id": id}).Decode(&d); err != nil {
+		return ParticipantSchedule{}, true, err
+	}
+	return scheduleFromDoc(d), true, nil
+}

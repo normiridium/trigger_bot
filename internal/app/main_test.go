@@ -250,8 +250,8 @@ func TestBuildImageSearchQueryFromMessage(t *testing.T) {
 	}
 }
 
-func TestCollectSerpImageCandidateURLsIncludesThumbnails(t *testing.T) {
-	got := collectSerpImageCandidateURLs([]serpImageResult{
+func TestCollectSerpImageCandidatesIncludesThumbnails(t *testing.T) {
+	got := collectSerpImageCandidates([]serpImageResult{
 		{
 			Original:  "https://example.com/original.jpg",
 			Thumbnail: "https://example.com/thumb.jpg",
@@ -262,11 +262,11 @@ func TestCollectSerpImageCandidateURLsIncludesThumbnails(t *testing.T) {
 			Thumbnail: " https://example.com/second-thumb.jpg ",
 		},
 	})
-	want := []string{
-		"https://example.com/original.jpg",
-		"https://example.com/thumb.jpg",
-		"https://example.com/page",
-		"https://example.com/second-thumb.jpg",
+	want := []imageCandidate{
+		{ImageURL: "https://example.com/original.jpg", SourceURL: "https://example.com/page"},
+		{ImageURL: "https://example.com/thumb.jpg", SourceURL: "https://example.com/page"},
+		{ImageURL: "https://example.com/page", SourceURL: "https://example.com/page"},
+		{ImageURL: "https://example.com/second-thumb.jpg"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates mismatch:\nwant=%#v\n got=%#v", want, got)

@@ -223,6 +223,54 @@ func (s *Store) ListSchedules(chatID, userID int64) ([]ParticipantSchedule, erro
 	return s.mg.listSchedules(chatID, userID)
 }
 
+// ListAllSchedules returns every schedule (admin list).
+func (s *Store) ListAllSchedules() ([]ParticipantSchedule, error) {
+	if s == nil || s.mg == nil {
+		return nil, errors.New("mongo backend not initialized")
+	}
+	return s.mg.listAllSchedules()
+}
+
+// CountSchedulesForUser returns how many schedules a participant keeps.
+func (s *Store) CountSchedulesForUser(chatID, userID int64) (int64, error) {
+	if s == nil || s.mg == nil {
+		return 0, errors.New("mongo backend not initialized")
+	}
+	return s.mg.countSchedulesForUser(chatID, userID)
+}
+
+// CreateSchedule inserts a schedule created manually in the admin panel.
+func (s *Store) CreateSchedule(chatID, userID int64, username, cronExpr, action string, enabled bool) (ParticipantSchedule, error) {
+	if s == nil || s.mg == nil {
+		return ParticipantSchedule{}, errors.New("mongo backend not initialized")
+	}
+	return s.mg.createSchedule(chatID, userID, username, cronExpr, action, enabled, time.Now())
+}
+
+// UpdateSchedule rewrites one schedule (admin edit).
+func (s *Store) UpdateSchedule(id string, chatID, userID int64, username, cronExpr, action string, enabled bool) (ParticipantSchedule, bool, error) {
+	if s == nil || s.mg == nil {
+		return ParticipantSchedule{}, false, errors.New("mongo backend not initialized")
+	}
+	return s.mg.updateSchedule(id, chatID, userID, username, cronExpr, action, enabled)
+}
+
+// SetScheduleEnabled toggles the enabled flag of one schedule.
+func (s *Store) SetScheduleEnabled(id string, enabled bool) (bool, error) {
+	if s == nil || s.mg == nil {
+		return false, errors.New("mongo backend not initialized")
+	}
+	return s.mg.setScheduleEnabled(id, enabled)
+}
+
+// DeleteScheduleByID removes a schedule regardless of its owner (admin action).
+func (s *Store) DeleteScheduleByID(id string) (bool, error) {
+	if s == nil || s.mg == nil {
+		return false, errors.New("mongo backend not initialized")
+	}
+	return s.mg.deleteScheduleByID(id)
+}
+
 // ListEnabledSchedules returns every enabled schedule (used by the runner).
 func (s *Store) ListEnabledSchedules() ([]ParticipantSchedule, error) {
 	if s == nil || s.mg == nil {

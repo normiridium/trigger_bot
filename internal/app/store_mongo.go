@@ -35,6 +35,7 @@ type mongoBackend struct {
 	summaries *mongo.Collection
 	schedules *mongo.Collection
 	tokenBans *mongo.Collection
+	chatUsers *mongo.Collection
 }
 
 type mongoTriggerDoc struct {
@@ -318,6 +319,7 @@ func openMongoStore(uri string) (*Store, error) {
 		summaries: db.Collection("chat_summaries"),
 		schedules: db.Collection("participant_schedules"),
 		tokenBans: db.Collection("token_bans"),
+		chatUsers: db.Collection("chat_users"),
 	}
 	if err := mg.ensureIndexes(); err != nil {
 		_ = client.Disconnect(ctx)
@@ -345,6 +347,9 @@ func (m *mongoBackend) ensureIndexes() error {
 		return err
 	}
 	if err := m.ensureScheduleIndexes(); err != nil {
+		return err
+	}
+	if err := m.ensureChatUserIndexes(); err != nil {
 		return err
 	}
 	_, _ = m.tokenBans.Indexes().CreateOne(ctx, mongo.IndexModel{
