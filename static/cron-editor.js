@@ -89,7 +89,7 @@
       }
     },
     en: {
-      fields: { min: 'minute', hour: 'hour', dom: 'day', month: 'month', dow: 'day of week' },
+      fields: { min: 'Minute', hour: 'Hour', dom: 'Day', month: 'Month', dow: 'Day of week' },
       expressionAria: 'expression',
       cronAria: 'cron expression',
       nextRunsTitle: 'Next runs:',
@@ -685,6 +685,93 @@
     return out;
   }
 
+  // formatRun печатает дату запуска. Состав строки задаётся форматом:
+  //   'day', 'month', 'time', 'weekday', 'year'
+  // По умолчанию — 'day month time' (день недели не выводим: он лишний).
+  // Между датой и временем ставится широкий пробел (U+2002), между днём и
+  // месяцем — обычный; запятая на стыке дата→время не нужна.
+  const RUN_FORMAT_DEFAULT = ['day', 'month', 'time'];
+  const RUN_FORMAT_TOKENS = ['weekday', 'day', 'month', 'year', 'time'];
+
+  function normalizeRunFormat(value) {
+    if (value == null) {
+      return RUN_FORMAT_DEFAULT.slice();
+    }
+    const list = Array.isArray(value) ? value : String(value).split(/[\s,|]+/);
+    const picked = [];
+    list.forEach(function (token) {
+      const name = String(token || '').trim().toLowerCase();
+      if (RUN_FORMAT_TOKENS.indexOf(name) !== -1 && picked.indexOf(name) === -1) {
+        picked.push(name);
+      }
+    });
+    return picked.length ? picked : RUN_FORMAT_DEFAULT.slice();
+  }
+
+  function formatRun(date, locale, timeZone, format) {
+    const wanted = normalizeRunFormat(format);
+    const takes = function (type) {
+      if (type === 'hour' || type === 'minute' || type === 'second') {
+        return wanted.indexOf('time') !== -1;
+      }
+      return wanted.indexOf(type) !== -1;
+    };
+
+    let formatter;
+    try {
+      const options = { weekday: 'short', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+      if (timeZone) {
+        options.timeZone = timeZone;
+      }
+      formatter = new Intl.DateTimeFormat(locale, options);
+    } catch (error) {
+      formatter = null;
+    }
+    if (!formatter) {
+      return date.toISOString();
+    }
+
+    const dateTypes = ['weekday', 'year', 'month', 'day'];
+    const out = [];
+    let gap = '';
+    formatter.formatToParts(date).forEach(function (part) {
+      if (part.type === 'literal') {
+        gap += part.value;
+        return;
+      }
+      if (!takes(part.type)) {
+        gap = gap.replace(/,/g, '');
+        return;
+      }
+      if (out.length) {
+        out.push({ type: 'literal', value: gap });
+      }
+      gap = '';
+      out.push({ type: part.type, value: part.value });
+    });
+
+    // Разделители: на стыке «дата → время» — широкий пробел, остальное как есть.
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i].type !== 'literal') {
+        continue;
+      }
+      const before = out.slice(0, i).reverse().find(function (item) { return item.type !== 'literal'; });
+      const after = out.slice(i + 1).find(function (item) { return item.type !== 'literal'; });
+      const beforeDate = before && dateTypes.indexOf(before.type) !== -1;
+      const afterTime = after && (after.type === 'hour' || after.type === 'minute' || after.type === 'second');
+      if (beforeDate && afterTime) {
+        const raw = out[i].value;
+        // Если в стыке есть слово-связка («в», «at», «um», «日» как суффикс дня) —
+        // оставляем его и обычные пробелы, убирая только запятую. Чистый
+        // разделитель заменяем на широкий пробел.
+        out[i].value = /[^\s,]/.test(raw) ? raw.replace(/,/g, ' ') : '\u2002';
+      }
+    }
+
+    const text = out.map(function (item) { return item.value; }).join('');
+    return text.replace(/ {2,}/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '');
+  }
+
   function splitExpression(expr, count) {
     const parts = String(expr == null ? '' : expr).trim().split(/\s+/).filter(Boolean);
     while (parts.length < count) {
@@ -741,7 +828,7 @@
     '.panel[hidden]{display:none}',
     /* Список ближайших запусков под сеткой (флаг next-runs). */
     '.next{margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--cron-border,#6c757d)}',
-    '.next-title{display:block;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-label,#6c757d)}',
+    '.next-title{display:block;font-family:inherit;font-size:.78rem;font-weight:600;letter-spacing:.01em;color:var(--cron-cell-color,#ced4da)}',
     '.next-list{display:flex;flex-wrap:wrap;gap:.15rem 1.1rem;margin:.3rem 0 0;padding:0;list-style:none}',
     '.next-list li{font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-accent,#198754);white-space:nowrap}',
     '.next-empty{margin:.3rem 0 0;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-warn,#ffc107)}'
@@ -809,6 +896,23 @@
         return;
       }
       this.setAttribute('next-runs', String(Math.min(Math.floor(value), 20)));
+    }
+
+    // runFormat — из чего собирать строку запуска: weekday, day, month, year, time.
+    // Атрибут run-format="day month time" (по умолчанию), "time" — только время,
+    // "weekday day month time" — вернуть день недели.
+    get runFormat() {
+      const raw = this.getAttribute('run-format');
+      return normalizeRunFormat(raw == null ? null : raw);
+    }
+
+    set runFormat(next) {
+      if (next == null || next === '') {
+        this.removeAttribute('run-format');
+        return;
+      }
+      const list = normalizeRunFormat(next);
+      this.setAttribute('run-format', list.join(' '));
     }
 
     // timeZone — IANA-зона для расчёта и подписи запусков (например Europe/Moscow).
@@ -1369,7 +1473,7 @@
     }
 
     static get observedAttributes() {
-      return ['locale', 'week-start', 'mode', 'fields', 'enumeration', 'next-runs', 'timezone'];
+      return ['locale', 'week-start', 'mode', 'fields', 'enumeration', 'next-runs', 'timezone', 'run-format'];
     }
 
     attributeChangedCallback(name, previous, next) {
@@ -1380,7 +1484,7 @@
         this._syncUI();
         return;
       }
-      if (name === 'next-runs' || name === 'timezone') {
+      if (name === 'next-runs' || name === 'timezone' || name === 'run-format') {
         this._paintNextRuns();
         return;
       }
@@ -1433,22 +1537,14 @@
         return;
       }
 
-      let formatter = null;
-      try {
-        const options = { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' };
-        if (timeZone) {
-          options.timeZone = timeZone;
-        }
-        formatter = new Intl.DateTimeFormat(this.locale, options);
-      } catch (error) {
-        formatter = null;
-      }
+      const locale = this.locale;
+      const format = this.runFormat;
 
       const list = document.createElement('ol');
       list.className = 'next-list';
       runs.forEach(function (run) {
         const item = document.createElement('li');
-        item.textContent = formatter ? formatter.format(run) : run.toISOString();
+        item.textContent = formatRun(run, locale, timeZone, format);
         list.appendChild(item);
       });
       box.appendChild(list);
@@ -1496,6 +1592,9 @@
       LOCALES: Object.keys(MESSAGES),
       MESSAGES: MESSAGES,
       nextRuns: nextRuns,
+      formatRun: formatRun,
+      normalizeRunFormat: normalizeRunFormat,
+      RUN_FORMAT_TOKENS: RUN_FORMAT_TOKENS,
       zoneOffsetMs: zoneOffsetMs,
       intlNames: intlNames,
       intlWeekStart: intlWeekStart,
