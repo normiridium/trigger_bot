@@ -65,11 +65,16 @@
   // Подписи полей и тексты подсказок: у Intl такого API нет, поэтому маленький
   // словарь. Незнакомый язык получает английские фразы, а месяцы/дни — всё равно
   // свои, из Intl.
+  // Языковой пак: подписи полей, фразы подсказок и заголовок списка запусков.
+  // Названия месяцев и дней сюда НЕ входят — их отдаёт Intl. Добавить язык =
+  // добавить запись сюда, логику трогать не нужно.
   const MESSAGES = {
     ru: {
       fields: { min: 'минута', hour: 'час', dom: 'день', month: 'месяц', dow: 'день недели' },
       expressionAria: 'выражение',
       cronAria: 'cron-выражение',
+      nextRunsTitle: 'Следующие запуски:',
+      noRuns: 'В ближайшие годы запусков не будет',
       dayDead: function (day) {
         return day + '-го числа не бывает ни в одном из выбранных месяцев — этот день не сработает никогда';
       },
@@ -87,6 +92,8 @@
       fields: { min: 'minute', hour: 'hour', dom: 'day', month: 'month', dow: 'day of week' },
       expressionAria: 'expression',
       cronAria: 'cron expression',
+      nextRunsTitle: 'Next runs:',
+      noRuns: 'No runs in the coming years',
       dayDead: function (day) {
         return englishOrdinal(day) + ' never exists in the selected months — this day will never run';
       },
@@ -99,8 +106,175 @@
       monthPartial: function (name, list) {
         return name + ' has no ' + list + ' — those days will be skipped';
       }
+    },
+    de: {
+      fields: { min: 'Minute', hour: 'Stunde', dom: 'Tag', month: 'Monat', dow: 'Wochentag' },
+      expressionAria: 'Ausdruck',
+      cronAria: 'Cron-Ausdruck',
+      nextRunsTitle: 'Nächste Ausführungen:',
+      noRuns: 'Keine Ausführungen in den nächsten Jahren',
+      dayDead: function (day) {
+        return 'Den ' + day + '. gibt es in keinem der gewählten Monate — dieser Tag läuft nie';
+      },
+      dayPartial: function (day, months) {
+        return 'Den ' + day + '. gibt es nicht im ' + months + ' — dort wird der Tag übersprungen';
+      },
+      monthDead: function (name, list) {
+        return 'Im Monat ' + name + ' gibt es keinen ' + list + '. — der Zeitplan läuft nie';
+      },
+      monthPartial: function (name, list) {
+        return 'Im Monat ' + name + ' gibt es keinen ' + list + '. — diese Tage werden übersprungen';
+      }
+    },
+    fr: {
+      fields: { min: 'minute', hour: 'heure', dom: 'jour', month: 'mois', dow: 'jour de la semaine' },
+      expressionAria: 'expression',
+      cronAria: 'expression cron',
+      nextRunsTitle: 'Prochaines exécutions :',
+      noRuns: 'Aucune exécution dans les prochaines années',
+      dayDead: function (day) {
+        return 'Le ' + day + ' n’existe dans aucun des mois sélectionnés — ce jour ne s’exécutera jamais';
+      },
+      dayPartial: function (day, months) {
+        return 'Le ' + day + ' n’existe pas en ' + months + ' — ignoré ces mois-là';
+      },
+      monthDead: function (name, list) {
+        return name + ' n’a pas de ' + list + ' — la planification ne s’exécutera jamais';
+      },
+      monthPartial: function (name, list) {
+        return name + ' n’a pas de ' + list + ' — ces jours seront ignorés';
+      }
+    },
+    es: {
+      fields: { min: 'minuto', hour: 'hora', dom: 'día', month: 'mes', dow: 'día de la semana' },
+      expressionAria: 'expresión',
+      cronAria: 'expresión cron',
+      nextRunsTitle: 'Próximas ejecuciones:',
+      noRuns: 'No hay ejecuciones en los próximos años',
+      dayDead: function (day) {
+        return 'El día ' + day + ' no existe en ninguno de los meses seleccionados — nunca se ejecutará';
+      },
+      dayPartial: function (day, months) {
+        return 'El día ' + day + ' no existe en ' + months + ' — se omitirá en esos meses';
+      },
+      monthDead: function (name, list) {
+        return name + ' no tiene día ' + list + ' — la programación nunca se ejecutará';
+      },
+      monthPartial: function (name, list) {
+        return name + ' no tiene día ' + list + ' — esos días se omitirán';
+      }
+    },
+    it: {
+      fields: { min: 'minuto', hour: 'ora', dom: 'giorno', month: 'mese', dow: 'giorno della settimana' },
+      expressionAria: 'espressione',
+      cronAria: 'espressione cron',
+      nextRunsTitle: 'Prossime esecuzioni:',
+      noRuns: 'Nessuna esecuzione nei prossimi anni',
+      dayDead: function (day) {
+        return 'Il giorno ' + day + ' non esiste in nessuno dei mesi selezionati — non verrà mai eseguito';
+      },
+      dayPartial: function (day, months) {
+        return 'Il giorno ' + day + ' non esiste in ' + months + ' — verrà saltato in quei mesi';
+      },
+      monthDead: function (name, list) {
+        return name + ' non ha il giorno ' + list + ' — la pianificazione non verrà mai eseguita';
+      },
+      monthPartial: function (name, list) {
+        return name + ' non ha il giorno ' + list + ' — quei giorni verranno saltati';
+      }
+    },
+    pt: {
+      fields: { min: 'minuto', hour: 'hora', dom: 'dia', month: 'mês', dow: 'dia da semana' },
+      expressionAria: 'expressão',
+      cronAria: 'expressão cron',
+      nextRunsTitle: 'Próximas execuções:',
+      noRuns: 'Nenhuma execução nos próximos anos',
+      dayDead: function (day) {
+        return 'O dia ' + day + ' não existe em nenhum dos meses selecionados — nunca será executado';
+      },
+      dayPartial: function (day, months) {
+        return 'O dia ' + day + ' não existe em ' + months + ' — será ignorado nesses meses';
+      },
+      monthDead: function (name, list) {
+        return name + ' não tem dia ' + list + ' — o agendamento nunca será executado';
+      },
+      monthPartial: function (name, list) {
+        return name + ' não tem dia ' + list + ' — esses dias serão ignorados';
+      }
+    },
+    pl: {
+      fields: { min: 'minuta', hour: 'godzina', dom: 'dzień', month: 'miesiąc', dow: 'dzień tygodnia' },
+      expressionAria: 'wyrażenie',
+      cronAria: 'wyrażenie cron',
+      nextRunsTitle: 'Następne uruchomienia:',
+      noRuns: 'Brak uruchomień w najbliższych latach',
+      dayDead: function (day) {
+        return 'Dzień ' + day + '. nie istnieje w żadnym z wybranych miesięcy — nigdy się nie uruchomi';
+      },
+      dayPartial: function (day, months) {
+        return 'Dzień ' + day + '. nie istnieje w ' + months + ' — w tych miesiącach zostanie pominięty';
+      },
+      monthDead: function (name, list) {
+        return 'W miesiącu ' + name + ' nie ma dnia ' + list + ' — harmonogram nigdy się nie uruchomi';
+      },
+      monthPartial: function (name, list) {
+        return 'W miesiącu ' + name + ' nie ma dnia ' + list + ' — te dni zostaną pominięte';
+      }
+    },
+    tr: {
+      fields: { min: 'dakika', hour: 'saat', dom: 'gün', month: 'ay', dow: 'haftanın günü' },
+      expressionAria: 'ifade',
+      cronAria: 'cron ifadesi',
+      nextRunsTitle: 'Sonraki çalıştırmalar:',
+      noRuns: 'Önümüzdeki yıllarda çalıştırma yok',
+      dayDead: function (day) {
+        return day + '. gün seçilen ayların hiçbirinde yok — bu gün hiç çalışmayacak';
+      },
+      dayPartial: function (day, months) {
+        return day + '. gün ' + months + ' aylarında yok — o aylarda atlanacak';
+      },
+      monthDead: function (name, list) {
+        return name + ' ayında ' + list + '. gün yok — zamanlama hiç çalışmayacak';
+      },
+      monthPartial: function (name, list) {
+        return name + ' ayında ' + list + '. gün yok — o günler atlanacak';
+      }
+    },
+    zh: {
+      fields: { min: '分钟', hour: '小时', dom: '日', month: '月', dow: '星期' },
+      expressionAria: '表达式',
+      cronAria: 'cron 表达式',
+      nextRunsTitle: '接下来运行：',
+      noRuns: '未来几年内不会运行',
+      dayDead: function (day) {
+        return '所选月份中没有 ' + day + ' 日 — 这一天永远不会执行';
+      },
+      dayPartial: function (day, months) {
+        return months + ' 中没有 ' + day + ' 日 — 这些月份会跳过';
+      },
+      monthDead: function (name, list) {
+        return name + '没有 ' + list + ' 日 — 计划永远不会执行';
+      },
+      monthPartial: function (name, list) {
+        return name + '没有 ' + list + ' 日 — 这些日期会被跳过';
+      }
     }
   };
+
+  const MESSAGE_LANGS = ['ru', 'en', 'de', 'fr', 'es', 'it', 'pt', 'pl', 'tr', 'zh'];
+
+  // shortenNames подбирает минимальную длину префикса, при которой все названия
+  // различимы: сначала 3 знака, при совпадениях — 4, потом 5.
+  function shortenNames(names) {
+    for (let length = 3; length <= 5; length += 1) {
+      const cut = names.map(function (name) { return Array.from(name).slice(0, length).join(''); });
+      const unique = new Set(cut);
+      if (unique.size === cut.length) {
+        return cut;
+      }
+    }
+    return names.map(function (name) { return Array.from(name).slice(0, 5).join(''); });
+  }
 
   function englishOrdinal(value) {
     const tail = value % 100;
@@ -134,14 +308,8 @@
           const date = kind === 'month' ? new Date(Date.UTC(2020, i, 15)) : new Date(Date.UTC(2020, 5, start + i));
           let text = format.format(date);
           if (style === 'short') {
-            // Русский Intl ставит точку: «янв.» → «янв», и отдаёт неровные
-            // сокращения («февр», «сент»). Ячейка рассчитана на три знака,
-            // поэтому короткую форму подрезаем до трёх символов.
+            // Точку после сокращения убираем: «янв.» → «янв».
             text = text.replace(/\.$/, '').trim();
-            const chars = Array.from(text);
-            if (chars.length > 3) {
-              text = chars.slice(0, 3).join('');
-            }
           }
           names.push(text);
         }
@@ -151,6 +319,12 @@
     }
     if (!names || names.length !== (kind === 'month' ? 12 : 7) || names.some(function (n) { return !n; })) {
       names = null;
+    }
+    if (names && style === 'short') {
+      // Intl отдаёт неровные сокращения («февр», «сент», «janv.»). Подрезаем до
+      // минимальной длины, при которой подписи внутри поля не совпадают:
+      // ru — три знака, fr — четыре (иначе июнь и июль оба «jui»).
+      names = shortenNames(names);
     }
     nameCache.set(key, names);
     return names;
@@ -165,8 +339,8 @@
   }
 
   function resolveLang(locale) {
-    const raw = String(locale || '').toLowerCase();
-    return raw.indexOf('ru') === 0 ? 'ru' : 'en';
+    const base = String(locale || '').toLowerCase().split(/[-_]/)[0];
+    return MESSAGE_LANGS.indexOf(base) === -1 ? 'en' : base;
   }
 
   // Первый день недели по стандарту CLDR: Intl.Locale.weekInfo / getWeekInfo.
@@ -381,6 +555,136 @@
     return shorter ? covered : plain;
   }
 
+  // Смещение часового пояса: насколько «настенные» часы зоны ушли от UTC.
+  // Считается один раз на старте — DST внутри горизонта не учитываем (для МСК,
+  // где переходов нет, это точно; для других зон возможна ошибка в час после
+  // перевода стрелок).
+  function zoneOffsetMs(date, timeZone) {
+    if (!timeZone) {
+      return null;
+    }
+    try {
+      const format = new Intl.DateTimeFormat('en-US', {
+        timeZone: timeZone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      const parts = {};
+      format.formatToParts(date).forEach(function (part) {
+        if (part.type !== 'literal') {
+          parts[part.type] = part.value;
+        }
+      });
+      const asUTC = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+      // Date.getTime() содержит миллисекунды, а formatToParts их не отдаёт:
+      // без выравнивания смещение получается «на 0.7 секунды меньше» и
+      // wall-минута съезжает на предыдущую.
+      const aligned = date.getTime() - date.getMilliseconds();
+      return asUTC - aligned;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // nextRuns считает ближайшие срабатывания выражения. Правило дня — как в
+  // стандартном cron (robfig/cron): если ограничены и день месяца, и день
+  // недели, достаточно совпадения любого из них.
+  function nextRuns(tokens, opts) {
+    const options = opts || {};
+    const count = Math.max(1, options.count || 5);
+    const from = options.from instanceof Date ? options.from : new Date();
+    if (!Array.isArray(tokens) && String(tokens == null ? '' : tokens).trim() === '') {
+      return [];
+    }
+    const list = Array.isArray(tokens) ? tokens : splitExpression(tokens, 5);
+    if (list.length !== 5) {
+      return [];
+    }
+    const parsed = list.map(function (token, index) {
+      const cfg = FIELDS[FIELD_ORDER[index]];
+      const result = parseToken(token, cfg);
+      return { star: result.star, values: result.values };
+    });
+    if (parsed.some(function (field) { return !field.star && field.values.length === 0; })) {
+      return [];
+    }
+
+    const offsetMs = zoneOffsetMs(from, options.timeZone);
+    const useUTC = offsetMs !== null;
+    const partsOf = function (ms) {
+      const shifted = useUTC ? new Date(ms + offsetMs) : new Date(ms);
+      return useUTC
+        ? {
+          year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate(),
+          hour: shifted.getUTCHours(), minute: shifted.getUTCMinutes(), weekday: shifted.getUTCDay()
+        }
+        : {
+          year: shifted.getFullYear(), month: shifted.getMonth() + 1, day: shifted.getDate(),
+          hour: shifted.getHours(), minute: shifted.getMinutes(), weekday: shifted.getDay()
+        };
+    };
+
+    const monthOk = function (p) {
+      return parsed[3].star || parsed[3].values.indexOf(p.month) !== -1;
+    };
+    const dayOk = function (p) {
+      if (!monthOk(p)) {
+        return false;
+      }
+      const dom = parsed[2];
+      const dow = parsed[4];
+      if (dom.star && dow.star) {
+        return true;
+      }
+      const domHit = !dom.star && dom.values.indexOf(p.day) !== -1;
+      const dowHit = !dow.star && dow.values.indexOf(p.weekday) !== -1;
+      if (dom.star) {
+        return dowHit;
+      }
+      if (dow.star) {
+        return domHit;
+      }
+      return domHit || dowHit;
+    };
+    const hourOk = function (p) {
+      return parsed[1].star || parsed[1].values.indexOf(p.hour) !== -1;
+    };
+    const minuteOk = function (p) {
+      return parsed[0].star || parsed[0].values.indexOf(p.minute) !== -1;
+    };
+
+    const minuteMs = 60000;
+    const limit = from.getTime() + 366 * 5 * 86400000;
+    let cursor = Math.floor(from.getTime() / minuteMs) * minuteMs + minuteMs;
+    const out = [];
+    let guard = 0;
+
+    while (cursor <= limit && out.length < count && guard < 500000) {
+      guard += 1;
+      const p = partsOf(cursor);
+      if (!dayOk(p)) {
+        cursor += ((24 * 60) - (p.hour * 60 + p.minute)) * minuteMs;
+        continue;
+      }
+      if (!hourOk(p)) {
+        cursor += (60 - p.minute) * minuteMs;
+        continue;
+      }
+      if (!minuteOk(p)) {
+        cursor += minuteMs;
+        continue;
+      }
+      out.push(new Date(cursor));
+      cursor += minuteMs;
+    }
+    return out;
+  }
+
   function splitExpression(expr, count) {
     const parts = String(expr == null ? '' : expr).trim().split(/\s+/).filter(Boolean);
     while (parts.length < count) {
@@ -414,7 +718,7 @@
     '.token:focus{outline:none;color:var(--cron-cell-color,#ced4da);background:var(--cron-input-bg,#000);box-shadow:inset 0 0 0 1px var(--cron-focus,#0d6efd)}',
     '.token.bad{color:var(--cron-error,#dc3545);box-shadow:inset 0 0 0 1px var(--cron-error,#dc3545)}',
     '.cells{display:grid;grid-template-columns:repeat(var(--cron-cols,12),var(--cron-cell-w,1.9rem));gap:var(--cron-cell-gap,.2rem);justify-content:start}',
-    '.cell{box-sizing:border-box;width:var(--cron-cell-w,1.9rem);padding:.1rem 0;text-align:center;font-family:inherit;font-size:.78rem;line-height:1.35;color:var(--cron-cell-color,#ced4da);background:var(--cron-cell-bg,transparent);border:1px solid var(--cron-cell-border,#495057);border-radius:.25rem;cursor:pointer}',
+    '.cell{box-sizing:border-box;width:var(--cron-cell-w,1.9rem);padding:.1rem 0;text-align:center;font-family:inherit;font-size:.74rem;line-height:1.35;color:var(--cron-cell-color,#ced4da);background:var(--cron-cell-bg,transparent);border:1px solid var(--cron-cell-border,#495057);border-radius:.25rem;cursor:pointer}',
     '.cell:hover{border-color:var(--cron-focus,#0dcaf0);color:var(--cron-focus,#0dcaf0)}',
     '.cell.on{background:var(--cron-accent,#198754);border-color:var(--cron-accent,#198754);color:var(--cron-accent-text,#fff)}',
     /* Жёлтый — часть комбинации невозможна (31 в феврале, но март есть),
@@ -434,7 +738,13 @@
        выравнивается по правому краю инпута (класс align-right). */
     '.panel{position:absolute;left:0;top:100%;margin-top:.25rem;z-index:1050;padding:.5rem .75rem;background:var(--cron-panel-bg,#16191d);border:1px solid var(--cron-border,#6c757d);border-radius:.375rem;box-shadow:0 10px 30px rgba(0,0,0,.45);width:max-content;min-width:100%;max-width:var(--cron-panel-max-width,calc(100vw - 3rem));overflow-x:auto;box-sizing:border-box}',
     '.panel.align-right{left:auto;right:0}',
-    '.panel[hidden]{display:none}'
+    '.panel[hidden]{display:none}',
+    /* Список ближайших запусков под сеткой (флаг next-runs). */
+    '.next{margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--cron-border,#6c757d)}',
+    '.next-title{display:block;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-label,#6c757d)}',
+    '.next-list{display:flex;flex-wrap:wrap;gap:.15rem 1.1rem;margin:.3rem 0 0;padding:0;list-style:none}',
+    '.next-list li{font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-accent,#198754);white-space:nowrap}',
+    '.next-empty{margin:.3rem 0 0;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-warn,#ffc107)}'
   ].join('\n');
 
   // В Node нет HTMLElement — берём пустую базу, чтобы файл импортировался ради
@@ -443,6 +753,8 @@
 
   class CronEditor extends HTMLElementBase {
     static parseToken(token, cfg) { return parseToken(token, cfg); }
+    static nextRuns(tokens, opts) { return nextRuns(tokens, opts); }
+    static zoneOffsetMs(date, timeZone) { return zoneOffsetMs(date, timeZone); }
     static formatToken(values, cfg, opts) { return formatToken(values, cfg, opts); }
     static get fields() { return FIELD_ORDER.slice(); }
 
@@ -473,6 +785,43 @@
         this.value = initial;
       } else {
         this._syncUI();
+      }
+    }
+
+    // nextRuns — сколько ближайших запусков показать под сеткой.
+    // Атрибут next-runs: пустой или next-runs="5" → пять строк; "0" — выключено.
+    get nextRuns() {
+      if (!this.hasAttribute('next-runs')) {
+        return 0;
+      }
+      const raw = this.getAttribute('next-runs');
+      if (raw === '' || raw === null) {
+        return 5;
+      }
+      const parsed = parseInt(raw, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 20) : 0;
+    }
+
+    set nextRuns(next) {
+      const value = Number(next);
+      if (!Number.isFinite(value) || value <= 0) {
+        this.removeAttribute('next-runs');
+        return;
+      }
+      this.setAttribute('next-runs', String(Math.min(Math.floor(value), 20)));
+    }
+
+    // timeZone — IANA-зона для расчёта и подписи запусков (например Europe/Moscow).
+    // Не задана — берётся локальная зона браузера.
+    get timeZone() {
+      return this.getAttribute('timezone') || '';
+    }
+
+    set timeZone(next) {
+      if (next) {
+        this.setAttribute('timezone', String(next));
+      } else {
+        this.removeAttribute('timezone');
       }
     }
 
@@ -516,6 +865,8 @@
         fields: messages.fields,
         expressionAria: messages.expressionAria,
         cronAria: messages.cronAria,
+        nextRunsTitle: messages.nextRunsTitle,
+        noRuns: messages.noRuns,
         dayDead: messages.dayDead,
         dayPartial: messages.dayPartial,
         monthDead: messages.monthDead,
@@ -713,6 +1064,7 @@
       if (this._built) {
         return;
       }
+      this._nextBox = null;
       const style = document.createElement('style');
       style.textContent = STYLE;
       const grid = document.createElement('div');
@@ -1017,7 +1369,7 @@
     }
 
     static get observedAttributes() {
-      return ['locale', 'week-start', 'mode', 'fields', 'enumeration'];
+      return ['locale', 'week-start', 'mode', 'fields', 'enumeration', 'next-runs', 'timezone'];
     }
 
     attributeChangedCallback(name, previous, next) {
@@ -1026,6 +1378,10 @@
       }
       if (name === 'enumeration') {
         this._syncUI();
+        return;
+      }
+      if (name === 'next-runs' || name === 'timezone') {
+        this._paintNextRuns();
         return;
       }
       this._rebuild();
@@ -1039,11 +1395,71 @@
       this._syncUI();
     }
 
+    // _paintNextRuns рисует (или убирает) блок «Следующие запуски».
+    _paintNextRuns() {
+      if (!this._built) {
+        return;
+      }
+      const host = this._root || this.shadowRoot;
+      const count = this.nextRuns;
+      if (!count) {
+        if (this._nextBox) {
+          this._nextBox.remove();
+          this._nextBox = null;
+        }
+        return;
+      }
+      const dict = this.dict;
+      if (!this._nextBox) {
+        this._nextBox = document.createElement('div');
+        this._nextBox.className = 'next';
+        host.appendChild(this._nextBox);
+      }
+      const box = this._nextBox;
+      box.innerHTML = '';
+
+      const title = document.createElement('span');
+      title.className = 'next-title';
+      title.textContent = dict.nextRunsTitle;
+      box.appendChild(title);
+
+      const timeZone = this.timeZone || undefined;
+      const runs = nextRuns(splitExpression(this.value, 5), { count: count, timeZone: timeZone });
+      if (!runs.length) {
+        const empty = document.createElement('p');
+        empty.className = 'next-empty';
+        empty.textContent = dict.noRuns;
+        box.appendChild(empty);
+        return;
+      }
+
+      let formatter = null;
+      try {
+        const options = { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' };
+        if (timeZone) {
+          options.timeZone = timeZone;
+        }
+        formatter = new Intl.DateTimeFormat(this.locale, options);
+      } catch (error) {
+        formatter = null;
+      }
+
+      const list = document.createElement('ol');
+      list.className = 'next-list';
+      runs.forEach(function (run) {
+        const item = document.createElement('li');
+        item.textContent = formatter ? formatter.format(run) : run.toISOString();
+        list.appendChild(item);
+      });
+      box.appendChild(list);
+    }
+
     _syncUI() {
       this._fields.forEach(function (key) {
         this._paint(key);
       }, this);
       this._paintWarnings();
+      this._paintNextRuns();
       if (this._trigger && document.activeElement !== this._trigger) {
         this._trigger.value = this.value;
       }
@@ -1079,6 +1495,8 @@
       FIELD_ORDER: FIELD_ORDER,
       LOCALES: Object.keys(MESSAGES),
       MESSAGES: MESSAGES,
+      nextRuns: nextRuns,
+      zoneOffsetMs: zoneOffsetMs,
       intlNames: intlNames,
       intlWeekStart: intlWeekStart,
       resolveLang: resolveLang
