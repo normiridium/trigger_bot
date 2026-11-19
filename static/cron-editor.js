@@ -691,6 +691,9 @@
   // Между датой и временем ставится широкий пробел (U+2002), между днём и
   // месяцем — обычный; запятая на стыке дата→время не нужна.
   const RUN_FORMAT_DEFAULT = ['day', 'month', 'time'];
+  // Запятая + широкий пробел U+2002: перечисление запусков дышит так же, как
+  // стык «дата → время».
+  const RUN_SEPARATOR = ',\u2002';
   const RUN_FORMAT_TOKENS = ['weekday', 'day', 'month', 'year', 'time'];
 
   function normalizeRunFormat(value) {
@@ -1544,7 +1547,7 @@
       list.className = 'next-list';
       runs.forEach(function (run, index) {
         if (index > 0) {
-          list.appendChild(document.createTextNode(', '));
+          list.appendChild(document.createTextNode(RUN_SEPARATOR));
         }
         const item = document.createElement('li');
         item.textContent = formatRun(run, locale, timeZone, format);
@@ -1598,6 +1601,7 @@
       formatRun: formatRun,
       normalizeRunFormat: normalizeRunFormat,
       RUN_FORMAT_TOKENS: RUN_FORMAT_TOKENS,
+      RUN_SEPARATOR: RUN_SEPARATOR,
       zoneOffsetMs: zoneOffsetMs,
       intlNames: intlNames,
       intlWeekStart: intlWeekStart,
