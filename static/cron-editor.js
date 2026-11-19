@@ -761,10 +761,10 @@
       const afterTime = after && (after.type === 'hour' || after.type === 'minute' || after.type === 'second');
       if (beforeDate && afterTime) {
         const raw = out[i].value;
-        // Если в стыке есть слово-связка («в», «at», «um», «日» как суффикс дня) —
-        // оставляем его и обычные пробелы, убирая только запятую. Чистый
-        // разделитель заменяем на широкий пробел.
-        out[i].value = /[^\s,]/.test(raw) ? raw.replace(/,/g, ' ') : '\u2002';
+        // Суффикс, приклеенный к числу (китайское «日»), остаётся: 20日 09:30.
+        // Всё остальное — слово-связка («в», «at», «um», «à») или просто
+        // разделитель: выбрасываем и ставим широкий пробел U+2002.
+        out[i].value = /^[^\s,]/.test(raw) ? raw.replace(/,/g, '') : '\u2002';
       }
     }
 
@@ -829,8 +829,8 @@
     /* Список ближайших запусков под сеткой (флаг next-runs). */
     '.next{margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--cron-border,#6c757d)}',
     '.next-title{display:block;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-label,#6c757d)}',
-    '.next-list{display:flex;flex-wrap:wrap;gap:.15rem 1.1rem;margin:.3rem 0 0;padding:0;list-style:none}',
-    '.next-list li{font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-accent,#198754);white-space:nowrap}',
+    '.next-list{margin:.3rem 0 0;padding:0;list-style:none}',
+    '.next-list li{display:inline;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-accent,#198754)}',
     '.next-empty{margin:.3rem 0 0;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-warn,#ffc107)}'
   ].join('\n');
 
@@ -1542,7 +1542,10 @@
 
       const list = document.createElement('ol');
       list.className = 'next-list';
-      runs.forEach(function (run) {
+      runs.forEach(function (run, index) {
+        if (index > 0) {
+          list.appendChild(document.createTextNode(', '));
+        }
         const item = document.createElement('li');
         item.textContent = formatRun(run, locale, timeZone, format);
         list.appendChild(item);
