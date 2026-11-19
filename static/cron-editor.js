@@ -722,7 +722,9 @@
 
     let formatter;
     try {
-      const options = { weekday: 'short', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+      // Год запрашиваем всегда, а показываем только если он есть в формате:
+      // части фильтруются ниже по wanted.
+      const options = { weekday: 'short', year: 'numeric', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
       if (timeZone) {
         options.timeZone = timeZone;
       }
@@ -773,6 +775,37 @@
 
     const text = out.map(function (item) { return item.value; }).join('');
     return text.replace(/ {2,}/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '');
+  }
+
+  // formatRuns форматирует список запусков и следит за тем, чтобы строки не
+  // повторялись: если выбранный формат даёт одинаковый текст (например, раз в
+  // год без года), в строку добавляется год; полностью совпавшие строки
+  // схлопываются.
+  function formatRuns(runs, locale, timeZone, format) {
+    const wanted = normalizeRunFormat(format);
+    const render = function (list, tokens) {
+      return list.map(function (run) { return formatRun(run, locale, timeZone, tokens); });
+    };
+    let texts = render(runs, wanted);
+    // Год добавляем, только если в формате есть дата: для «только время»
+    // это дало бы «2026 10:00» вместо «10:00».
+    const hasDate = wanted.indexOf('day') !== -1 || wanted.indexOf('month') !== -1;
+    if (hasDate && new Set(texts).size !== texts.length) {
+      const withYear = wanted.slice();
+      if (withYear.indexOf('year') === -1) {
+        const monthIndex = withYear.indexOf('month');
+        withYear.splice(monthIndex === -1 ? withYear.length : monthIndex + 1, 0, 'year');
+      }
+      texts = render(runs, withYear);
+    }
+    const seen = new Set();
+    return texts.filter(function (text) {
+      if (seen.has(text)) {
+        return false;
+      }
+      seen.add(text);
+      return true;
+    });
   }
 
   function splitExpression(expr, count) {
@@ -1540,17 +1573,16 @@
         return;
       }
 
-      const locale = this.locale;
-      const format = this.runFormat;
+      const texts = formatRuns(runs, this.locale, timeZone, this.runFormat);
 
       const list = document.createElement('ol');
       list.className = 'next-list';
-      runs.forEach(function (run, index) {
+      texts.forEach(function (text, index) {
         if (index > 0) {
           list.appendChild(document.createTextNode(RUN_SEPARATOR));
         }
         const item = document.createElement('li');
-        item.textContent = formatRun(run, locale, timeZone, format);
+        item.textContent = text;
         list.appendChild(item);
       });
       box.appendChild(list);
@@ -1599,6 +1631,7 @@
       MESSAGES: MESSAGES,
       nextRuns: nextRuns,
       formatRun: formatRun,
+      formatRuns: formatRuns,
       normalizeRunFormat: normalizeRunFormat,
       RUN_FORMAT_TOKENS: RUN_FORMAT_TOKENS,
       RUN_SEPARATOR: RUN_SEPARATOR,
