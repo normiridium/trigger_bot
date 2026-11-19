@@ -828,7 +828,7 @@
     '.panel[hidden]{display:none}',
     /* Список ближайших запусков под сеткой (флаг next-runs). */
     '.next{margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--cron-border,#6c757d)}',
-    '.next-title{display:block;font-family:inherit;font-size:.78rem;font-weight:600;letter-spacing:.01em;color:var(--cron-cell-color,#ced4da)}',
+    '.next-title{display:block;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-label,#6c757d)}',
     '.next-list{display:flex;flex-wrap:wrap;gap:.15rem 1.1rem;margin:.3rem 0 0;padding:0;list-style:none}',
     '.next-list li{font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-accent,#198754);white-space:nowrap}',
     '.next-empty{margin:.3rem 0 0;font-family:var(--cron-mono,ui-monospace,SFMono-Regular,monospace);font-size:.78rem;color:var(--cron-warn,#ffc107)}'
