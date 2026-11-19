@@ -1310,6 +1310,7 @@
         self._raw[key] = '';
         self._tokens[key] = token.value;
         self._paintCells(key, token.value);
+        self._paintNextRuns();
         self._emit();
       });
       token.addEventListener('blur', function () {
@@ -1525,6 +1526,9 @@
         entry.token.value = value;
       }
       this._paintCells(key, value);
+      // Правка поля (клик по ячейке, blur токена) должна пересчитывать список
+      // запусков — иначе он живёт со старым значением.
+      this._paintNextRuns();
     }
 
     static get observedAttributes() {
