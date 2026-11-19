@@ -724,7 +724,7 @@
     try {
       // Год запрашиваем всегда, а показываем только если он есть в формате:
       // части фильтруются ниже по wanted.
-      const options = { weekday: 'short', year: 'numeric', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+      const options = { weekday: 'short', year: 'numeric', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
       if (timeZone) {
         options.timeZone = timeZone;
       }
@@ -777,34 +777,53 @@
     return text.replace(/ {2,}/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '');
   }
 
-  // formatRuns форматирует список запусков и следит за тем, чтобы строки не
-  // повторялись: если выбранный формат даёт одинаковый текст (например, раз в
-  // год без года), в строку добавляется год; полностью совпавшие строки
-  // схлопываются.
+  // formatRuns готовит строки для списка запусков:
+  //  1) повторы не выписываем — одинаковые строки схлопываются (годовое
+  //     расписание показываем один раз, а не пять лет подряд);
+  //  2) год добавляем ТОЛЬКО когда список переходит через новый год
+  //     («1 декабря 10:00, 1 марта 2027 10:00») — иначе уточнение не нужно.
   function formatRuns(runs, locale, timeZone, format) {
     const wanted = normalizeRunFormat(format);
-    const render = function (list, tokens) {
-      return list.map(function (run) { return formatRun(run, locale, timeZone, tokens); });
-    };
-    let texts = render(runs, wanted);
-    // Год добавляем, только если в формате есть дата: для «только время»
-    // это дало бы «2026 10:00» вместо «10:00».
     const hasDate = wanted.indexOf('day') !== -1 || wanted.indexOf('month') !== -1;
-    if (hasDate && new Set(texts).size !== texts.length) {
-      const withYear = wanted.slice();
-      if (withYear.indexOf('year') === -1) {
-        const monthIndex = withYear.indexOf('month');
-        withYear.splice(monthIndex === -1 ? withYear.length : monthIndex + 1, 0, 'year');
+    const render = function (run, tokens) {
+      return formatRun(run, locale, timeZone, tokens);
+    };
+
+    const order = [];
+    const firstRun = new Map();
+    runs.forEach(function (run) {
+      const text = render(run, wanted);
+      if (!firstRun.has(text)) {
+        firstRun.set(text, run);
+        order.push(text);
       }
-      texts = render(runs, withYear);
+    });
+
+    if (!hasDate || wanted.indexOf('year') !== -1) {
+      return order;
     }
-    const seen = new Set();
-    return texts.filter(function (text) {
-      if (seen.has(text)) {
-        return false;
+
+    const yearOf = function (run) {
+      try {
+        return new Intl.DateTimeFormat('en-US', { timeZone: timeZone || undefined, year: 'numeric' }).format(run);
+      } catch (error) {
+        return String(run.getFullYear());
       }
-      seen.add(text);
-      return true;
+    };
+
+    const baseYear = order.length ? yearOf(firstRun.get(order[0])) : '';
+    const crossesYear = order.some(function (text) { return yearOf(firstRun.get(text)) !== baseYear; });
+    if (!crossesYear) {
+      return order;
+    }
+
+    const withYear = wanted.slice();
+    const monthIndex = withYear.indexOf('month');
+    withYear.splice(monthIndex === -1 ? withYear.length : monthIndex + 1, 0, 'year');
+
+    return order.map(function (text) {
+      const run = firstRun.get(text);
+      return yearOf(run) === baseYear ? text : render(run, withYear);
     });
   }
 
