@@ -334,9 +334,11 @@
 
             <div class="col-12">
               {{template "mini_toolbar" "response"}}
-              <div id="response_editor" class="cm-wrap mb-2"></div>
-              <textarea class="form-control bg-black text-light border-secondary" rows="9" name="response_text" id="f_response_text" placeholder="Текст ответа / промпт"></textarea>
-              <div id="response_variant_controls" class="response-variant-controls mt-2"></div>
+              <div id="response_variants" class="response-variants"></div>
+              <div class="mt-2 d-flex flex-wrap align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-info" id="response_add_variant"><i class="bi bi-plus-lg"></i> Добавить вариант</button>
+                <span class="text-secondary small">При срабатывании выбирается один случайный вариант</span>
+              </div>
               <div id="emoji_set_helper" class="emoji-helper d-none mt-2"></div>
               <div id="sticker_set_helper" class="emoji-helper d-none mt-2"></div>
             </div>
@@ -439,7 +441,6 @@
 
 <script charset="utf-8" src="/trigger_bot/static/vendor/bootstrap/bootstrap.bundle.min.js"></script>
 <script charset="utf-8" src="/trigger_bot/static/vendor/sortablejs/Sortable.min.js"></script>
-<script charset="utf-8" type="module" src="/trigger_bot/static/trigger_codemirror.js"></script>
 <script charset="utf-8" src="/trigger_bot/static/cron-editor.js"></script>
 <script charset="utf-8" src="/trigger_bot/static/trigger_list.js"></script>
 <script charset="utf-8" src="/trigger_bot/static/vendor/alpinejs/cdn.min.js"></script>

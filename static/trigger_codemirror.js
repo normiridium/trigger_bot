@@ -17,7 +17,8 @@ const CDN = {
   ],
 };
 
-let responseEditor = null;
+const editors = new Map(); // id textarea → EditorView
+let activeEditorId = '';
 let cm = null;
 const CDN_IMPORT_TIMEOUT_MS = 5000;
 
@@ -88,18 +89,28 @@ function createEditor(textarea, container){
       }),
     ],
   });
-  responseEditor = new cm.EditorView({
+  const view = new cm.EditorView({
     state,
     parent: container,
   });
-  return responseEditor;
+  const id = String(textarea.id || '');
+  if(id){
+    editors.set(id, view);
+    activeEditorId = id;
+    const mark = () => { activeEditorId = id; };
+    container.addEventListener('focusin', mark);
+    container.addEventListener('mousedown', mark);
+  }
+  return view;
 }
 
 window.initResponseEditor = async function initResponseEditor(textareaId, containerId){
-  const textarea = document.getElementById(textareaId);
+  const id = String(textareaId || '');
+  if(!id){ return null; }
+  if(editors.has(id)){ return editors.get(id); }
+  const textarea = document.getElementById(id);
   const container = document.getElementById(containerId);
   if(!textarea || !container){ return null; }
-  if(responseEditor){ return responseEditor; }
   try{
     await loadCodeMirror();
     return createEditor(textarea, container);
@@ -109,8 +120,23 @@ window.initResponseEditor = async function initResponseEditor(textareaId, contai
   }
 };
 
-window.getResponseEditor = function getResponseEditor(){
-  return responseEditor;
+// getResponseEditor(id) — редактор конкретной textarea; без id — тот, где
+// сейчас курсор (последний сфокусированный), иначе первый созданный.
+window.getResponseEditor = function getResponseEditor(id){
+  const key = String(id || '');
+  if(key && editors.has(key)){ return editors.get(key); }
+  if(activeEditorId && editors.has(activeEditorId)){ return editors.get(activeEditorId); }
+  const first = editors.values().next();
+  return first.done ? null : first.value;
+};
+
+window.destroyResponseEditor = function destroyResponseEditor(id){
+  const key = String(id || '');
+  const view = editors.get(key);
+  if(!view){ return; }
+  view.destroy();
+  editors.delete(key);
+  if(activeEditorId === key){ activeEditorId = ''; }
 };
 
 window.dispatchEvent(new Event("codemirror-ready"));

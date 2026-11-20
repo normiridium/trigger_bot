@@ -29,9 +29,9 @@ let triggerSortable = null;
 const rowActionBusy = new Set();
 let editLoadInFlight = false;
 let reorderSaving = false;
-let responseEditorReady = false;
-let responseVariants = [{text: ''}];
+let responseVariants = [{key: 1, text: ''}];
 let activeResponseVariant = 0;
+let responseVariantSeq = 1;
 const enumCache = {};
 let templatesCache = [];
 let templatesLoadInFlight = false;
@@ -253,7 +253,12 @@ async function initAuthenticatedApp(){
     mtprotoQRPwBtn.addEventListener('click', submitMTProtoQRPassword);
     mtprotoQRPwBtn.dataset.boundClick = '1';
   }
-  renderVariantControls();
+  renderResponseVariants();
+  const addVariantBtn = document.getElementById('response_add_variant');
+  if(addVariantBtn && !addVariantBtn.dataset.boundClick){
+    addVariantBtn.addEventListener('click', addResponseVariant);
+    addVariantBtn.dataset.boundClick = '1';
+  }
   void loadTriggerList().then(() => initTriggerDragAndDrop()).catch(() => {});
   void Promise.allSettled([
     loadEnums(),
@@ -1299,13 +1304,13 @@ function pickEmojiIDByCursor(tags, cursor){
 }
 
 function bindEmojiHelperListeners(){
-  const ta = getResponseTextArea();
-  if(ta && !ta.dataset.emojiHelperBound){
+  forEachResponseTextArea((ta) => {
+    if(ta.dataset.emojiHelperBound){ return; }
     ta.addEventListener('input', scheduleEmojiSetHelperRefresh);
     ta.addEventListener('keyup', scheduleEmojiSetHelperRefresh);
     ta.addEventListener('click', scheduleEmojiSetHelperRefresh);
     ta.dataset.emojiHelperBound = '1';
-  }
+  });
   if(!document.body.dataset.emojiHelperEditorBound){
     window.addEventListener('response-editor-change', scheduleEmojiSetHelperRefresh);
     window.addEventListener('response-editor-selection', scheduleEmojiSetHelperRefresh);
@@ -1712,176 +1717,178 @@ async function refreshStickerSetHelper(){
   renderStickerSetHelper();
 }
 
-function ensureResponseEditor(){
-  if(responseEditorReady){ return; }
-  if(typeof window.initResponseEditor !== 'function'){ return; }
-  const onEditorReady = (editor) => {
-    if(!editor || responseEditorReady){ return; }
-    const ta = document.getElementById('f_response_text');
-    if(ta){ ta.classList.add('d-none'); }
-    responseEditorReady = true;
-    if(responseVariants.length > 0){
-      setResponseValue(responseVariants[activeResponseVariant]?.text || '');
-    }
-  };
-  const editorOrPromise = window.initResponseEditor('f_response_text', 'response_editor');
-  if(editorOrPromise && typeof editorOrPromise.then === 'function'){
-    editorOrPromise.then(onEditorReady).catch(() => {});
-    return;
+// ── Варианты ответа ─────────────────────────────────────────────────────────
+// Каждый вариант — своё окно (свой редактор). Модель — массив текстов, на
+// сервер уходит массив строк, а структуру [{text: …}] собирает сервер.
+
+function responseVariantElementId(key){
+  return 'f_response_text_' + String(key);
+}
+
+function nextResponseKey(){
+  responseVariantSeq += 1;
+  return responseVariantSeq;
+}
+
+function normalizeResponseItems(raw){
+  const out = [];
+  const pushText = (value) => { out.push({key: nextResponseKey(), text: String(value ?? '')}); };
+  if(raw == null){ return [{key: nextResponseKey(), text: ''}]; }
+  if(Array.isArray(raw)){
+    raw.forEach((it) => {
+      if(it == null){ return; }
+      if(typeof it === 'string'){ pushText(it); return; }
+      if(typeof it === 'object'){
+        if(Object.prototype.hasOwnProperty.call(it, 'text')){ pushText(it.text); return; }
+        if(Object.prototype.hasOwnProperty.call(it, 'Text')){ pushText(it.Text); return; }
+      }
+    });
+    return out.length > 0 ? out : [{key: nextResponseKey(), text: ''}];
   }
-  onEditorReady(editorOrPromise);
+  if(typeof raw === 'string'){ pushText(raw); return out; }
+  return [{key: nextResponseKey(), text: ''}];
+}
+
+// readVariantText достаёт актуальный текст варианта из его textarea.
+function readVariantText(variant){
+  if(!variant){ return ''; }
+  const ta = document.getElementById(responseVariantElementId(variant.key));
+  return ta ? ta.value : String(variant.text ?? '');
+}
+
+function commitResponseVariants(){
+  responseVariants.forEach((variant) => { variant.text = readVariantText(variant); });
+}
+
+function commitActiveVariant(){
+  commitResponseVariants();
+}
+
+function activeResponseVariantItem(){
+  return responseVariants[activeResponseVariant] || null;
+}
+
+function setActiveVariant(idx){
+  const next = Number(idx);
+  if(!Number.isFinite(next) || next < 0 || next >= responseVariants.length){ return; }
+  activeResponseVariant = next;
+  document.querySelectorAll('#response_variants .response-variant').forEach((row) => {
+    const rowIdx = Number(row.getAttribute('data-variant-index'));
+    row.classList.toggle('response-variant-active', rowIdx === next);
+  });
+  scheduleEmojiSetHelperRefresh();
+}
+
+function renderResponseVariants(){
+  const wrap = document.getElementById('response_variants');
+  if(!wrap){ return; }
+  if(!Array.isArray(responseVariants) || responseVariants.length === 0){
+    responseVariants = [{key: nextResponseKey(), text: ''}];
+  }
+  responseVariants.forEach((variant) => {
+    if(!variant || typeof variant !== 'object'){ return; }
+    if(!variant.key){ variant.key = nextResponseKey(); }
+    if(typeof variant.text !== 'string'){ variant.text = String(variant.text ?? ''); }
+  });
+  if(activeResponseVariant < 0 || activeResponseVariant >= responseVariants.length){ activeResponseVariant = 0; }
+
+  wrap.innerHTML = '';
+  responseVariants.forEach((variant, idx) => {
+    const row = document.createElement('div');
+    row.className = 'response-variant';
+    row.setAttribute('data-variant-index', String(idx));
+    const textareaId = responseVariantElementId(variant.key);
+    row.innerHTML = `
+      <div class="response-variant-head">
+        <span class="response-variant-title">Вариант ${idx + 1}</span>
+        <button type="button" class="btn btn-sm btn-outline-danger response-variant-remove" title="Удалить вариант"${responseVariants.length <= 1 ? ' disabled' : ''} aria-label="Удалить вариант"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <textarea class="form-control bg-black text-light border-secondary" rows="6" id="${textareaId}" data-editor-target="response" placeholder="Текст ответа / промпт"></textarea>`;
+    wrap.appendChild(row);
+
+    const area = row.querySelector('textarea');
+    if(area){
+      area.value = variant.text;
+      area.addEventListener('input', () => {
+        variant.text = area.value;
+        scheduleEmojiSetHelperRefresh();
+      });
+      area.addEventListener('focus', () => setActiveVariant(idx));
+      area.addEventListener('click', () => setActiveVariant(idx));
+      area.addEventListener('keyup', () => scheduleEmojiSetHelperRefresh());
+      area.addEventListener('keydown', () => setActiveVariant(idx));
+    }
+    row.addEventListener('focusin', () => setActiveVariant(idx));
+    row.addEventListener('mousedown', () => setActiveVariant(idx));
+    const removeBtn = row.querySelector('.response-variant-remove');
+    if(removeBtn){ removeBtn.addEventListener('click', () => removeResponseVariant(idx)); }
+  });
+  setActiveVariant(activeResponseVariant);
+  applyActionTypeUI();
+}
+
+function ensureResponseEditor(){
+  // Раньше здесь поднимался CodeMirror; варианты живут в обычных textarea,
+  // поэтому достаточно убедиться, что окна отрисованы.
+  if(!document.getElementById('response_variants')){ return; }
+  if(!document.querySelector('#response_variants textarea')){ renderResponseVariants(); }
 }
 
 function getEditorView(){
-  if(typeof window.getResponseEditor === 'function'){
-    return window.getResponseEditor();
-  }
   return null;
 }
 
 function setResponseValue(val){
-  const editor = getEditorView();
+  const variant = activeResponseVariantItem();
+  if(!variant){ return; }
   const text = String(val ?? '');
-  if(editor){
-    const docLen = editor.state.doc.length;
-    editor.dispatch({changes: {from: 0, to: docLen, insert: text}});
-    scheduleEmojiSetHelperRefresh();
-    return;
-  }
-  const ta = document.getElementById('f_response_text');
+  variant.text = text;
+  const ta = document.getElementById(responseVariantElementId(variant.key));
   if(ta){ ta.value = text; }
   scheduleEmojiSetHelperRefresh();
 }
 
 function getResponseValue(){
-  const editor = getEditorView();
-  if(editor){ return editor.state.doc.toString(); }
-  const ta = document.getElementById('f_response_text');
-  return ta ? ta.value : '';
-}
-
-function normalizeResponseItems(raw){
-  if(raw == null){ return [{text: ''}]; }
-  if(Array.isArray(raw)){
-    const out = [];
-    raw.forEach((it)=>{
-      if(it == null){ return; }
-      if(typeof it === 'string'){
-        out.push({text: it});
-        return;
-      }
-      if(typeof it === 'object'){
-        if(Object.prototype.hasOwnProperty.call(it, 'text')){
-          out.push({text: String(it.text ?? '')});
-          return;
-        }
-        if(Object.prototype.hasOwnProperty.call(it, 'Text')){
-          out.push({text: String(it.Text ?? '')});
-          return;
-        }
-      }
-    });
-    return out.length > 0 ? out : [{text: ''}];
-  }
-  if(typeof raw === 'string'){
-    return [{text: raw}];
-  }
-  return [{text: ''}];
-}
-
-function commitActiveVariant(){
-  if(!responseVariants.length){ responseVariants = [{text: ''}]; }
-  if(activeResponseVariant < 0){ activeResponseVariant = 0; }
-  if(activeResponseVariant >= responseVariants.length){
-    activeResponseVariant = responseVariants.length - 1;
-  }
-  if(!responseVariants[activeResponseVariant]){
-    responseVariants[activeResponseVariant] = {text: ''};
-  }
-  responseVariants[activeResponseVariant].text = getResponseValue();
-}
-
-function setActiveVariant(idx){
-  commitActiveVariant();
-  const next = Number(idx);
-  if(!Number.isFinite(next)){ return; }
-  if(next < 0 || next >= responseVariants.length){ return; }
-  activeResponseVariant = next;
-  setResponseValue(responseVariants[activeResponseVariant].text || '');
-  renderVariantControls();
+  const variant = activeResponseVariantItem();
+  if(!variant){ return ''; }
+  return readVariantText(variant);
 }
 
 function addResponseVariant(){
-  commitActiveVariant();
-  responseVariants.push({text: ''});
+  commitResponseVariants();
+  responseVariants.push({key: nextResponseKey(), text: ''});
   activeResponseVariant = responseVariants.length - 1;
-  setResponseValue('');
-  renderVariantControls();
+  renderResponseVariants();
+  const variant = activeResponseVariantItem();
+  const ta = variant ? document.getElementById(responseVariantElementId(variant.key)) : null;
+  if(ta){ ta.focus(); }
 }
 
-function removeResponseVariant(){
+function removeResponseVariant(idx){
   if(responseVariants.length <= 1){ return; }
-  commitActiveVariant();
-  responseVariants.pop();
-  if(activeResponseVariant >= responseVariants.length){
-    activeResponseVariant = responseVariants.length - 1;
-  }
-  setResponseValue(responseVariants[activeResponseVariant].text || '');
-  renderVariantControls();
-}
-
-function renderVariantControls(){
-  const wrap = document.getElementById('response_variant_controls');
-  if(!wrap){ return; }
-  wrap.innerHTML = '';
-  const label = document.createElement('span');
-  label.className = 'response-variant-label';
-  label.textContent = 'Варианты ответа:';
-  wrap.appendChild(label);
-  const total = responseVariants.length || 1;
-  for(let i = 0; i < total; i++){
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-outline-secondary btn-sm';
-    if(i === activeResponseVariant){
-      btn.classList.add('btn-outline-success');
-    }
-    btn.textContent = String(i + 1);
-    btn.title = 'Вариант ' + String(i + 1);
-    btn.addEventListener('click', () => setActiveVariant(i));
-    wrap.appendChild(btn);
-  }
-  const plus = document.createElement('button');
-  plus.type = 'button';
-  plus.className = 'btn btn-outline-info btn-sm';
-  plus.textContent = '+';
-  plus.title = 'Добавить вариант';
-  plus.addEventListener('click', addResponseVariant);
-  wrap.appendChild(plus);
-
-  const minus = document.createElement('button');
-  minus.type = 'button';
-  minus.className = 'btn btn-outline-danger btn-sm';
-  minus.textContent = '-';
-  minus.disabled = total <= 1;
-  minus.title = 'Удалить последний вариант';
-  minus.addEventListener('click', removeResponseVariant);
-  wrap.appendChild(minus);
+  const target = Number(idx);
+  if(!Number.isFinite(target) || target < 0 || target >= responseVariants.length){ return; }
+  commitResponseVariants();
+  responseVariants.splice(target, 1);
+  if(activeResponseVariant >= responseVariants.length){ activeResponseVariant = responseVariants.length - 1; }
+  renderResponseVariants();
 }
 
 function setResponseVariantsFromRaw(raw){
   responseVariants = normalizeResponseItems(raw);
   activeResponseVariant = 0;
-  setResponseValue(responseVariants[0].text || '');
-  renderVariantControls();
+  renderResponseVariants();
 }
 
-function syncResponseToTextarea(){
-  commitActiveVariant();
-  const ta = document.getElementById('f_response_text');
-  if(!ta){ return; }
-  const payload = responseVariants.map((it) => ({text: String(it.text ?? '')}));
-  ta.value = JSON.stringify(payload);
+function forEachResponseTextArea(fn){
+  responseVariants.forEach((variant) => {
+    const ta = document.getElementById(responseVariantElementId(variant.key));
+    if(ta){ fn(ta, variant); }
+  });
+}
+
+function setResponsePlaceholder(text){
+  forEachResponseTextArea((ta) => { ta.placeholder = text; });
 }
 
 function formatRegexBenchMS(us){
@@ -2142,9 +2149,8 @@ async function submitTriggerForm(event){
   if(event){ event.preventDefault(); }
   const form = document.getElementById('trigger_form');
   if(!form){ return false; }
-  commitActiveVariant();
-  const prevResponseText = getResponseValue();
-  syncResponseToTextarea();
+  commitResponseVariants();
+  const responseSnapshot = responseVariants.map((item) => ({key: item.key, text: item.text}));
   syncSwitch('f_enabled');
   syncSwitch('f_pass_through');
   syncSwitch('f_reply');
@@ -2179,7 +2185,7 @@ async function submitTriggerForm(event){
       reply: document.getElementById('f_reply')?.value === '1',
       preview: document.getElementById('f_preview')?.value === '1',
       delete_source: document.getElementById('f_delete_source')?.value === '1',
-      response_text: responseVariants.map((it) => ({text: String(it.text ?? '')})),
+      response_text: responseVariants.map((it) => String(it.text ?? '')),
     };
     const res = await fetch(form.getAttribute('action') || withToken('/trigger_bot/save'), {
       method: 'POST',
@@ -2192,21 +2198,26 @@ async function submitTriggerForm(event){
     if(!res.ok){
       const txt = await res.text();
       alert('Ошибка сохранения: ' + (txt || res.status));
-      setResponseValue(prevResponseText);
+      setResponseVariantsFromRaw(responseSnapshot);
       setSaveBusy(false);
       return false;
     }
     window.location.href = withToken('/trigger_bot');
   }catch(err){
     alert('Сохранение не удалось: ' + (err && err.message ? err.message : err));
-    setResponseValue(prevResponseText);
+    setResponseVariantsFromRaw(responseSnapshot);
     setSaveBusy(false);
   }
   return false;
 }
 
 function getResponseTextArea(){
-  return document.getElementById('f_response_text');
+  const variant = activeResponseVariantItem();
+  if(variant){
+    const el = document.getElementById(responseVariantElementId(variant.key));
+    if(el){ return el; }
+  }
+  return document.querySelector('#response_variants textarea');
 }
 
 function getTemplateTextArea(){
@@ -2219,6 +2230,17 @@ function getTemplateTextArea(){
 function resolveEditorTarget(name){
   const key = String(name || '').trim();
   if(key){
+    // У вариантов ответа несколько окон: вставляем в то, где сейчас курсор.
+    const active = document.activeElement;
+    const row = active && active.closest ? active.closest('.response-variant') : null;
+    if(row && key === 'response'){
+      const idx = Number(row.getAttribute('data-variant-index'));
+      const variant = responseVariants[idx];
+      if(variant){
+        const el = document.getElementById(responseVariantElementId(variant.key));
+        if(el){ return el; }
+      }
+    }
     const el = document.querySelector(`[data-editor-target="${key}"]`);
     if(el){ return el; }
   }
@@ -2251,17 +2273,6 @@ function replaceTextAreaSelection(el, before, after){
 }
 
 function insertTextAtCursor(el, text){
-  const editor = getEditorView();
-  if(editor && el && el.id === 'f_response_text'){
-    const sel = editor.state.selection.main;
-    editor.dispatch({
-      changes: {from: sel.from, to: sel.to, insert: text},
-      selection: {anchor: sel.from + String(text).length}
-    });
-    editor.focus();
-    scheduleEmojiSetHelperRefresh();
-    return;
-  }
   if(!el){ return; }
   const start = el.selectionStart ?? 0;
   const end = el.selectionEnd ?? 0;
@@ -2476,24 +2487,23 @@ function applyMatchTypeUI(){
 
 function applyActionTypeUI(){
   const action = String(document.getElementById('f_action_type')?.value || 'send').toLowerCase();
-  const response = document.getElementById('f_response_text');
-  if(!response){ return; }
+  if(!document.getElementById('response_variants')){ return; }
   if(action === 'send_sticker'){
-    response.placeholder = 'Код стикера: file_id:set_id (или только file_id)';
+    setResponsePlaceholder('Код стикера: file_id:set_id (или только file_id)');
     scheduleEmojiSetHelperRefresh();
     return;
   }
   if(action === 'send_voice'){
-    response.placeholder = 'file_id, URL или путь к voice-файлу; со второй строки можно указать подпись';
+    setResponsePlaceholder('file_id, URL или путь к voice-файлу; со второй строки можно указать подпись');
     scheduleEmojiSetHelperRefresh();
     return;
   }
   if(action === 'gpt_prompt'){
-    response.placeholder = 'Промпт для ChatGPT';
+    setResponsePlaceholder('Промпт для ChatGPT');
     scheduleEmojiSetHelperRefresh();
     return;
   }
-  response.placeholder = 'Текст ответа / промпт';
+  setResponsePlaceholder('Текст ответа / промпт');
   scheduleEmojiSetHelperRefresh();
 }
 

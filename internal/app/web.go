@@ -1913,24 +1913,29 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	var t Trigger
 	var payload struct {
-		ID            int64              `json:"id"`
-		UID           string             `json:"uid"`
-		Title         string             `json:"title"`
-		Enabled       bool               `json:"enabled"`
-		TriggerMode   string             `json:"trigger_mode"`
-		AdminMode     string             `json:"admin_mode"`
-		MatchText     string             `json:"match_text"`
-		MatchType     string             `json:"match_type"`
-		CaseSensitive bool               `json:"case_sensitive"`
-		ActionType    string             `json:"action_type"`
-		ResponseText  []ResponseTextItem `json:"response_text"`
-		Reply         bool               `json:"reply"`
-		Preview       bool               `json:"preview"`
-		DeleteSource  bool               `json:"delete_source"`
-		PassThrough   bool               `json:"pass_through"`
-		Chance        int                `json:"chance"`
+		ID            int64           `json:"id"`
+		UID           string          `json:"uid"`
+		Title         string          `json:"title"`
+		Enabled       bool            `json:"enabled"`
+		TriggerMode   string          `json:"trigger_mode"`
+		AdminMode     string          `json:"admin_mode"`
+		MatchText     string          `json:"match_text"`
+		MatchType     string          `json:"match_type"`
+		CaseSensitive bool            `json:"case_sensitive"`
+		ActionType    string          `json:"action_type"`
+		ResponseText  json.RawMessage `json:"response_text"`
+		Reply         bool            `json:"reply"`
+		Preview       bool            `json:"preview"`
+		DeleteSource  bool            `json:"delete_source"`
+		PassThrough   bool            `json:"pass_through"`
+		Chance        int             `json:"chance"`
 	}
 	if err := parseJSONBody(r, &payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	responseItems, err := decodeResponseTextPayload(payload.ResponseText)
+	if err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1950,7 +1955,7 @@ func (w *WebAdmin) savePost(rw http.ResponseWriter, r *http.Request) {
 		MatchType:     match.NormalizeMatchType(payload.MatchType),
 		CaseSensitive: payload.CaseSensitive,
 		ActionType:    actionType,
-		ResponseText:  payload.ResponseText,
+		ResponseText:  responseItems,
 		Reply:         payload.Reply,
 		Preview:       payload.Preview,
 		DeleteSource:  payload.DeleteSource,
