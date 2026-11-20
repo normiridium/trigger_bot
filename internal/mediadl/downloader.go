@@ -1780,7 +1780,7 @@ func mediaExtensionFromURL(rawURL, fallback string) string {
 }
 
 func displayTitleForService(service Service, mediaKind MediaKind, title, description string) string {
-	title = strings.TrimSpace(title)
+	title = sanitizeMediaTitle(title)
 	_ = description
 	if service != ServicePinterest || !isPinterestGeneratedTitle(title) {
 		return title
