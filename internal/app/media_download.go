@@ -874,7 +874,23 @@ func newMediaDownloadQueue(workers, size int) *mediaDownloadQueue {
 						if chatID == 0 {
 							chatID = task.SendCtx.ChatID
 						}
-						log.Printf("media queue send failed chat=%d err=%v", chatID, err)
+						log.Printf("media queue send failed chat=%d mode=%s err=%v", chatID, task.Mode, err)
+						// Ссылка не медиа, а статья (пост, лонгрид, форум)? Публикуем
+						// текст статьи, если он влезает в лимит. В авто-режиме вообще не
+						// шумим ошибкой: либо статья, либо тихо мимо.
+						if task.Mode == mediadl.ModeAuto {
+							articleCtx := task.SendCtx
+							articleCtx.ChatID = chatID
+							switch publishArticleFallback(articleCtx, task.URL) {
+							case articleFallbackPublished:
+								return
+							case articleFallbackSkipped:
+								log.Printf("media: ссылка пропущена, статью не публикуем url=%q", clipText(task.URL, 180))
+								return
+							}
+							log.Printf("media: авто-режим, ни медиа, ни статьи — молчим url=%q", clipText(task.URL, 180))
+							return
+						}
 						title := "ошибка скачивания файла"
 						switch task.Mode {
 						case mediadl.ModeVideo:
