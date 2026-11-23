@@ -718,6 +718,41 @@ func runDeepSeekChatCompletion(payload map[string]interface{}, timeout time.Dura
 	return body, nil
 }
 
+// openAIQuotaBreaker — предохранитель: пока OpenAI отвечает 429
+// insufficient_quota, каждый запрос всё равно ходил бы в OpenAI, ждал отказа и
+// только потом уходил в fallback. Держим отметку «мёртв до» и сразу идём мимо.
+// Длительность — OPENAI_QUOTA_COOLDOWN_SEC (по умолчанию 30 минут).
+var openAIQuotaBreaker = struct {
+	mu        sync.Mutex
+	deadUntil time.Time
+}{}
+
+func openAIQuotaCooldown() time.Duration {
+	sec := envInt("OPENAI_QUOTA_COOLDOWN_SEC", 1800)
+	if sec <= 0 {
+		sec = 1800
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func openAIQuotaBlocked(now time.Time) bool {
+	openAIQuotaBreaker.mu.Lock()
+	defer openAIQuotaBreaker.mu.Unlock()
+	return now.Before(openAIQuotaBreaker.deadUntil)
+}
+
+func markOpenAIQuotaExhausted(now time.Time) {
+	openAIQuotaBreaker.mu.Lock()
+	openAIQuotaBreaker.deadUntil = now.Add(openAIQuotaCooldown())
+	openAIQuotaBreaker.mu.Unlock()
+}
+
+func resetOpenAIQuotaBreaker() {
+	openAIQuotaBreaker.mu.Lock()
+	openAIQuotaBreaker.deadUntil = time.Time{}
+	openAIQuotaBreaker.mu.Unlock()
+}
+
 func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTReplyResult, error) {
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
@@ -791,16 +826,27 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 		},
 	}
 	timeout := openAIChatTimeout()
-	status, bodyBytes, err := postChatCompletion(apiKey, "https://api.openai.com/v1/chat/completions", payload, timeout)
-	if err != nil {
-		return chatGPTReplyResult{}, err
-	}
 	usedDeepSeek := false
+	var status int
+	var bodyBytes []byte
+	if openAIQuotaBlocked(time.Now()) {
+		// OpenAI недавно ответил «нет кредитов»: не тратим на него запрос,
+		// сразу идём в fallback. Текст ответа держим в форме 429
+		// insufficient_quota — по нему выше решается, кого звать на помощь.
+		status = 429
+		bodyBytes = []byte(`{"error":{"type":"insufficient_quota","message":"openai quota cooldown active"}}`)
+	} else {
+		status, bodyBytes, err = postChatCompletion(apiKey, "https://api.openai.com/v1/chat/completions", payload, timeout)
+		if err != nil {
+			return chatGPTReplyResult{}, err
+		}
+	}
 	if debugGPTLogEnabled {
 		log.Printf("gpt response status=%d body=%q", status, clipLogText(sanitizeSecretText(string(bodyBytes)), 200))
 	}
 	if status < 200 || status >= 300 {
 		if isInsufficientQuotaResponse(status, bodyBytes) {
+			markOpenAIQuotaExhausted(time.Now())
 			if dsBody, dsErr := runDeepSeekChatCompletion(payload, timeout); dsErr == nil {
 				log.Printf("openai insufficient quota: switched to deepseek")
 				bodyBytes = dsBody
@@ -842,6 +888,9 @@ func generateChatGPTReply(ctx templateContext, promptTemplate string) (chatGPTRe
 		PromptTokens:     result.Usage.PromptTokens,
 		CompletionTokens: result.Usage.CompletionTokens,
 		TotalTokens:      result.Usage.TotalTokens,
+	}
+	if !usedDeepSeek {
+		resetOpenAIQuotaBreaker()
 	}
 	if usage.TotalTokens <= 0 {
 		usage.PromptTokens = estimateTextTokens(prompt)
