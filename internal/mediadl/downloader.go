@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -66,6 +67,11 @@ type Downloader struct {
 	ExtractorArgs      string
 	CookiesFile        string
 	CookiesFromBrowser string
+	// AuthCookiesFile — cookies авторизованного аккаунта YouTube. Обычные
+	// загрузки идут с анонимными cookies: с авторизованными YouTube нередко
+	// отвечает «Requested format is not available». Авторизованные пробуем
+	// только когда анонимный заход упёрся в возрастное ограничение.
+	AuthCookiesFile string
 	// Impersonate включает TLS/HTTP-имитацию браузера (curl_cffi). Нужно для
 	// сайтов, которые отдают ботам заглушку вместо страницы — например TikTok.
 	Impersonate string
@@ -702,7 +708,80 @@ func (d Downloader) runJSON(ctx context.Context, args []string) (probeJSON, erro
 	return out, nil
 }
 
+// isYTDLPAgeRestricted — YouTube требует вход/подтверждение возраста.
+func isYTDLPAgeRestricted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "confirm your age") ||
+		strings.Contains(msg, "age-restricted") ||
+		strings.Contains(msg, "age restricted") ||
+		strings.Contains(msg, "age-verification")
+}
+
+// withAuthCookies подменяет cookies в аргументах на авторизованные.
+func withAuthCookies(args []string, authFile string) []string {
+	authFile = strings.TrimSpace(authFile)
+	if authFile == "" {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--cookies":
+			if i+1 < len(args) {
+				out = append(out, "--cookies", authFile)
+				i++
+				replaced = true
+				continue
+			}
+		case "--cookies-from-browser":
+			if i+1 < len(args) {
+				i++ // выбрасываем cookies-from-browser, ниже добавим --cookies
+				replaced = true
+				continue
+			}
+		}
+		out = append(out, args[i])
+	}
+	if !replaced {
+		// вставляем перед URL (последний аргумент)
+		url := out[len(out)-1]
+		out = append(out[:len(out)-1], "--cookies", authFile, url)
+	}
+	return out
+}
+
 func (d Downloader) runDownload(ctx context.Context, args []string) (string, error) {
+	path, err := d.runDownloadOnce(ctx, args)
+	if err == nil || !isYTDLPAgeRestricted(err) {
+		return path, err
+	}
+	authFile := strings.TrimSpace(d.AuthCookiesFile)
+	if authFile == "" || argsUseCookiesFile(args, authFile) {
+		return path, err
+	}
+	log.Printf("yt-dlp: возрастное ограничение, повтор с авторизованными cookies")
+	path, retryErr := d.runDownloadOnce(ctx, withAuthCookies(args, authFile))
+	if retryErr == nil {
+		return path, nil
+	}
+	return path, fmt.Errorf("%w (повтор с авторизованными cookies: %v)", err, retryErr)
+}
+
+// argsUseCookiesFile сообщает, что в аргументах уже стоит этот файл cookies.
+func argsUseCookiesFile(args []string, file string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--cookies" && strings.TrimSpace(args[i+1]) == file {
+			return true
+		}
+	}
+	return false
+}
+
+func (d Downloader) runDownloadOnce(ctx context.Context, args []string) (string, error) {
 	args = d.withProgressArgs(args)
 	cmd := exec.CommandContext(ctx, d.binary(), args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")

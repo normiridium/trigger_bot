@@ -2149,6 +2149,7 @@ func Run() {
 		ExtractorArgs:       strings.TrimSpace(os.Getenv("YTDLP_EXTRACTOR_ARGS")),
 		CookiesFile:         mediaCookiesFile,
 		CookiesFromBrowser:  strings.TrimSpace(os.Getenv("YTDLP_COOKIES_FROM_BROWSER")),
+		AuthCookiesFile:     strings.TrimSpace(os.Getenv("YTDLP_AUTH_COOKIES_FILE")),
 		MaxSizeMB:           mediaMaxMB,
 		MaxHeight:           envInt("MEDIA_DOWNLOAD_MAX_HEIGHT", 720),
 		MaxVideoDurationSec: envInt("MEDIA_VIDEO_MAX_DURATION_SEC", 1800),

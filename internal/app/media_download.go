@@ -961,8 +961,11 @@ func userFacingMediaDownloadError(err error) string {
 		return "трек защищён DRM — нужен другой трек или ссылка"
 	case strings.Contains(msg, "request entity too large"):
 		return "файл слишком большой для отправки в Telegram"
-	case strings.Contains(msg, "sign in to confirm your age"):
-		return "не прошло по возрастному ограничению YouTube"
+	case strings.Contains(msg, "sign in to confirm your age"),
+		strings.Contains(msg, "age-restricted"),
+		strings.Contains(msg, "age restricted"),
+		strings.Contains(msg, "age-verification"):
+		return "видео с возрастным ограничением YouTube: нужен аккаунт с подтверждённым возрастом"
 	case strings.Contains(msg, "sign in to confirm you're not a bot") || strings.Contains(msg, "sign in to confirm you’re not a bot"):
 		return "YouTube запросил подтверждение, что это не бот"
 	case strings.Contains(msg, "requested format is not available"):
